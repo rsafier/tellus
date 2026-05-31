@@ -43,9 +43,11 @@ Asset Forge should be configured server-side with its Pixel3D env vars, such as
 
 If the API is unset or fails, Tellus keeps using its local procedural meshes.
 
-For deploys where you do not want to rebuild just to change asset URLs, copy
-`public/tellus-config.example.json` to `public/tellus-config.json` or place a
-`tellus-config.json` file next to the built app. Tellus reads it at runtime:
+Tellus reads `public/tellus-config.json` at runtime. The committed file is
+deploy-safe and intentionally has no local asset paths, so Vercel can build even
+when large local files are not in git. For machine-local overrides, create
+`public/tellus-config.local.json`; it is ignored by git and loaded after the
+committed config:
 
 ```json
 {
@@ -59,8 +61,10 @@ For deploys where you do not want to rebuild just to change asset URLs, copy
 }
 ```
 
-The real `tellus-config.json` file is ignored by git so production URLs can be
-managed outside the repo.
+On Vercel, set `VITE_ASSET_FORGE_API_BASE` and the `VITE_TELLUS_*_AVATAR_URL`
+variables when you want the URLs baked into a build, or replace
+`public/tellus-config.json` during deployment if your hosting setup supports
+runtime config injection.
 
 ## Agent Avatars
 
@@ -79,7 +83,8 @@ volume served by your web server.
 
 ## Skybox
 
-To use the external skybox, place this file in `public/skybox/`:
+To use the external skybox locally, place this file in `public/skybox/` and point
+`public/tellus-config.local.json` at it:
 
 ```text
 free_-_skybox_basic_sky.glb

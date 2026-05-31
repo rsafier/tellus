@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { MeshBasicNodeMaterial, WebGPURenderer } from "three/webgpu";
 import {
   color,
@@ -156,6 +157,7 @@ declare global {
   interface Window {
     SpeechRecognition?: SpeechRecognitionConstructor;
     webkitSpeechRecognition?: SpeechRecognitionConstructor;
+    __tellusRoot?: ReturnType<typeof createRoot>;
   }
 }
 
@@ -170,15 +172,14 @@ const PIXEL3D_PROVIDER = "pixel3d-gradio";
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
-  skyboxUrl:
-    import.meta.env.VITE_TELLUS_SKYBOX_URL ??
-    "/skybox/free_-_skybox_basic_sky.glb",
+  skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
   avatars: {
     johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
     mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
     sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
   },
 };
+const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
 
 const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5f8f3d),
@@ -281,31 +282,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function loadRuntimeConfig(): Promise<void> {
-  const response = await fetch("/tellus-config.json", { cache: "no-store" });
-  if (response.status === 404) return;
-  const config = await readJsonResponse<unknown>(response);
+function applyRuntimeConfig(config: unknown): void {
   if (!isRecord(config)) return;
 
   const assetForgeApiBase = config.assetForgeApiBase;
-  if (typeof assetForgeApiBase === "string") {
-    runtimeConfig.assetForgeApiBase = assetForgeApiBase.replace(/\/+$/, "");
+  if (typeof assetForgeApiBase === "string" && assetForgeApiBase.trim()) {
+    runtimeConfig.assetForgeApiBase = assetForgeApiBase.trim().replace(/\/+$/, "");
   }
 
   const skyboxUrl = config.skyboxUrl;
-  if (typeof skyboxUrl === "string") {
-    runtimeConfig.skyboxUrl = skyboxUrl;
+  if (typeof skyboxUrl === "string" && skyboxUrl.trim()) {
+    runtimeConfig.skyboxUrl = skyboxUrl.trim();
   }
 
   const avatars = config.avatars;
-  if (isRecord(avatars)) {
-    for (const agentId of ["johnny", "mira", "sol"] as const) {
-      const avatarUrl = avatars[agentId];
-      if (typeof avatarUrl === "string") {
-        runtimeConfig.avatars[agentId] = avatarUrl;
-      }
+  if (!isRecord(avatars)) return;
+
+  for (const agentId of ["johnny", "mira", "sol"] as const) {
+    const avatarUrl = avatars[agentId];
+    if (typeof avatarUrl === "string" && avatarUrl.trim()) {
+      runtimeConfig.avatars[agentId] = avatarUrl.trim();
     }
   }
+}
+
+async function loadRuntimeConfigFile(path: string): Promise<void> {
+  const response = await fetch(path, { cache: "no-store" });
+  if (response.status === 404) return;
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return;
+  applyRuntimeConfig(await readJsonResponse<unknown>(response));
+}
+
+async function loadRuntimeConfig(): Promise<void> {
+  await loadRuntimeConfigFile("/tellus-config.json");
+  await loadRuntimeConfigFile("/tellus-config.local.json");
 }
 
 function toAssetId(prompt: string, prefix: string): string {
@@ -519,9 +530,11 @@ function fitModelToHeight(model: THREE.Object3D, targetHeight: number): THREE.Ob
 }
 
 async function loadGltfObject(url: string): Promise<THREE.Object3D> {
-  const loader = new GLTFLoader();
-  const gltf = await loader.loadAsync(url);
-  return gltf.scene;
+  const cached =
+    gltfObjectCache.get(url) ??
+    new GLTFLoader().loadAsync(url).then((gltf) => gltf.scene);
+  gltfObjectCache.set(url, cached);
+  return cloneSkeleton(await cached);
 }
 
 function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
@@ -550,6 +563,7 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
 }
 
 async function loadSkyboxModel(): Promise<THREE.Object3D | null> {
+  if (!runtimeConfig.skyboxUrl) return null;
   const response = await fetch(runtimeConfig.skyboxUrl, { method: "HEAD" });
   if (!response.ok) return null;
   return prepareSkyboxModel(await loadGltfObject(runtimeConfig.skyboxUrl));
@@ -1254,7 +1268,7 @@ function createTellusWorld(
     syncMeshes(now);
     updateCamera();
     try {
-      await renderer.renderAsync(scene, camera);
+      renderer.render(scene, camera);
     } catch (error) {
       if (!renderIssueLogged) {
         renderIssueLogged = true;
@@ -1677,7 +1691,10 @@ if (!root) {
   throw new Error("Tellus root element was not found");
 }
 
-createRoot(root).render(
+const tellusRoot = window.__tellusRoot ?? createRoot(root);
+window.__tellusRoot = tellusRoot;
+
+tellusRoot.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,

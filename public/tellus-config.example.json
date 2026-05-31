@@ -1,9 +1,9 @@
 {
   "assetForgeApiBase": "",
-  "skyboxUrl": "/skybox/free_-_skybox_basic_sky.glb",
+  "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "avatars": {
-    "johnny": "/avatars/johnny.glb",
-    "mira": "/avatars/mira.glb",
-    "sol": "/avatars/sol.glb"
+    "johnny": "https://cdn.example.com/tellus/johnny.glb",
+    "mira": "https://cdn.example.com/tellus/mira.glb",
+    "sol": "https://cdn.example.com/tellus/sol.glb"
   }
 }
