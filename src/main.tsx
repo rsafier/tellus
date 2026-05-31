@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { MeshBasicNodeMaterial, WebGPURenderer } from "three/webgpu";
 import {
   color,
@@ -534,7 +533,7 @@ async function loadGltfObject(url: string): Promise<THREE.Object3D> {
     gltfObjectCache.get(url) ??
     new GLTFLoader().loadAsync(url).then((gltf) => gltf.scene);
   gltfObjectCache.set(url, cached);
-  return cloneSkeleton(await cached);
+  return (await cached).clone(true);
 }
 
 function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {

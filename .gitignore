@@ -8,3 +8,4 @@ public/avatars/*.gltf
 public/avatars/*.vrm
 public/skybox/*.glb
 public/skybox/*.gltf
+!public/skybox/free_-_skybox_basic_sky.glb
