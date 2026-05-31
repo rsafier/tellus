@@ -113,6 +113,12 @@ interface TellusWorldApi {
   destroy(): void;
 }
 
+interface TellusRuntimeConfig {
+  assetForgeApiBase: string;
+  skyboxUrl: string;
+  avatars: Partial<Record<AgentId, string>>;
+}
+
 interface AssetForgePipelineStart {
   pipelineId: string;
   status: string;
@@ -160,14 +166,18 @@ const PLAYER_SPEED = 13;
 const TOOL_INTERVAL_MS = 3200;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
-const SKYBOX_URL = "/skybox/free_-_skybox_basic_sky.glb";
-const ASSET_FORGE_API_BASE =
-  import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "";
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
-const AGENT_AVATAR_URLS: Partial<Record<AgentId, string>> = {
-  johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
-  mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
-  sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
+const runtimeConfig: TellusRuntimeConfig = {
+  assetForgeApiBase:
+    import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
+  skyboxUrl:
+    import.meta.env.VITE_TELLUS_SKYBOX_URL ??
+    "/skybox/free_-_skybox_basic_sky.glb",
+  avatars: {
+    johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
+    mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
+    sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
+  },
 };
 
 const terrainColors: Record<TerrainKind, THREE.Color> = {
@@ -178,41 +188,43 @@ const terrainColors: Record<TerrainKind, THREE.Color> = {
   water: new THREE.Color(0x4d88a8),
 };
 
-const agentSeeds: TellusAgent[] = [
-  {
-    id: "johnny",
-    name: "Johnny",
-    epithet: "orchard-maker",
-    color: 0x7ec850,
-    goal: "Plant orchards, seed groves, and make the disc feel generous.",
-    avatarUrl: AGENT_AVATAR_URLS.johnny,
-    position: { x: -15, y: 0, z: 11 },
-    target: { x: -11, y: 0, z: 9 },
-    nextActionAt: 0,
-  },
-  {
-    id: "mira",
-    name: "Mira",
-    epithet: "naturalist",
-    color: 0xe8b86d,
-    goal: "Add animals, flowers, and small habitats around interesting places.",
-    avatarUrl: AGENT_AVATAR_URLS.mira,
-    position: { x: 18, y: 0, z: 6 },
-    target: { x: 13, y: 0, z: 4 },
-    nextActionAt: 800,
-  },
-  {
-    id: "sol",
-    name: "Sol",
-    epithet: "stone-dreamer",
-    color: 0x98a7ff,
-    goal: "Shape paths, shrines, stones, and mountain rituals.",
-    avatarUrl: AGENT_AVATAR_URLS.sol,
-    position: { x: -5, y: 0, z: -21 },
-    target: { x: -3, y: 0, z: -17 },
-    nextActionAt: 1600,
-  },
-];
+function createAgentSeeds(): TellusAgent[] {
+  return [
+    {
+      id: "johnny",
+      name: "Johnny",
+      epithet: "orchard-maker",
+      color: 0x7ec850,
+      goal: "Plant orchards, seed groves, and make the disc feel generous.",
+      avatarUrl: runtimeConfig.avatars.johnny,
+      position: { x: -15, y: 0, z: 11 },
+      target: { x: -11, y: 0, z: 9 },
+      nextActionAt: 0,
+    },
+    {
+      id: "mira",
+      name: "Mira",
+      epithet: "naturalist",
+      color: 0xe8b86d,
+      goal: "Add animals, flowers, and small habitats around interesting places.",
+      avatarUrl: runtimeConfig.avatars.mira,
+      position: { x: 18, y: 0, z: 6 },
+      target: { x: 13, y: 0, z: 4 },
+      nextActionAt: 800,
+    },
+    {
+      id: "sol",
+      name: "Sol",
+      epithet: "stone-dreamer",
+      color: 0x98a7ff,
+      goal: "Shape paths, shrines, stones, and mountain rituals.",
+      avatarUrl: runtimeConfig.avatars.sol,
+      position: { x: -5, y: 0, z: -21 },
+      target: { x: -3, y: 0, z: -17 },
+      nextActionAt: 1600,
+    },
+  ];
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -265,6 +277,37 @@ function makeId(prefix: string): string {
     .slice(2, 7)}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function loadRuntimeConfig(): Promise<void> {
+  const response = await fetch("/tellus-config.json", { cache: "no-store" });
+  if (response.status === 404) return;
+  const config = await readJsonResponse<unknown>(response);
+  if (!isRecord(config)) return;
+
+  const assetForgeApiBase = config.assetForgeApiBase;
+  if (typeof assetForgeApiBase === "string") {
+    runtimeConfig.assetForgeApiBase = assetForgeApiBase.replace(/\/+$/, "");
+  }
+
+  const skyboxUrl = config.skyboxUrl;
+  if (typeof skyboxUrl === "string") {
+    runtimeConfig.skyboxUrl = skyboxUrl;
+  }
+
+  const avatars = config.avatars;
+  if (isRecord(avatars)) {
+    for (const agentId of ["johnny", "mira", "sol"] as const) {
+      const avatarUrl = avatars[agentId];
+      if (typeof avatarUrl === "string") {
+        runtimeConfig.avatars[agentId] = avatarUrl;
+      }
+    }
+  }
+}
+
 function toAssetId(prompt: string, prefix: string): string {
   const slug = prompt
     .toLowerCase()
@@ -276,7 +319,7 @@ function toAssetId(prompt: string, prefix: string): string {
 
 function absoluteAssetForgeUrl(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  return `${ASSET_FORGE_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  return `${runtimeConfig.assetForgeApiBase}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
@@ -287,12 +330,12 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
 }
 
 async function startPixel3DGeneration(thing: GeneratedThing): Promise<AssetForgePipelineStart> {
-  if (!ASSET_FORGE_API_BASE) {
+  if (!runtimeConfig.assetForgeApiBase) {
     throw new Error("VITE_ASSET_FORGE_API_BASE is not configured");
   }
 
   const assetId = toAssetId(thing.prompt, thing.kind);
-  const response = await fetch(`${ASSET_FORGE_API_BASE}/api/generation/pipeline`, {
+  const response = await fetch(`${runtimeConfig.assetForgeApiBase}/api/generation/pipeline`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -324,7 +367,7 @@ async function waitForPixel3DModelUrl(pipelineId: string): Promise<string> {
   const deadline = Date.now() + 15 * 60 * 1000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => window.setTimeout(resolve, 4000));
-    const response = await fetch(`${ASSET_FORGE_API_BASE}/api/generation/pipeline/${pipelineId}`);
+    const response = await fetch(`${runtimeConfig.assetForgeApiBase}/api/generation/pipeline/${pipelineId}`);
     const status = await readJsonResponse<AssetForgePipelineStatus>(response);
     if (status.status === "failed") {
       throw new Error(status.error ?? `Pipeline ${pipelineId} failed`);
@@ -507,9 +550,9 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
 }
 
 async function loadSkyboxModel(): Promise<THREE.Object3D | null> {
-  const response = await fetch(SKYBOX_URL, { method: "HEAD" });
+  const response = await fetch(runtimeConfig.skyboxUrl, { method: "HEAD" });
   if (!response.ok) return null;
-  return prepareSkyboxModel(await loadGltfObject(SKYBOX_URL));
+  return prepareSkyboxModel(await loadGltfObject(runtimeConfig.skyboxUrl));
 }
 
 async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | null> {
@@ -837,7 +880,7 @@ function createTellusWorld(
   let resizeObserver: ResizeObserver | null = null;
   let renderIssueLogged = false;
 
-  const agents = agentSeeds.map((agent) => ({
+  const agents = createAgentSeeds().map((agent) => ({
     ...agent,
     position: { ...agent.position },
     target: { ...agent.target },
@@ -957,7 +1000,7 @@ function createTellusWorld(
       position,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
       color: kindColor(kind, request.prompt),
-      generationStatus: ASSET_FORGE_API_BASE ? "queued" : "local",
+      generationStatus: runtimeConfig.assetForgeApiBase ? "queued" : "local",
     };
     generated.push(thing);
     const mesh = createGeneratedMesh(thing);
@@ -972,7 +1015,7 @@ function createTellusWorld(
       text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
     });
 
-    if (ASSET_FORGE_API_BASE) {
+    if (runtimeConfig.assetForgeApiBase) {
       void startPixel3DGeneration(thing)
         .then(async (pipeline) => {
           thing.pipelineId = pipeline.pipelineId;
@@ -1424,7 +1467,7 @@ function App(): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<TellusWorldApi | null>(null);
   const [snapshot, setSnapshot] = useState<TellusSnapshot>({
-    agents: agentSeeds,
+    agents: createAgentSeeds(),
     generated: [],
     logs: [],
     paused: false,
@@ -1438,10 +1481,20 @@ function App(): React.ReactElement {
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const world = createTellusWorld(container, setSnapshot);
-    worldRef.current = world;
+    let cancelled = false;
+    let world: TellusWorldApi | null = null;
+    void loadRuntimeConfig()
+      .catch((error) => {
+        console.warn("Tellus runtime config failed to load", error);
+      })
+      .then(() => {
+        if (cancelled) return;
+        world = createTellusWorld(container, setSnapshot);
+        worldRef.current = world;
+      });
     return () => {
-      world.destroy();
+      cancelled = true;
+      world?.destroy();
       worldRef.current = null;
     };
   }, []);

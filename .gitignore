@@ -2,3 +2,9 @@ dist
 node_modules
 .env
 .env.local
+public/tellus-config.json
+public/avatars/*.glb
+public/avatars/*.gltf
+public/avatars/*.vrm
+public/skybox/*.glb
+public/skybox/*.gltf

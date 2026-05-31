@@ -1,0 +1,9 @@
+{
+  "assetForgeApiBase": "",
+  "skyboxUrl": "/skybox/free_-_skybox_basic_sky.glb",
+  "avatars": {
+    "johnny": "/avatars/johnny.glb",
+    "mira": "/avatars/mira.glb",
+    "sol": "/avatars/sol.glb"
+  }
+}

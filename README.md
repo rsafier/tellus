@@ -43,6 +43,25 @@ Asset Forge should be configured server-side with its Pixel3D env vars, such as
 
 If the API is unset or fails, Tellus keeps using its local procedural meshes.
 
+For deploys where you do not want to rebuild just to change asset URLs, copy
+`public/tellus-config.example.json` to `public/tellus-config.json` or place a
+`tellus-config.json` file next to the built app. Tellus reads it at runtime:
+
+```json
+{
+  "assetForgeApiBase": "https://your-asset-forge.example.com",
+  "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
+  "avatars": {
+    "johnny": "https://cdn.example.com/tellus/johnny.glb",
+    "mira": "https://cdn.example.com/tellus/mira.glb",
+    "sol": "https://cdn.example.com/tellus/sol.glb"
+  }
+}
+```
+
+The real `tellus-config.json` file is ignored by git so production URLs can be
+managed outside the repo.
+
 ## Agent Avatars
 
 Set avatar URLs with:
@@ -54,6 +73,9 @@ VITE_TELLUS_SOL_AVATAR_URL=/avatars/sol.glb
 ```
 
 Files can live in `public/avatars/`, or the values can be remote HTTPS URLs.
+Large `.glb`, `.gltf`, and `.vrm` files in `public/avatars/` are ignored by git.
+For production, prefer hosting them from object storage, a CDN, or a mounted
+volume served by your web server.
 
 ## Skybox
 
@@ -65,6 +87,8 @@ free_-_skybox_basic_sky.glb
 
 Tellus will load it automatically and fall back to the procedural sky if it is
 not present.
+
+Large skybox files in `public/skybox/` are ignored by git.
 
 ## Build
 
