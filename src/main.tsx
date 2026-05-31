@@ -463,37 +463,63 @@ function createSkyDome(): THREE.Mesh {
 }
 
 function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
-  const t = time.mul(0.58);
+  const t = time.mul(0.72);
   const waterUV = positionWorld.xzy;
-  const waterLayer0 = mx_worley_noise_float(waterUV.mul(3.2).add(t));
-  const waterLayer1 = mx_worley_noise_float(waterUV.mul(1.45).add(t.mul(0.72)));
-  const waterIntensity = waterLayer0.mul(waterLayer1);
-  const waterColor = waterIntensity
-    .mul(1.35)
-    .mix(color(0x167ca3), color(0x9fe8ee));
+  const broadFlow = mx_worley_noise_float(waterUV.mul(0.55).add(t.mul(0.16)));
+  const surfaceFlow = mx_worley_noise_float(
+    waterUV.mul(3.9).add(broadFlow.mul(0.42)).add(t),
+  );
+  const fineRipples = mx_worley_noise_float(
+    waterUV.mul(10.5).add(surfaceFlow.mul(0.35)).add(t.mul(1.7)),
+  );
+  const surfaceIntensity = surfaceFlow.mul(fineRipples).mul(1.65);
+  const waterColor = surfaceIntensity.mix(color(0x0c7199), color(0xc7fbff));
+  const illuminatedColor = waterColor.add(
+    color(0x8ff6ff).mul(surfaceIntensity.mul(0.28)),
+  );
 
   const depth = linearDepth();
   const depthWater = viewportLinearDepth.sub(depth);
-  const depthEffect = depthWater.remapClamp(-0.002, 0.04);
-  const refractionUV = screenUV.add(vec2(0, waterIntensity.mul(0.055)));
+  const depthEffect = depthWater.remapClamp(-0.002, 0.065);
+  const refractionUV = screenUV.add(
+    vec2(
+      broadFlow.sub(0.5).mul(0.018),
+      surfaceIntensity.sub(0.5).mul(0.074),
+    ),
+  );
   const depthTestForRefraction = linearDepth(
     viewportDepthTexture(refractionUV),
   ).sub(depth);
-  const depthRefraction = depthTestForRefraction.remapClamp(0, 0.1);
+  const depthRefraction = depthTestForRefraction.remapClamp(0, 0.16);
   const finalUV = depthTestForRefraction.lessThan(0).select(screenUV, refractionUV);
   const viewportTexture = viewportSharedTexture(finalUV);
 
   const material = new MeshBasicNodeMaterial();
-  material.colorNode = waterColor;
+  material.colorNode = illuminatedColor;
   material.backdropNode = depthEffect.mix(
     viewportSharedTexture(),
-    viewportTexture.mul(depthRefraction.mix(1, waterColor)),
+    viewportTexture.mul(depthRefraction.mix(1, illuminatedColor)),
   );
-  material.backdropAlphaNode = depthRefraction.oneMinus();
+  material.backdropAlphaNode = depthRefraction.oneMinus().mul(0.9);
   material.transparent = true;
   material.depthWrite = false;
   material.side = THREE.DoubleSide;
   return material;
+}
+
+function createWaterDistortionVeil(): THREE.Mesh {
+  const geometry = new THREE.CircleGeometry(POND_RADIUS * 0.92, 128);
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xd8fbff,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const veil = new THREE.Mesh(geometry, material);
+  veil.name = "tellus-water-distortion-veil";
+  return veil;
 }
 
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
@@ -632,7 +658,12 @@ function createPondWater(): THREE.Group {
   shore.rotation.x = -Math.PI / 2;
   shore.position.set(POND_CENTER.x, waterLevel - 0.035, POND_CENTER.z);
 
-  group.add(shore, water, ripples);
+  const veil = createWaterDistortionVeil();
+  veil.rotation.x = -Math.PI / 2;
+  veil.position.set(POND_CENTER.x, waterLevel + 0.055, POND_CENTER.z);
+  veil.renderOrder = 3;
+
+  group.add(shore, water, veil, ripples);
   return group;
 }
 
@@ -1224,6 +1255,15 @@ function createTellusWorld(
           material.opacity = Math.max(0, 0.32 * (1 - phase));
         }
       });
+    }
+
+    const waterVeil = pondWater.getObjectByName("tellus-water-distortion-veil");
+    if (waterVeil) {
+      waterVeil.rotation.z = now * 0.00018;
+      const material = (waterVeil as THREE.Mesh).material;
+      if (material instanceof THREE.MeshBasicMaterial) {
+        material.opacity = 0.12 + Math.sin(now * 0.0017) * 0.035;
+      }
     }
 
     for (const agent of agents) {
