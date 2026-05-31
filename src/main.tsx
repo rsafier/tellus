@@ -15,7 +15,19 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { WebGPURenderer } from "three/webgpu";
+import { MeshBasicNodeMaterial, WebGPURenderer } from "three/webgpu";
+import {
+  color,
+  linearDepth,
+  mx_worley_noise_float,
+  positionWorld,
+  screenUV,
+  time,
+  vec2,
+  viewportDepthTexture,
+  viewportLinearDepth,
+  viewportSharedTexture,
+} from "three/tsl";
 import "./styles.css";
 
 type AgentId = "johnny" | "mira" | "sol";
@@ -397,6 +409,40 @@ function createSkyDome(): THREE.Mesh {
   return new THREE.Mesh(geometry, material);
 }
 
+function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
+  const t = time.mul(0.58);
+  const waterUV = positionWorld.xzy;
+  const waterLayer0 = mx_worley_noise_float(waterUV.mul(3.2).add(t));
+  const waterLayer1 = mx_worley_noise_float(waterUV.mul(1.45).add(t.mul(0.72)));
+  const waterIntensity = waterLayer0.mul(waterLayer1);
+  const waterColor = waterIntensity
+    .mul(1.35)
+    .mix(color(0x167ca3), color(0x9fe8ee));
+
+  const depth = linearDepth();
+  const depthWater = viewportLinearDepth.sub(depth);
+  const depthEffect = depthWater.remapClamp(-0.002, 0.04);
+  const refractionUV = screenUV.add(vec2(0, waterIntensity.mul(0.055)));
+  const depthTestForRefraction = linearDepth(
+    viewportDepthTexture(refractionUV),
+  ).sub(depth);
+  const depthRefraction = depthTestForRefraction.remapClamp(0, 0.1);
+  const finalUV = depthTestForRefraction.lessThan(0).select(screenUV, refractionUV);
+  const viewportTexture = viewportSharedTexture(finalUV);
+
+  const material = new MeshBasicNodeMaterial();
+  material.colorNode = waterColor;
+  material.backdropNode = depthEffect.mix(
+    viewportSharedTexture(),
+    viewportTexture.mul(depthRefraction.mix(1, waterColor)),
+  );
+  material.backdropAlphaNode = depthRefraction.oneMinus();
+  material.transparent = true;
+  material.depthWrite = false;
+  material.side = THREE.DoubleSide;
+  return material;
+}
+
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   if (Array.isArray(material)) {
     for (const item of material) item.dispose();
@@ -487,16 +533,7 @@ function createPondWater(): THREE.Group {
   group.userData = { waterSurface: true };
 
   const waterLevel = terrainHeight(POND_CENTER.x, POND_CENTER.z) + 0.55;
-  const waterMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0x5da7c6,
-    roughness: 0.18,
-    metalness: 0,
-    transparent: true,
-    opacity: 0.68,
-    transmission: 0.18,
-    thickness: 0.35,
-    ior: 1.333,
-  });
+  const waterMaterial = createBackdropWaterMaterial();
   const water = new THREE.Mesh(
     new THREE.CircleGeometry(POND_RADIUS, 96),
     waterMaterial,
