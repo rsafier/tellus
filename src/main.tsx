@@ -44,6 +44,7 @@ interface TellusAgent {
   epithet: string;
   color: number;
   goal: string;
+  avatarUrl?: string;
   position: Vec3;
   target: Vec3;
   nextActionAt: number;
@@ -57,6 +58,9 @@ interface GeneratedThing {
   position: Vec3;
   scale: number;
   color: number;
+  modelUrl?: string;
+  pipelineId?: string;
+  generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
 }
 
 interface TellusLog {
@@ -97,6 +101,22 @@ interface TellusWorldApi {
   destroy(): void;
 }
 
+interface AssetForgePipelineStart {
+  pipelineId: string;
+  status: string;
+  message: string;
+}
+
+interface AssetForgePipelineStatus {
+  id: string;
+  status: "initializing" | "processing" | "completed" | "failed" | string;
+  progress: number;
+  finalAsset?: {
+    modelUrl?: string;
+  };
+  error?: string;
+}
+
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 interface SpeechRecognitionLike extends EventTarget {
@@ -129,6 +149,14 @@ const TOOL_INTERVAL_MS = 3200;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
 const SKYBOX_URL = "/skybox/free_-_skybox_basic_sky.glb";
+const ASSET_FORGE_API_BASE =
+  import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "";
+const PIXEL3D_PROVIDER = "pixel3d-gradio";
+const AGENT_AVATAR_URLS: Partial<Record<AgentId, string>> = {
+  johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
+  mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
+  sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
+};
 
 const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5f8f3d),
@@ -145,6 +173,7 @@ const agentSeeds: TellusAgent[] = [
     epithet: "orchard-maker",
     color: 0x7ec850,
     goal: "Plant orchards, seed groves, and make the disc feel generous.",
+    avatarUrl: AGENT_AVATAR_URLS.johnny,
     position: { x: -15, y: 0, z: 11 },
     target: { x: -11, y: 0, z: 9 },
     nextActionAt: 0,
@@ -155,6 +184,7 @@ const agentSeeds: TellusAgent[] = [
     epithet: "naturalist",
     color: 0xe8b86d,
     goal: "Add animals, flowers, and small habitats around interesting places.",
+    avatarUrl: AGENT_AVATAR_URLS.mira,
     position: { x: 18, y: 0, z: 6 },
     target: { x: 13, y: 0, z: 4 },
     nextActionAt: 800,
@@ -165,6 +195,7 @@ const agentSeeds: TellusAgent[] = [
     epithet: "stone-dreamer",
     color: 0x98a7ff,
     goal: "Shape paths, shrines, stones, and mountain rituals.",
+    avatarUrl: AGENT_AVATAR_URLS.sol,
     position: { x: -5, y: 0, z: -21 },
     target: { x: -3, y: 0, z: -17 },
     nextActionAt: 1600,
@@ -220,6 +251,77 @@ function makeId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 7)}`;
+}
+
+function toAssetId(prompt: string, prefix: string): string {
+  const slug = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  return `tellus-${prefix}-${slug || "creation"}-${Date.now().toString(36)}`;
+}
+
+function absoluteAssetForgeUrl(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return `${ASSET_FORGE_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    throw new Error(`${response.status} ${await response.text()}`);
+  }
+  return (await response.json()) as T;
+}
+
+async function startPixel3DGeneration(thing: GeneratedThing): Promise<AssetForgePipelineStart> {
+  if (!ASSET_FORGE_API_BASE) {
+    throw new Error("VITE_ASSET_FORGE_API_BASE is not configured");
+  }
+
+  const assetId = toAssetId(thing.prompt, thing.kind);
+  const response = await fetch(`${ASSET_FORGE_API_BASE}/api/generation/pipeline`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      assetId,
+      name: thing.prompt.slice(0, 72),
+      description: thing.prompt,
+      type: thing.kind === "animal" ? "character" : "environment",
+      subtype: thing.kind,
+      generationType: thing.kind === "animal" ? "avatar" : "model",
+      quality: "standard",
+      enableRigging: thing.kind === "animal",
+      enableRetexturing: false,
+      enableSprites: false,
+      customPrompts: {
+        gameStyle:
+          "Tiny cozy WebGPU floating-world asset for Tellus, stylized, readable from a distance, game-ready low-poly proportions.",
+      },
+      metadata: {
+        provider: PIXEL3D_PROVIDER,
+        useGPT5Enhancement: true,
+      },
+    }),
+  });
+
+  return readJsonResponse<AssetForgePipelineStart>(response);
+}
+
+async function waitForPixel3DModelUrl(pipelineId: string): Promise<string> {
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 4000));
+    const response = await fetch(`${ASSET_FORGE_API_BASE}/api/generation/pipeline/${pipelineId}`);
+    const status = await readJsonResponse<AssetForgePipelineStatus>(response);
+    if (status.status === "failed") {
+      throw new Error(status.error ?? `Pipeline ${pipelineId} failed`);
+    }
+    if (status.status === "completed" && status.finalAsset?.modelUrl) {
+      return absoluteAssetForgeUrl(status.finalAsset.modelUrl);
+    }
+  }
+  throw new Error(`Pipeline ${pipelineId} timed out`);
 }
 
 function createTerrainGeometry(): THREE.BufferGeometry {
@@ -303,6 +405,36 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   material.dispose();
 }
 
+function disposeObject(object: THREE.Object3D): void {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    disposeMaterial(child.material);
+  });
+}
+
+function fitModelToHeight(model: THREE.Object3D, targetHeight: number): THREE.Object3D {
+  const bounds = new THREE.Box3().setFromObject(model);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const scale = size.y > 0 ? targetHeight / size.y : 1;
+  model.scale.setScalar(scale);
+  model.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale);
+  model.traverse((child) => {
+    child.frustumCulled = false;
+    if (!(child instanceof THREE.Mesh)) return;
+    child.castShadow = true;
+    child.receiveShadow = true;
+  });
+  return model;
+}
+
+async function loadGltfObject(url: string): Promise<THREE.Object3D> {
+  const loader = new GLTFLoader();
+  const gltf = await loader.loadAsync(url);
+  return gltf.scene;
+}
+
 function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
   const bounds = new THREE.Box3().setFromObject(model);
   const center = bounds.getCenter(new THREE.Vector3());
@@ -331,9 +463,22 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
 async function loadSkyboxModel(): Promise<THREE.Object3D | null> {
   const response = await fetch(SKYBOX_URL, { method: "HEAD" });
   if (!response.ok) return null;
-  const loader = new GLTFLoader();
-  const gltf = await loader.loadAsync(SKYBOX_URL);
-  return prepareSkyboxModel(gltf.scene);
+  return prepareSkyboxModel(await loadGltfObject(SKYBOX_URL));
+}
+
+async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | null> {
+  if (!agent.avatarUrl) return null;
+  const avatar = await loadGltfObject(agent.avatarUrl);
+  avatar.name = `avatar-${agent.id}`;
+  return fitModelToHeight(avatar, 2.45);
+}
+
+async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
+  const model = await loadGltfObject(url);
+  model.name = `pixel3d-${thing.id}`;
+  const fitted = fitModelToHeight(model, clamp(thing.scale * 2.25, 1.2, 4.2));
+  fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
+  return fitted;
 }
 
 function createPondWater(): THREE.Group {
@@ -775,6 +920,7 @@ function createTellusWorld(
       position,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
       color: kindColor(kind, request.prompt),
+      generationStatus: ASSET_FORGE_API_BASE ? "queued" : "local",
     };
     generated.push(thing);
     const mesh = createGeneratedMesh(thing);
@@ -788,6 +934,50 @@ function createTellusWorld(
       tool: "generate",
       text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
     });
+
+    if (ASSET_FORGE_API_BASE) {
+      void startPixel3DGeneration(thing)
+        .then(async (pipeline) => {
+          thing.pipelineId = pipeline.pipelineId;
+          thing.generationStatus = "generating";
+          addLog({
+            agentId: "world",
+            agentName: "Pixel3D",
+            tool: "generate",
+            text: `Queued ${thing.kind} model for "${thing.prompt}" (${pipeline.pipelineId})`,
+          });
+          const modelUrl = await waitForPixel3DModelUrl(pipeline.pipelineId);
+          thing.modelUrl = modelUrl;
+          thing.generationStatus = "ready";
+          const model = await loadGeneratedModel(modelUrl, thing);
+          const oldMesh = generatedMeshes.get(thing.id);
+          if (oldMesh) {
+            scene.remove(oldMesh);
+            disposeObject(oldMesh);
+          }
+          generatedMeshes.set(thing.id, model);
+          scene.add(model);
+          addLog({
+            agentId: "world",
+            agentName: "Pixel3D",
+            tool: "interact",
+            text: `Loaded Pixel3D model for ${thing.kind}: ${thing.prompt}`,
+          });
+          publish();
+        })
+        .catch((error) => {
+          thing.generationStatus = "failed";
+          addLog({
+            agentId: "world",
+            agentName: "Pixel3D",
+            tool: "interact",
+            text: `Pixel3D generation fell back to local mesh: ${
+              error instanceof Error ? error.message : "unknown error"
+            }`,
+          });
+          publish();
+        });
+    }
     return thing;
   };
 
@@ -1056,6 +1246,35 @@ function createTellusWorld(
       resize();
       requestAnimationFrame(resize);
       publish();
+      for (const agent of agents) {
+        void loadAgentAvatar(agent)
+          .then((avatar) => {
+            if (!avatar || destroyed) return;
+            const agentRoot = agentMeshes.get(agent.id);
+            if (!agentRoot) return;
+            for (const child of [...agentRoot.children]) {
+              agentRoot.remove(child);
+              disposeObject(child);
+            }
+            agentRoot.add(avatar);
+            addLog({
+              agentId: "world",
+              agentName: "Tellus",
+              tool: "interact",
+              text: `Loaded avatar for ${agent.name}`,
+            });
+          })
+          .catch((error) => {
+            addLog({
+              agentId: "world",
+              agentName: "Tellus",
+              tool: "interact",
+              text: `Avatar load failed for ${agent.name}: ${
+                error instanceof Error ? error.message : "unknown avatar error"
+              }`,
+            });
+          });
+      }
       void loadSkyboxModel()
         .then((skybox) => {
           if (!skybox || destroyed) return;
