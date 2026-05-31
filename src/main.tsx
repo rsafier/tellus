@@ -161,6 +161,8 @@ declare global {
 }
 
 const WORLD_RADIUS = 42;
+const OCEAN_RADIUS = 170;
+const SEA_LEVEL = -1.55;
 const TERRAIN_SEGMENTS = 96;
 const AGENT_SPEED = 5.2;
 const PLAYER_SPEED = 13;
@@ -180,12 +182,17 @@ const runtimeConfig: TellusRuntimeConfig = {
 };
 const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
 
+type MaterialWithTextureMaps = THREE.Material & {
+  map?: THREE.Texture | null;
+  emissiveMap?: THREE.Texture | null;
+};
+
 const terrainColors: Record<TerrainKind, THREE.Color> = {
-  meadow: new THREE.Color(0x5f8f3d),
-  rock: new THREE.Color(0x8f938a),
-  snow: new THREE.Color(0xdfe8e5),
-  dirt: new THREE.Color(0x8b6b43),
-  water: new THREE.Color(0x4d88a8),
+  meadow: new THREE.Color(0x5fa22e),
+  rock: new THREE.Color(0x5f7074),
+  snow: new THREE.Color(0xd4e7e2),
+  dirt: new THREE.Color(0x8a7241),
+  water: new THREE.Color(0x256f92),
 };
 
 function createAgentSeeds(): TellusAgent[] {
@@ -252,20 +259,24 @@ function normalizedDiscPosition(x: number, z: number): Vec3 {
 
 function terrainHeight(x: number, z: number): number {
   const r = Math.hypot(x, z);
-  const mountain = Math.max(0, 1 - r / 18);
-  const mound = Math.pow(mountain, 2.45) * 19;
+  const mountain = Math.max(0, 1 - r / 20);
+  const mound = Math.pow(mountain, 2.2) * 21;
+  const shoulder = Math.exp(-((x + 16) ** 2 + (z - 12) ** 2) / 190) * 4.2;
+  const southernRise = Math.exp(-((x - 9) ** 2 + (z + 24) ** 2) / 160) * 3.1;
   const ridge =
-    Math.sin(x * 0.23 + z * 0.08) * 0.85 + Math.cos(z * 0.19 - x * 0.06) * 0.55;
-  const rimDrop = Math.max(0, (r - 34) / 9) * 3.2;
+    Math.sin(x * 0.22 + z * 0.08) * 1.05 +
+    Math.cos(z * 0.2 - x * 0.06) * 0.72 +
+    Math.sin((x + z) * 0.11) * 0.42;
+  const rimDrop = Math.max(0, (r - 30) / 12) * 5.8;
   const pond = Math.exp(-((x - 18) ** 2 + (z + 12) ** 2) / 65) * 2.5;
-  return mound + ridge - rimDrop - pond;
+  return mound + shoulder + southernRise + ridge - rimDrop - pond - 0.65;
 }
 
 function terrainKind(x: number, z: number, y: number): TerrainKind {
   const pondDistance = Math.hypot(x - 18, z + 12);
   if (pondDistance < 7 && y < 1.9) return "water";
-  if (y > 14) return "snow";
-  if (y > 7.5) return "rock";
+  if (y > 13.5) return "snow";
+  if (y > 6.8) return "rock";
   const pathBand = Math.abs(Math.sin(Math.atan2(z, x) * 3 + 0.5)) < 0.13;
   if (pathBand && Math.hypot(x, z) > 8) return "dirt";
   return "meadow";
@@ -453,10 +464,100 @@ function createFloatingRim(): THREE.Mesh {
   return new THREE.Mesh(geometry, material);
 }
 
+function createOceanSurface(): THREE.Mesh {
+  const geometry = new THREE.CircleGeometry(OCEAN_RADIUS, 192);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x234f72,
+    emissive: 0x173d58,
+    emissiveIntensity: 0.16,
+    roughness: 0.42,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.82,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const ocean = new THREE.Mesh(geometry, material);
+  ocean.name = "tellus-surrounding-ocean";
+  ocean.rotation.x = -Math.PI / 2;
+  ocean.position.y = SEA_LEVEL;
+  ocean.renderOrder = -4;
+  return ocean;
+}
+
+function createDistantIsland(seed: number, angle: number, radius: number): THREE.Group {
+  const group = new THREE.Group();
+  group.name = `tellus-distant-island-${seed}`;
+  const x = Math.cos(angle) * radius;
+  const z = Math.sin(angle) * radius;
+  group.position.set(x, SEA_LEVEL - 0.12, z);
+
+  const islandColor = new THREE.Color(0x4f8b2e).lerp(
+    new THREE.Color(0x243d35),
+    rand(seed + 4) * 0.45,
+  );
+  const island = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      4.6 + rand(seed + 1) * 4,
+      8.5 + rand(seed + 2) * 7,
+      1.2 + rand(seed + 3),
+      18,
+      1,
+    ),
+    new THREE.MeshStandardMaterial({
+      color: islandColor,
+      roughness: 0.94,
+      metalness: 0,
+    }),
+  );
+  island.position.y = 0.35;
+  island.scale.z = 0.55 + rand(seed + 5) * 0.65;
+  island.rotation.y = rand(seed + 6) * Math.PI;
+  group.add(island);
+
+  const spireCount = 2 + Math.floor(rand(seed + 7) * 5);
+  for (let i = 0; i < spireCount; i++) {
+    const spireHeight = 5 + rand(seed + i * 17) * 12;
+    const spire = new THREE.Mesh(
+      new THREE.ConeGeometry(
+        0.7 + rand(seed + i * 13) * 1.8,
+        spireHeight,
+        10,
+      ),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(0x7a6a4a).lerp(new THREE.Color(0x2c3b48), rand(seed + i)),
+        roughness: 0.88,
+      }),
+    );
+    const localAngle = rand(seed + i * 19) * Math.PI * 2;
+    const localRadius = 1.4 + rand(seed + i * 23) * 6;
+    spire.position.set(
+      Math.cos(localAngle) * localRadius,
+      2.4 + spireHeight * 0.42,
+      Math.sin(localAngle) * localRadius * island.scale.z,
+    );
+    spire.rotation.z = (rand(seed + i * 29) - 0.5) * 0.22;
+    group.add(spire);
+  }
+
+  return group;
+}
+
+function createDistantArchipelago(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "tellus-distant-archipelago";
+  for (let i = 0; i < 18; i++) {
+    const angle = (i / 18) * Math.PI * 2 + rand(900 + i) * 0.32;
+    const radius = 58 + rand(1400 + i) * 72;
+    group.add(createDistantIsland(1800 + i * 43, angle, radius));
+  }
+  return group;
+}
+
 function createSkyDome(): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(220, 48, 24);
   const material = new THREE.MeshBasicMaterial({
-    color: 0x9fc9ee,
+    color: 0xa9c8f2,
     side: THREE.BackSide,
   });
   return new THREE.Mesh(geometry, material);
@@ -567,7 +668,7 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
   const center = bounds.getCenter(new THREE.Vector3());
   const size = bounds.getSize(new THREE.Vector3());
   const largestAxis = Math.max(size.x, size.y, size.z);
-  const scale = largestAxis > 0 ? 360 / largestAxis : 1;
+  const scale = largestAxis > 0 ? 520 / largestAxis : 1;
 
   model.name = "tellus-external-skybox";
   model.position.sub(center);
@@ -578,10 +679,22 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
     child.frustumCulled = false;
     if (!(child instanceof THREE.Mesh)) return;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
-    for (const material of materials) {
+    const skyMaterials = materials.map((material) => {
+      const mappedMaterial = material as MaterialWithTextureMaps;
+      const map = mappedMaterial.map ?? mappedMaterial.emissiveMap ?? null;
+      const skyMaterial = new THREE.MeshBasicMaterial({
+        map,
+        color: map ? 0xffffff : 0xaac8f2,
+        side: THREE.BackSide,
+        depthWrite: false,
+        depthTest: false,
+        toneMapped: false,
+      });
       material.side = THREE.DoubleSide;
       material.depthWrite = false;
-    }
+      return skyMaterial;
+    });
+    child.material = Array.isArray(child.material) ? skyMaterials : skyMaterials[0];
   });
 
   return model;
@@ -936,27 +1049,36 @@ function createTellusWorld(
   const keys = new Set<string>();
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x9fc9ee);
-  scene.fog = new THREE.Fog(0x9fc9ee, 90, 210);
+  scene.background = new THREE.Color(0xa7c3ef);
+  scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
 
-  const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 600);
+  const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
   const fallbackSky = createSkyDome();
+  const ocean = createOceanSurface();
+  const archipelago = createDistantArchipelago();
   const terrain = new THREE.Mesh(
     createTerrainGeometry(),
     new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.96,
+      roughness: 0.88,
       metalness: 0,
     }),
   );
   terrain.receiveShadow = true;
   const pondWater = createPondWater();
-  scene.add(fallbackSky, terrain, pondWater, createFloatingRim());
+  scene.add(
+    fallbackSky,
+    ocean,
+    archipelago,
+    terrain,
+    pondWater,
+    createFloatingRim(),
+  );
 
-  const sun = new THREE.DirectionalLight(0xfff4dc, 3.2);
-  sun.position.set(-35, 70, 35);
+  const sun = new THREE.DirectionalLight(0xffdfb7, 4.1);
+  sun.position.set(-55, 58, 42);
   sun.castShadow = true;
-  scene.add(sun, new THREE.HemisphereLight(0xaed7ff, 0x637347, 1.8));
+  scene.add(sun, new THREE.HemisphereLight(0xb6ccff, 0x3d5332, 2.25));
 
   for (let i = 0; i < 14; i++) {
     scene.add(createCloud(100 + i * 19));
@@ -969,12 +1091,12 @@ function createTellusWorld(
   }
 
   const visitor = createVisitorMesh();
-  let visitorPosition = normalizedDiscPosition(0, 0);
+  let visitorPosition = normalizedDiscPosition(-20, 20);
   scene.add(visitor);
 
-  let yaw = 0.76;
-  let pitch = -0.55;
-  let zoom = 18;
+  let yaw = 0.72;
+  let pitch = -0.28;
+  let zoom = 33;
   let isDragging = false;
   let pointerX = 0;
   let pointerY = 0;
@@ -1284,12 +1406,12 @@ function createTellusWorld(
   const updateCamera = () => {
     const target = new THREE.Vector3(
       visitorPosition.x,
-      visitorPosition.y + 1.8,
+      visitorPosition.y + 2.7,
       visitorPosition.z,
     );
     const offset = new THREE.Vector3(
       Math.sin(yaw) * Math.cos(pitch) * -zoom,
-      Math.sin(-pitch) * zoom + 4,
+      Math.sin(-pitch) * zoom + 2.2,
       Math.cos(yaw) * Math.cos(pitch) * -zoom,
     );
     camera.position.copy(target).add(offset);
@@ -1340,13 +1462,13 @@ function createTellusWorld(
     pointerX = event.clientX;
     pointerY = event.clientY;
     yaw -= dx * 0.006;
-    pitch = clamp(pitch - dy * 0.003, -0.95, -0.18);
+    pitch = clamp(pitch - dy * 0.003, -0.82, -0.08);
   };
   const handlePointerUp = () => {
     isDragging = false;
   };
   const handleWheel = (event: WheelEvent) => {
-    zoom = clamp(zoom + event.deltaY * 0.01, 9, 34);
+    zoom = clamp(zoom + event.deltaY * 0.01, 12, 58);
   };
 
   window.addEventListener("resize", resize);
