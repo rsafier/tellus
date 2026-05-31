@@ -14,6 +14,7 @@ import {
   Wand2,
 } from "lucide-react";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { WebGPURenderer } from "three/webgpu";
 import "./styles.css";
 
@@ -127,6 +128,7 @@ const PLAYER_SPEED = 13;
 const TOOL_INTERVAL_MS = 3200;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
+const SKYBOX_URL = "/skybox/free_-_skybox_basic_sky.glb";
 
 const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5f8f3d),
@@ -291,6 +293,47 @@ function createSkyDome(): THREE.Mesh {
     side: THREE.BackSide,
   });
   return new THREE.Mesh(geometry, material);
+}
+
+function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
+  if (Array.isArray(material)) {
+    for (const item of material) item.dispose();
+    return;
+  }
+  material.dispose();
+}
+
+function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
+  const bounds = new THREE.Box3().setFromObject(model);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const largestAxis = Math.max(size.x, size.y, size.z);
+  const scale = largestAxis > 0 ? 360 / largestAxis : 1;
+
+  model.name = "tellus-external-skybox";
+  model.position.sub(center);
+  model.scale.setScalar(scale);
+  model.renderOrder = -100;
+
+  model.traverse((child) => {
+    child.frustumCulled = false;
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      material.side = THREE.DoubleSide;
+      material.depthWrite = false;
+    }
+  });
+
+  return model;
+}
+
+async function loadSkyboxModel(): Promise<THREE.Object3D | null> {
+  const response = await fetch(SKYBOX_URL, { method: "HEAD" });
+  if (!response.ok) return null;
+  const loader = new GLTFLoader();
+  const gltf = await loader.loadAsync(SKYBOX_URL);
+  return prepareSkyboxModel(gltf.scene);
 }
 
 function createPondWater(): THREE.Group {
@@ -628,6 +671,7 @@ function createTellusWorld(
   scene.fog = new THREE.Fog(0x9fc9ee, 90, 210);
 
   const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 600);
+  const fallbackSky = createSkyDome();
   const terrain = new THREE.Mesh(
     createTerrainGeometry(),
     new THREE.MeshStandardMaterial({
@@ -638,7 +682,7 @@ function createTellusWorld(
   );
   terrain.receiveShadow = true;
   const pondWater = createPondWater();
-  scene.add(createSkyDome(), terrain, pondWater, createFloatingRim());
+  scene.add(fallbackSky, terrain, pondWater, createFloatingRim());
 
   const sun = new THREE.DirectionalLight(0xfff4dc, 3.2);
   sun.position.set(-35, 70, 35);
@@ -1012,6 +1056,28 @@ function createTellusWorld(
       resize();
       requestAnimationFrame(resize);
       publish();
+      void loadSkyboxModel()
+        .then((skybox) => {
+          if (!skybox || destroyed) return;
+          scene.remove(fallbackSky);
+          fallbackSky.geometry.dispose();
+          disposeMaterial(fallbackSky.material);
+          scene.add(skybox);
+          addLog({
+            agentId: "world",
+            agentName: "Tellus",
+            tool: "interact",
+            text: "Loaded external skybox: free_-_skybox_basic_sky.glb",
+          });
+        })
+        .catch((error) => {
+          addLog({
+            agentId: "world",
+            agentName: "Tellus",
+            tool: "interact",
+            text: `Skybox load failed: ${error instanceof Error ? error.message : "unknown skybox error"}`,
+          });
+        });
       for (const agent of agents) {
         addLog({
           agentId: agent.id,
