@@ -30,8 +30,6 @@ type FileLikeResult = {
   orig_name?: string;
 };
 
-const DEFAULT_INSTANTMESH_BASE_URL = "http://192.168.1.177:43839";
-
 function conceptImageDataUrl(prompt: string, kind: string): string {
   const width = 256;
   const height = 256;
@@ -213,9 +211,14 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   }
 
   const payload = await readRequestJson(request);
-  const baseUrl = (
-    process.env.INSTANTMESH_GRADIO_BASE_URL ?? DEFAULT_INSTANTMESH_BASE_URL
-  ).replace(/\/+$/, "");
+  const baseUrl = process.env.INSTANTMESH_GRADIO_BASE_URL?.trim().replace(/\/+$/, "");
+  if (!baseUrl) {
+    return Response.json(
+      { error: "INSTANTMESH_GRADIO_BASE_URL is not configured" },
+      { status: 503 },
+    );
+  }
+
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
   const kind = payload.kind?.trim() || "object";
   const imageUrl = payload.imageUrl?.trim() || conceptImageDataUrl(prompt, kind);

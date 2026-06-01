@@ -23,9 +23,9 @@ Open <http://localhost:3344/>.
 Tellus supports three generation modes:
 
 ```text
-VITE_TELLUS_GENERATION_PROVIDER=local
-VITE_TELLUS_GENERATION_PROVIDER=asset-forge
 VITE_TELLUS_GENERATION_PROVIDER=instantmesh-gradio
+VITE_TELLUS_GENERATION_PROVIDER=asset-forge
+VITE_TELLUS_GENERATION_PROVIDER=local
 ```
 
 `local` keeps the fast procedural meshes. `asset-forge` calls the Asset Forge
@@ -35,9 +35,13 @@ Tellus' own `/api/generate-3d` endpoint.
 For direct InstantMesh:
 
 ```text
-INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
+INSTANTMESH_GRADIO_BASE_URL=https://your-instantmesh-gradio.example.com
 INSTANTMESH_SAMPLE_STEPS=30
 ```
+
+For deployed Vercel/Coolify builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL
+that the deployed server can reach. A private LAN address such as
+`http://192.168.x.x:43839` only works from machines on that same network.
 
 InstantMesh is image-to-3D, while Tellus agents speak in text prompts. The
 adapter creates a simple concept image from the prompt, sends it to InstantMesh,

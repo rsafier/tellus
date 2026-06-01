@@ -45,6 +45,8 @@ export default defineConfig(({ mode }) => {
     "ZAI_MODEL",
     "HYADES_BASE_URL",
     "HYADES_API_KEY",
+    "INSTANTMESH_GRADIO_BASE_URL",
+    "INSTANTMESH_SAMPLE_STEPS",
   ]) {
     if (env[key]) process.env[key] = env[key];
   }
