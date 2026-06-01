@@ -107,6 +107,7 @@ interface TellusSnapshot {
 interface TellusWorldApi {
   generate(request: GenerateRequest): GeneratedThing;
   interact(request: InteractRequest): TellusLog;
+  talkToAgent(agentId: AgentId, message: string): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
   snapshot(): TellusSnapshot;
@@ -124,12 +125,14 @@ interface TellusRuntimeConfig {
 interface AgentDecision {
   prompt: string;
   intent?: string;
+  speech?: string;
 }
 
 interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
       content?: string;
+      reasoning_content?: string;
     };
   }>;
 }
@@ -1121,12 +1124,18 @@ function parseAgentDecision(content: string, fallbackPrompt: string): AgentDecis
   if (isRecord(parsed)) {
     const prompt = parsed.prompt;
     const intent = parsed.intent;
+    const speech = parsed.speech;
     return {
       prompt: typeof prompt === "string" && prompt.trim() ? prompt.trim() : fallbackPrompt,
       intent: typeof intent === "string" && intent.trim() ? intent.trim() : undefined,
+      speech: typeof speech === "string" && speech.trim() ? speech.trim() : undefined,
     };
   }
   return { prompt: content.trim() || fallbackPrompt };
+}
+
+function chatContent(completion: ChatCompletionResponse): string {
+  return completion.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
 async function askAgentForDecision(
@@ -1155,7 +1164,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an autonomous agent inside Tellus, a tiny living WebGPU world. You can generate 3d assets to populate the world however you choose. Decide one concise thing to generate next. Return only JSON with keys prompt and intent. The prompt should be a detailed description of the asset you wich to bring into the world. Whatever you choose it should be a visible 3D object, plant, animal, landmark, agent, or habitat feature.",
+            "You are an autonomous agent inside Tellus, a tiny living WebGPU world. You can generate 3d assets to populate the world however you choose. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt should be a detailed description of the asset you wish to bring into the world. The speech should be one short in-character sentence said aloud before you act. Whatever you choose should be a visible 3D object, plant, animal, landmark, agent, or habitat feature.",
         },
         {
           role: "user",
@@ -1172,9 +1181,54 @@ async function askAgentForDecision(
     }),
   });
   const completion = await readJsonResponse<ChatCompletionResponse>(response);
-  const content = completion.choices?.[0]?.message?.content;
+  const content = chatContent(completion);
   if (!content) return { prompt: fallbackPrompt };
   return parseAgentDecision(content, fallbackPrompt);
+}
+
+async function askAgentForReply(
+  agent: TellusAgent,
+  message: string,
+  generated: GeneratedThing[],
+  logs: TellusLog[],
+): Promise<string> {
+  const recentObjects = generated
+    .slice(-10)
+    .map((thing) => `${thing.kind}: ${thing.prompt}`)
+    .join("\n");
+  const recentLogs = logs
+    .slice(-10)
+    .map((log) => `${log.agentName}: ${log.text}`)
+    .join("\n");
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: runtimeConfig.agentModel,
+      temperature: 0.75,
+      max_tokens: 700,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a living agent inside Tellus. Reply in character in one or two short sentences. Do not return JSON. Be concrete about what you see, want, or will do next.",
+        },
+        {
+          role: "user",
+          content: [
+            `Agent: ${agent.name}, ${agent.epithet}`,
+            `Goal: ${agent.goal}`,
+            `Visitor says: ${message}`,
+            `Recent objects:\n${recentObjects || "none yet"}`,
+            `Recent logs:\n${recentLogs || "none yet"}`,
+          ].join("\n\n"),
+        },
+      ],
+    }),
+  });
+  const completion = await readJsonResponse<ChatCompletionResponse>(response);
+  const content = chatContent(completion);
+  return content || `${agent.name} listens, then turns back toward the world with a new idea.`;
 }
 
 function createTellusWorld(
@@ -1429,6 +1483,41 @@ function createTellusWorld(
     });
   };
 
+  const talkToAgent = (agentId: AgentId, message: string) => {
+    const trimmed = message.trim();
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!trimmed || !agent) return;
+
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "interact",
+      text: `asks ${agent.name}: ${trimmed}`,
+    });
+
+    void askAgentForReply(agent, trimmed, generated, logs)
+      .then((reply) => {
+        if (destroyed) return;
+        addLog({
+          agentId: agent.id,
+          agentName: agent.name,
+          tool: "interact",
+          text: `${agent.name} says: ${reply}`,
+        });
+      })
+      .catch((error) => {
+        if (destroyed) return;
+        addLog({
+          agentId: agent.id,
+          agentName: agent.name,
+          tool: "interact",
+          text: `${agent.name} tries to answer, but the voice link is quiet (${
+            error instanceof Error ? error.message : "unknown error"
+          })`,
+        });
+      });
+  };
+
   const submitVisitorPrompt = (prompt: string) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -1482,6 +1571,14 @@ function createTellusWorld(
 
       const decision = await askAgentForDecision(agent, generated, logs);
       if (destroyed) return;
+      if (decision.speech) {
+        addLog({
+          agentId: agent.id,
+          agentName: agent.name,
+          tool: "interact",
+          text: `${agent.name} says: ${decision.speech}`,
+        });
+      }
       const thing = generate({
         prompt: decision.prompt,
         location:
@@ -1807,6 +1904,7 @@ function createTellusWorld(
   return {
     generate,
     interact,
+    talkToAgent,
     setPaused,
     submitVisitorPrompt,
     snapshot,
@@ -1919,12 +2017,7 @@ function App(): React.ReactElement {
 
   const askSelectedAgent = () => {
     if (!prompt.trim() || !selected) return;
-    worldRef.current?.interact({
-      actorId: "visitor",
-      targetId:
-        snapshot.generated[snapshot.generated.length - 1]?.id ?? selected.id,
-      intent: `ask ${selected.name}: ${prompt.trim()}`,
-    });
+    worldRef.current?.talkToAgent(selected.id, prompt);
     setPrompt("");
   };
 
