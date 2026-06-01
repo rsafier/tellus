@@ -115,8 +115,22 @@ interface TellusWorldApi {
 
 interface TellusRuntimeConfig {
   assetForgeApiBase: string;
+  agentModel: string;
   skyboxUrl: string;
   avatars: Partial<Record<AgentId, string>>;
+}
+
+interface AgentDecision {
+  prompt: string;
+  intent?: string;
+}
+
+interface ChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
 }
 
 interface AssetForgePipelineStart {
@@ -173,6 +187,9 @@ const PIXEL3D_PROVIDER = "pixel3d-gradio";
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
+  agentModel:
+    import.meta.env.VITE_TELLUS_AGENT_MODEL ??
+    "gpt-5.4-mini",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
   avatars: {
     johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
@@ -298,6 +315,11 @@ function applyRuntimeConfig(config: unknown): void {
   const assetForgeApiBase = config.assetForgeApiBase;
   if (typeof assetForgeApiBase === "string" && assetForgeApiBase.trim()) {
     runtimeConfig.assetForgeApiBase = assetForgeApiBase.trim().replace(/\/+$/, "");
+  }
+
+  const agentModel = config.agentModel;
+  if (typeof agentModel === "string" && agentModel.trim()) {
+    runtimeConfig.agentModel = agentModel.trim();
   }
 
   const skyboxUrl = config.skyboxUrl;
@@ -1024,6 +1046,83 @@ function chooseAgentPrompt(
     : "a narrow dirt path spiraling gently toward the mountain";
 }
 
+function extractJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1)) as unknown;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function parseAgentDecision(content: string, fallbackPrompt: string): AgentDecision {
+  const parsed = extractJsonObject(content);
+  if (isRecord(parsed)) {
+    const prompt = parsed.prompt;
+    const intent = parsed.intent;
+    return {
+      prompt: typeof prompt === "string" && prompt.trim() ? prompt.trim() : fallbackPrompt,
+      intent: typeof intent === "string" && intent.trim() ? intent.trim() : undefined,
+    };
+  }
+  return { prompt: content.trim() || fallbackPrompt };
+}
+
+async function askAgentForDecision(
+  agent: TellusAgent,
+  generated: GeneratedThing[],
+  logs: TellusLog[],
+): Promise<AgentDecision> {
+  const fallbackPrompt = chooseAgentPrompt(agent, generated);
+  const recentObjects = generated
+    .slice(-12)
+    .map((thing) => `${thing.kind}: ${thing.prompt}`)
+    .join("\n");
+  const recentLogs = logs
+    .slice(-8)
+    .map((log) => `${log.agentName}: ${log.text}`)
+    .join("\n");
+
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: runtimeConfig.agentModel,
+      temperature: 0.85,
+      max_tokens: 180,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an autonomous agent inside Tellus, a tiny living WebGPU world. Decide one concise thing to generate next. Return only JSON with keys prompt and intent. The prompt should describe a visible 3D object, plant, animal, landmark, path, or habitat feature.",
+        },
+        {
+          role: "user",
+          content: [
+            `Agent: ${agent.name}, ${agent.epithet}`,
+            `Goal: ${agent.goal}`,
+            `Current generated count: ${generated.length}`,
+            `Recent objects:\n${recentObjects || "none yet"}`,
+            `Recent logs:\n${recentLogs || "none yet"}`,
+            `Fallback idea: ${fallbackPrompt}`,
+          ].join("\n\n"),
+        },
+      ],
+    }),
+  });
+  const completion = await readJsonResponse<ChatCompletionResponse>(response);
+  const content = completion.choices?.[0]?.message?.content;
+  if (!content) return { prompt: fallbackPrompt };
+  return parseAgentDecision(content, fallbackPrompt);
+}
+
 function createTellusWorld(
   container: HTMLElement,
   onSnapshot: (snapshot: TellusSnapshot) => void,
@@ -1046,6 +1145,7 @@ function createTellusWorld(
   const logs: TellusLog[] = [];
   const generatedMeshes = new Map<string, THREE.Object3D>();
   const agentMeshes = new Map<AgentId, THREE.Group>();
+  const pendingAgentDecisions = new Set<AgentId>();
   const keys = new Set<string>();
 
   const scene = new THREE.Scene();
@@ -1265,6 +1365,74 @@ function createTellusWorld(
     publish();
   };
 
+  const runAgentTurn = async (agent: TellusAgent): Promise<void> => {
+    if (pendingAgentDecisions.has(agent.id)) return;
+    pendingAgentDecisions.add(agent.id);
+    try {
+      const shouldInteract =
+        generated.length > 3 && rand(performance.now() + agent.color) > 0.68;
+      if (shouldInteract) {
+        const target =
+          generated[
+            Math.floor(rand(performance.now() + agent.position.x) * generated.length)
+          ];
+        interact({
+          targetId: target.id,
+          actorId: agent.id,
+          intent:
+            agent.id === "johnny"
+              ? "check whether it needs shade, water, or a nearby sapling"
+              : agent.id === "mira"
+                ? "study how it changes the local habitat"
+                : "decide whether it belongs in the mountain pattern",
+        });
+        return;
+      }
+
+      const decision = await askAgentForDecision(agent, generated, logs);
+      if (destroyed) return;
+      const thing = generate({
+        prompt: decision.prompt,
+        location:
+          agent.id === "sol"
+            ? "near-mountain"
+            : agent.id === "mira"
+              ? "near-pond"
+              : "near-agent",
+        creatorId: agent.id,
+      });
+      if (decision.intent) {
+        interact({
+          targetId: thing.id,
+          actorId: agent.id,
+          intent: decision.intent,
+        });
+      }
+    } catch (error) {
+      if (destroyed) return;
+      addLog({
+        agentId: "world",
+        agentName: "Hyades",
+        tool: "interact",
+        text: `Agent model unavailable; using local behavior (${
+          error instanceof Error ? error.message : "unknown error"
+        })`,
+      });
+      generate({
+        prompt: chooseAgentPrompt(agent, generated),
+        location:
+          agent.id === "sol"
+            ? "near-mountain"
+            : agent.id === "mira"
+              ? "near-pond"
+              : "near-agent",
+        creatorId: agent.id,
+      });
+    } finally {
+      pendingAgentDecisions.delete(agent.id);
+    }
+  };
+
   const resize = () => {
     const rect = container.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
@@ -1314,37 +1482,9 @@ function createTellusWorld(
       }
 
       if (!paused && now >= agent.nextActionAt) {
-        const shouldInteract =
-          generated.length > 3 && rand(now + agent.color) > 0.68;
-        if (shouldInteract) {
-          const target =
-            generated[
-              Math.floor(rand(now + agent.position.x) * generated.length)
-            ];
-          interact({
-            targetId: target.id,
-            actorId: agent.id,
-            intent:
-              agent.id === "johnny"
-                ? "check whether it needs shade, water, or a nearby sapling"
-                : agent.id === "mira"
-                  ? "study how it changes the local habitat"
-                  : "decide whether it belongs in the mountain pattern",
-          });
-        } else {
-          generate({
-            prompt: chooseAgentPrompt(agent, generated),
-            location:
-              agent.id === "sol"
-                ? "near-mountain"
-                : agent.id === "mira"
-                  ? "near-pond"
-                  : "near-agent",
-            creatorId: agent.id,
-          });
-        }
+        void runAgentTurn(agent);
         agent.nextActionAt =
-          now + TOOL_INTERVAL_MS + rand(now + agent.color) * 2400;
+          now + TOOL_INTERVAL_MS + 1400 + rand(now + agent.color) * 3600;
       }
     }
   };

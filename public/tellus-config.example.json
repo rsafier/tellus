@@ -1,5 +1,6 @@
 {
   "assetForgeApiBase": "",
+  "agentModel": "gpt-5.4-mini",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "avatars": {
     "johnny": "https://cdn.example.com/tellus/johnny.glb",

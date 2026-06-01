@@ -43,6 +43,23 @@ Asset Forge should be configured server-side with its Pixel3D env vars, such as
 
 If the API is unset or fails, Tellus keeps using its local procedural meshes.
 
+## Live Agents
+
+Tellus can run its agents through an OpenAI-compatible Hyades/Nemotron endpoint
+without exposing the bearer key in browser code. Local dev uses the Vite proxy;
+Vercel uses the `/api/chat` serverless function.
+
+```text
+HYADES_BASE_URL=http://192.168.1.187
+HYADES_API_KEY=sk-hy-...
+VITE_TELLUS_AGENT_MODEL=nvidia/nemotron-3-nano-30b-a3b:free
+```
+
+When configured, Johnny, Mira, and Sol ask `/api/chat` for their next
+`generate()` prompt. If the endpoint is unavailable, they fall back to the local
+scripted behavior. `/api/tts` is also proxied for the Hyades TTS endpoint, ready
+for a later voice pass.
+
 Tellus reads `public/tellus-config.json` at runtime. The committed file is
 deploy-safe and intentionally has no local asset paths, so Vercel can build even
 when large local files are not in git. For machine-local overrides, create
