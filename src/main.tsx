@@ -30,9 +30,9 @@ import {
 } from "three/tsl";
 import "./styles.css";
 
-type AgentId = "johnny" | "mira" | "sol";
+type AgentId = "johnny" | "mira" | "sol" | "atlas";
 
-type TerrainKind = "meadow" | "rock" | "beach" | "dirt" | "water";
+type TerrainKind = "meadow" | "rock" | "snow" | "beach" | "dirt" | "water";
 type GeneratedKind =
   | "tree"
   | "flower"
@@ -40,7 +40,7 @@ type GeneratedKind =
   | "animal"
   | "path"
   | "shrine"
-  | "animal";
+  | "seed";
 
 type ToolName = "generate" | "interact";
 
@@ -218,7 +218,8 @@ type MaterialWithTextureMaps = THREE.Material & {
 const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5fa22e),
   rock: new THREE.Color(0x5f7074),
-  beach: new THREE.Color(F6DCBD),
+  snow: new THREE.Color(0xd4e7e2),
+  beach: new THREE.Color(0xf6dcbd),
   dirt: new THREE.Color(0x8a7241),
   water: new THREE.Color(0x256f92),
 };
