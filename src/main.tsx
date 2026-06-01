@@ -413,9 +413,33 @@ function absoluteAssetForgeUrl(path: string): string {
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(`${response.status} ${await response.text()}`);
+    const body = await response.text();
+    const message = extractErrorMessage(body);
+    throw new Error(`${response.status}${message ? ` ${message}` : ""}`);
   }
   return (await response.json()) as T;
+}
+
+function extractErrorMessage(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (isRecord(parsed) && typeof parsed.error === "string") {
+      return sanitizeLogText(parsed.error);
+    }
+  } catch {
+    // Fall through to text cleanup.
+  }
+  return sanitizeLogText(body);
+}
+
+function sanitizeLogText(text: string): string {
+  return text
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 220);
 }
 
 async function startPixel3DGeneration(
@@ -1616,7 +1640,7 @@ function createTellusWorld(
             agentName: "Pixel3D",
             tool: "interact",
             text: `Pixel3D generation fell back to local mesh: ${
-              error instanceof Error ? error.message : "unknown error"
+              error instanceof Error ? sanitizeLogText(error.message) : "unknown error"
             }`,
           });
           publish();
@@ -1671,7 +1695,7 @@ function createTellusWorld(
             agentName: "InstantMesh",
             tool: "interact",
             text: `InstantMesh generation fell back to local mesh: ${
-              error instanceof Error ? error.message : "unknown error"
+              error instanceof Error ? sanitizeLogText(error.message) : "unknown error"
             }`,
           });
           publish();

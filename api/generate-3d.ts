@@ -199,6 +199,20 @@ function proxiedModelUrl(rawModelUrl: string): string {
   return `/api/gradio-file?url=${encodeURIComponent(rawModelUrl)}`;
 }
 
+function cleanUpstreamError(status: number, body: string): string {
+  if (status === 524) {
+    return "InstantMesh timed out upstream before returning a model";
+  }
+  const text = body
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return `InstantMesh request failed with HTTP ${status}`;
+  return `InstantMesh request failed with HTTP ${status}: ${text.slice(0, 240)}`;
+}
+
 async function readRequestJson(request: Request): Promise<Generate3DRequest> {
   const parsed = (await request.json()) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -234,8 +248,9 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   });
 
   if (!response.ok) {
-    return new Response(
-      `InstantMesh request failed: ${response.status} ${await response.text()}`,
+    const body = await response.text();
+    return Response.json(
+      { error: cleanUpstreamError(response.status, body) },
       { status: 502 },
     );
   }
