@@ -41,7 +41,8 @@ type GeneratedKind =
   | "path"
   | "shrine"
   | "seed"
-  | "balloon";
+  | "balloon"
+  | "object";
 
 type ToolName = "generate" | "interact";
 
@@ -958,9 +959,17 @@ function inferGeneratedKind(
 ): GeneratedKind {
   const lower = prompt.toLowerCase();
   if (
+    lower.includes("tree") ||
+    lower.includes("apple") ||
+    lower.includes("forest") ||
+    lower.includes("sapling")
+  )
+    return "tree";
+  if (
     lower.includes("animal") ||
     lower.includes("fox") ||
-    lower.includes("bird")
+    lower.includes("bird") ||
+    lower.includes("horse")
   )
     return "animal";
   if (
@@ -981,7 +990,17 @@ function inferGeneratedKind(
   if (lower.includes("seed")) return "seed";
   if (agentId === "sol") return rand(Date.now()) > 0.55 ? "stone" : "shrine";
   if (agentId === "mira") return rand(Date.now()) > 0.5 ? "animal" : "flower";
-  return "tree";
+  return "object";
+}
+
+function promptAccent(prompt: string): number {
+  let hash = 0;
+  for (let i = 0; i < prompt.length; i++) {
+    hash = (hash * 31 + prompt.charCodeAt(i)) >>> 0;
+  }
+  const hue = hash % 360;
+  const color = new THREE.Color().setHSL(hue / 360, 0.55, 0.58);
+  return color.getHex();
 }
 
 function kindColor(kind: GeneratedKind, prompt: string): number {
@@ -993,6 +1012,7 @@ function kindColor(kind: GeneratedKind, prompt: string): number {
   if (kind === "path") return 0x9a7447;
   if (kind === "shrine") return 0x7d83b5;
   if (kind === "balloon") return 0xf0a65f;
+  if (kind === "object") return promptAccent(prompt);
   return 0xd3c17a;
 }
 
@@ -1126,6 +1146,66 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
     }
 
     group.add(envelope, band, basket);
+  } else if (thing.kind === "object") {
+    const hash = Array.from(thing.prompt).reduce(
+      (sum, char) => sum + char.charCodeAt(0),
+      0,
+    );
+    const accentMaterial = new THREE.MeshStandardMaterial({
+      color: promptAccent(`${thing.prompt}:accent`),
+      roughness: 0.72,
+      metalness: 0.03,
+    });
+    const base =
+      hash % 3 === 0
+        ? new THREE.Mesh(
+            new THREE.BoxGeometry(
+              0.78 * thing.scale,
+              0.5 * thing.scale,
+              0.78 * thing.scale,
+            ),
+            material,
+          )
+        : hash % 3 === 1
+          ? new THREE.Mesh(
+              new THREE.IcosahedronGeometry(0.48 * thing.scale, 1),
+              material,
+            )
+          : new THREE.Mesh(
+              new THREE.CylinderGeometry(
+                0.46 * thing.scale,
+                0.58 * thing.scale,
+                0.62 * thing.scale,
+                7,
+              ),
+              material,
+            );
+    base.position.y = 0.36 * thing.scale;
+
+    const crown =
+      hash % 2 === 0
+        ? new THREE.Mesh(
+            new THREE.ConeGeometry(0.4 * thing.scale, 0.8 * thing.scale, 7),
+            accentMaterial,
+          )
+        : new THREE.Mesh(
+            new THREE.SphereGeometry(0.32 * thing.scale, 12, 8),
+            accentMaterial,
+          );
+    crown.position.y = 0.98 * thing.scale;
+
+    const marker = new THREE.Mesh(
+      new THREE.TorusGeometry(0.48 * thing.scale, 0.025 * thing.scale, 8, 28),
+      new THREE.MeshStandardMaterial({
+        color: 0xf7ead1,
+        roughness: 0.55,
+        metalness: 0.02,
+      }),
+    );
+    marker.rotation.x = Math.PI / 2;
+    marker.position.y = 0.18 * thing.scale;
+
+    group.add(base, crown, marker);
   } else {
     const seed = new THREE.Mesh(
       new THREE.IcosahedronGeometry(0.35 * thing.scale, 1),
