@@ -40,7 +40,8 @@ type GeneratedKind =
   | "animal"
   | "path"
   | "shrine"
-  | "seed";
+  | "seed"
+  | "balloon";
 
 type ToolName = "generate" | "interact";
 
@@ -962,6 +963,12 @@ function inferGeneratedKind(
     lower.includes("bird")
   )
     return "animal";
+  if (
+    lower.includes("balloon") ||
+    lower.includes("airship") ||
+    lower.includes("zeppelin")
+  )
+    return "balloon";
   if (lower.includes("flower") || lower.includes("moss")) return "flower";
   if (
     lower.includes("stone") ||
@@ -985,6 +992,7 @@ function kindColor(kind: GeneratedKind, prompt: string): number {
   if (kind === "animal") return 0xb9824b;
   if (kind === "path") return 0x9a7447;
   if (kind === "shrine") return 0x7d83b5;
+  if (kind === "balloon") return 0xf0a65f;
   return 0xd3c17a;
 }
 
@@ -1068,6 +1076,56 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
     const top = new THREE.Mesh(new THREE.ConeGeometry(0.55, 1.1, 6), material);
     top.position.y = 0.9;
     group.add(base, top);
+  } else if (thing.kind === "balloon") {
+    const envelope = new THREE.Mesh(
+      new THREE.SphereGeometry(0.72 * thing.scale, 24, 16),
+      material,
+    );
+    envelope.scale.set(0.9, 1.18, 0.9);
+    envelope.position.y = 2.05 * thing.scale;
+
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(0.52 * thing.scale, 0.035 * thing.scale, 8, 24),
+      new THREE.MeshStandardMaterial({ color: 0xffe2a8, roughness: 0.7 }),
+    );
+    band.rotation.x = Math.PI / 2;
+    band.position.y = 2.02 * thing.scale;
+
+    const basket = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        0.48 * thing.scale,
+        0.34 * thing.scale,
+        0.42 * thing.scale,
+      ),
+      new THREE.MeshStandardMaterial({ color: 0x8b5c35, roughness: 0.9 }),
+    );
+    basket.position.y = 0.72 * thing.scale;
+
+    const ropeMaterial = new THREE.MeshStandardMaterial({
+      color: 0x4c3b2a,
+      roughness: 0.8,
+    });
+    const ropeOffsets = [
+      [-0.26, -0.2],
+      [0.26, -0.2],
+      [-0.26, 0.2],
+      [0.26, 0.2],
+    ] as const;
+    for (const [x, z] of ropeOffsets) {
+      const rope = new THREE.Mesh(
+        new THREE.CylinderGeometry(
+          0.012 * thing.scale,
+          0.012 * thing.scale,
+          1.08 * thing.scale,
+          6,
+        ),
+        ropeMaterial,
+      );
+      rope.position.set(x * thing.scale, 1.2 * thing.scale, z * thing.scale);
+      group.add(rope);
+    }
+
+    group.add(envelope, band, basket);
   } else {
     const seed = new THREE.Mesh(
       new THREE.IcosahedronGeometry(0.35 * thing.scale, 1),

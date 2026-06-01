@@ -150,6 +150,15 @@ function conceptImageDataUrl(prompt: string, kind: string): string {
     fillRect(76, 176, 180, 204, [112, 86, 66]);
     fillRect(96, 104, 160, 176, [172, 157, 134]);
     fillTriangle(74, 104, 128, 58, 182, 104, [86, 72, 92]);
+  } else if (kind === "balloon" || prompt.toLowerCase().includes("balloon")) {
+    fillEllipse(128, 88, 58, 66, [230, 132, 78]);
+    fillEllipse(104, 90, 20, 56, [248, 188, 104]);
+    fillEllipse(152, 90, 20, 56, [248, 188, 104]);
+    fillRect(122, 146, 134, 174, [80, 58, 42]);
+    fillRect(96, 178, 160, 210, [132, 82, 44]);
+    fillRect(102, 184, 158, 190, [94, 61, 38]);
+    fillTriangle(102, 144, 96, 178, 108, 178, [80, 58, 42]);
+    fillTriangle(154, 144, 148, 178, 160, 178, [80, 58, 42]);
   } else {
     fillEllipse(128, 144, 72, 54, [base[0], base[1], base[2]]);
     fillEllipse(104, 116, 28, 24, [base[0] + 20, base[1] + 20, base[2] + 20]);
