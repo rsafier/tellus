@@ -418,7 +418,10 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function startPixel3DGeneration(thing: GeneratedThing): Promise<AssetForgePipelineStart> {
+async function startPixel3DGeneration(
+  thing: GeneratedThing,
+  signal?: AbortSignal,
+): Promise<AssetForgePipelineStart> {
   if (!runtimeConfig.assetForgeApiBase) {
     throw new Error("VITE_ASSET_FORGE_API_BASE is not configured");
   }
@@ -426,6 +429,7 @@ async function startPixel3DGeneration(thing: GeneratedThing): Promise<AssetForge
   const assetId = toAssetId(thing.prompt, thing.kind);
   const response = await fetch(`${runtimeConfig.assetForgeApiBase}/api/generation/pipeline`, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       assetId,
@@ -452,11 +456,19 @@ async function startPixel3DGeneration(thing: GeneratedThing): Promise<AssetForge
   return readJsonResponse<AssetForgePipelineStart>(response);
 }
 
-async function waitForPixel3DModelUrl(pipelineId: string): Promise<string> {
+async function waitForPixel3DModelUrl(
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const deadline = Date.now() + 15 * 60 * 1000;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     await new Promise((resolve) => window.setTimeout(resolve, 4000));
-    const response = await fetch(`${runtimeConfig.assetForgeApiBase}/api/generation/pipeline/${pipelineId}`);
+    signal?.throwIfAborted();
+    const response = await fetch(
+      `${runtimeConfig.assetForgeApiBase}/api/generation/pipeline/${pipelineId}`,
+      { signal },
+    );
     const status = await readJsonResponse<AssetForgePipelineStatus>(response);
     if (status.status === "failed") {
       throw new Error(status.error ?? `Pipeline ${pipelineId} failed`);
@@ -477,9 +489,11 @@ function hasExternalGenerationProvider(): boolean {
 
 async function startDirectInstantMeshGeneration(
   thing: GeneratedThing,
+  signal?: AbortSignal,
 ): Promise<DirectGenerationResponse> {
   const response = await fetch("/api/generate-3d", {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       id: thing.id,
@@ -1401,6 +1415,7 @@ function createTellusWorld(
   const generatedMeshes = new Map<string, THREE.Object3D>();
   const agentMeshes = new Map<AgentId, THREE.Group>();
   const pendingAgentDecisions = new Set<AgentId>();
+  const pendingGenerationControllers = new Map<string, AbortController>();
   const keys = new Set<string>();
 
   const scene = new THREE.Scene();
@@ -1484,6 +1499,13 @@ function createTellusWorld(
     return log;
   };
 
+  const abortPendingGeneration = () => {
+    for (const controller of pendingGenerationControllers.values()) {
+      controller.abort();
+    }
+    pendingGenerationControllers.clear();
+  };
+
   const chooseLocation = (request: GenerateRequest): Vec3 => {
     if (typeof request.location === "object")
       return normalizedDiscPosition(request.location.x, request.location.z);
@@ -1540,14 +1562,17 @@ function createTellusWorld(
       runtimeConfig.generationProvider === "asset-forge" &&
       runtimeConfig.assetForgeApiBase
     ) {
+      const generationController = new AbortController();
+      pendingGenerationControllers.set(thing.id, generationController);
       addLog({
         agentId: "world",
         agentName: "Pixel3D",
         tool: "generate",
         text: `Sending ${thing.kind} to Pixel3D: "${thing.prompt}"`,
       });
-      void startPixel3DGeneration(thing)
+      void startPixel3DGeneration(thing, generationController.signal)
         .then(async (pipeline) => {
+          if (destroyed || paused) return;
           thing.pipelineId = pipeline.pipelineId;
           thing.generationStatus = "generating";
           addLog({
@@ -1556,7 +1581,11 @@ function createTellusWorld(
             tool: "generate",
             text: `Queued ${thing.kind} model for "${thing.prompt}" (${pipeline.pipelineId})`,
           });
-          const modelUrl = await waitForPixel3DModelUrl(pipeline.pipelineId);
+          const modelUrl = await waitForPixel3DModelUrl(
+            pipeline.pipelineId,
+            generationController.signal,
+          );
+          if (destroyed || paused) return;
           thing.modelUrl = modelUrl;
           thing.generationStatus = "ready";
           const model = await loadGeneratedModel(modelUrl, thing);
@@ -1576,6 +1605,11 @@ function createTellusWorld(
           publish();
         })
         .catch((error) => {
+          if (paused || generationController.signal.aborted) {
+            thing.generationStatus = "local";
+            publish();
+            return;
+          }
           thing.generationStatus = "failed";
           addLog({
             agentId: "world",
@@ -1586,16 +1620,22 @@ function createTellusWorld(
             }`,
           });
           publish();
+        })
+        .finally(() => {
+          pendingGenerationControllers.delete(thing.id);
         });
     } else if (runtimeConfig.generationProvider === "instantmesh-gradio") {
+      const generationController = new AbortController();
+      pendingGenerationControllers.set(thing.id, generationController);
       addLog({
         agentId: "world",
         agentName: "InstantMesh",
         tool: "generate",
         text: `Sending ${thing.kind} to InstantMesh: "${thing.prompt}"`,
       });
-      void startDirectInstantMeshGeneration(thing)
+      void startDirectInstantMeshGeneration(thing, generationController.signal)
         .then(async (result) => {
+          if (destroyed || paused) return;
           thing.pipelineId = result.jobId;
           thing.modelUrl = result.modelUrl;
           thing.generationStatus = "ready";
@@ -1606,6 +1646,10 @@ function createTellusWorld(
             text: `Generated ${thing.kind} model for "${thing.prompt}"`,
           });
           const model = await loadGeneratedModel(result.modelUrl, thing);
+          if (destroyed || paused) {
+            disposeObject(model);
+            return;
+          }
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
             scene.remove(oldMesh);
@@ -1616,6 +1660,11 @@ function createTellusWorld(
           publish();
         })
         .catch((error) => {
+          if (paused || generationController.signal.aborted) {
+            thing.generationStatus = "local";
+            publish();
+            return;
+          }
           thing.generationStatus = "failed";
           addLog({
             agentId: "world",
@@ -1626,6 +1675,9 @@ function createTellusWorld(
             }`,
           });
           publish();
+        })
+        .finally(() => {
+          pendingGenerationControllers.delete(thing.id);
         });
     }
     return thing;
@@ -1646,6 +1698,15 @@ function createTellusWorld(
     const trimmed = message.trim();
     const agent = agents.find((candidate) => candidate.id === agentId);
     if (!trimmed || !agent) return;
+    if (paused) {
+      addLog({
+        agentId: "world",
+        agentName: "Tellus",
+        tool: "interact",
+        text: "Paused: agent chatter is stopped.",
+      });
+      return;
+    }
 
     addLog({
       agentId: "visitor",
@@ -1656,7 +1717,7 @@ function createTellusWorld(
 
     void askAgentForReply(agent, trimmed, generated, logs)
       .then((reply) => {
-        if (destroyed) return;
+        if (destroyed || paused) return;
         addLog({
           agentId: agent.id,
           agentName: agent.name,
@@ -1665,7 +1726,7 @@ function createTellusWorld(
         });
       })
       .catch((error) => {
-        if (destroyed) return;
+        if (destroyed || paused) return;
         addLog({
           agentId: agent.id,
           agentName: agent.name,
@@ -1680,6 +1741,15 @@ function createTellusWorld(
   const submitVisitorPrompt = (prompt: string) => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
+    if (paused) {
+      addLog({
+        agentId: "world",
+        agentName: "Tellus",
+        tool: "generate",
+        text: "Paused: generation is stopped.",
+      });
+      return;
+    }
     if (trimmed.toLowerCase().startsWith("ask ") && generated.length > 0) {
       interact({
         targetId: generated[generated.length - 1].id,
@@ -1700,17 +1770,47 @@ function createTellusWorld(
   };
 
   const setPaused = (nextPaused: boolean) => {
+    if (paused === nextPaused) return;
     paused = nextPaused;
+    if (paused) {
+      abortPendingGeneration();
+      for (const thing of generated) {
+        if (
+          thing.generationStatus === "queued" ||
+          thing.generationStatus === "generating"
+        ) {
+          thing.generationStatus = "local";
+        }
+      }
+    }
+    if (!paused) {
+      const now = performance.now();
+      for (const agent of agents) {
+        agent.nextActionAt =
+          now + TOOL_INTERVAL_MS + rand(now + agent.color) * 2200;
+      }
+    }
+    addLog({
+      agentId: "world",
+      agentName: "Tellus",
+      tool: "interact",
+      text: paused
+        ? "Paused: agent chatter and generation are stopped."
+        : "Resumed: agents may talk and generate again.",
+    });
     publish();
   };
 
   const runAgentTurn = async (agent: TellusAgent): Promise<void> => {
+    if (paused) return;
     if (pendingAgentDecisions.has(agent.id)) return;
     pendingAgentDecisions.add(agent.id);
     try {
+      if (paused) return;
       const shouldInteract =
         generated.length > 3 && rand(performance.now() + agent.color) > 0.68;
       if (shouldInteract) {
+        if (paused) return;
         const target =
           generated[
             Math.floor(rand(performance.now() + agent.position.x) * generated.length)
@@ -1729,7 +1829,7 @@ function createTellusWorld(
       }
 
       const decision = await askAgentForDecision(agent, generated, logs);
-      if (destroyed) return;
+      if (destroyed || paused) return;
       if (decision.speech) {
         addLog({
           agentId: agent.id,
@@ -1749,6 +1849,7 @@ function createTellusWorld(
         creatorId: agent.id,
       });
       if (decision.intent) {
+        if (paused) return;
         interact({
           targetId: thing.id,
           actorId: agent.id,
@@ -1756,7 +1857,7 @@ function createTellusWorld(
         });
       }
     } catch (error) {
-      if (destroyed) return;
+      if (destroyed || paused) return;
       addLog({
         agentId: "world",
         agentName: "Hyades",
@@ -2069,6 +2170,7 @@ function createTellusWorld(
     snapshot,
     destroy: () => {
       destroyed = true;
+      abortPendingGeneration();
       cancelAnimationFrame(animationId);
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", handleKeyDown);
