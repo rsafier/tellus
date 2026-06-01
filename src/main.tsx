@@ -341,20 +341,29 @@ function applyRuntimeConfig(config: unknown): void {
   if (!isRecord(config)) return;
 
   const assetForgeApiBase = config.assetForgeApiBase;
-  if (typeof assetForgeApiBase === "string" && assetForgeApiBase.trim()) {
+  if (
+    !import.meta.env.VITE_ASSET_FORGE_API_BASE?.trim() &&
+    typeof assetForgeApiBase === "string" &&
+    assetForgeApiBase.trim()
+  ) {
     runtimeConfig.assetForgeApiBase = assetForgeApiBase.trim().replace(/\/+$/, "");
   }
 
   const agentModel = config.agentModel;
-  if (typeof agentModel === "string" && agentModel.trim()) {
+  if (
+    !import.meta.env.VITE_TELLUS_AGENT_MODEL?.trim() &&
+    typeof agentModel === "string" &&
+    agentModel.trim()
+  ) {
     runtimeConfig.agentModel = agentModel.trim();
   }
 
   const generationProvider = config.generationProvider;
   if (
-    generationProvider === "local" ||
-    generationProvider === "asset-forge" ||
-    generationProvider === "instantmesh-gradio"
+    !import.meta.env.VITE_TELLUS_GENERATION_PROVIDER?.trim() &&
+    (generationProvider === "local" ||
+      generationProvider === "asset-forge" ||
+      generationProvider === "instantmesh-gradio")
   ) {
     runtimeConfig.generationProvider = generationProvider;
   }
@@ -1531,6 +1540,12 @@ function createTellusWorld(
       runtimeConfig.generationProvider === "asset-forge" &&
       runtimeConfig.assetForgeApiBase
     ) {
+      addLog({
+        agentId: "world",
+        agentName: "Pixel3D",
+        tool: "generate",
+        text: `Sending ${thing.kind} to Pixel3D: "${thing.prompt}"`,
+      });
       void startPixel3DGeneration(thing)
         .then(async (pipeline) => {
           thing.pipelineId = pipeline.pipelineId;
@@ -1573,6 +1588,12 @@ function createTellusWorld(
           publish();
         });
     } else if (runtimeConfig.generationProvider === "instantmesh-gradio") {
+      addLog({
+        agentId: "world",
+        agentName: "InstantMesh",
+        tool: "generate",
+        text: `Sending ${thing.kind} to InstantMesh: "${thing.prompt}"`,
+      });
       void startDirectInstantMeshGeneration(thing)
         .then(async (result) => {
           thing.pipelineId = result.jobId;
