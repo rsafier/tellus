@@ -32,7 +32,7 @@ import "./styles.css";
 
 type AgentId = "johnny" | "mira" | "sol";
 
-type TerrainKind = "meadow" | "rock" | "snow" | "dirt" | "water";
+type TerrainKind = "meadow" | "rock" | "beach" | "dirt" | "water";
 type GeneratedKind =
   | "tree"
   | "flower"
@@ -40,7 +40,7 @@ type GeneratedKind =
   | "animal"
   | "path"
   | "shrine"
-  | "seed";
+  | "animal";
 
 type ToolName = "generate" | "interact";
 
@@ -218,7 +218,7 @@ type MaterialWithTextureMaps = THREE.Material & {
 const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5fa22e),
   rock: new THREE.Color(0x5f7074),
-  snow: new THREE.Color(0xd4e7e2),
+  beach: new THREE.Color(F6DCBD),
   dirt: new THREE.Color(0x8a7241),
   water: new THREE.Color(0x256f92),
 };
@@ -230,7 +230,7 @@ function createAgentSeeds(): TellusAgent[] {
       name: "Johnny",
       epithet: "orchard-maker",
       color: 0x7ec850,
-      goal: "Plant orchards, seed groves, and make the disc feel generous.",
+      goal: "Plant orchards, groves, trees, and flowers to make the disc feel generous and full of abundant life. Plant gardens full of peace and light.",
       avatarUrl: runtimeConfig.avatars.johnny,
       position: { x: -15, y: 0, z: 11 },
       target: { x: -11, y: 0, z: 9 },
@@ -239,9 +239,9 @@ function createAgentSeeds(): TellusAgent[] {
     {
       id: "mira",
       name: "Mira",
-      epithet: "naturalist",
+      epithet: "animal-lover",
       color: 0xe8b86d,
-      goal: "Add animals, flowers, and small habitats around interesting places.",
+      goal: "Create creatures, animals, birds, fish, and reptiles each with a corresponding habitat.",
       avatarUrl: runtimeConfig.avatars.mira,
       position: { x: 18, y: 0, z: 6 },
       target: { x: 13, y: 0, z: 4 },
@@ -250,13 +250,24 @@ function createAgentSeeds(): TellusAgent[] {
     {
       id: "sol",
       name: "Sol",
-      epithet: "stone-dreamer",
+      epithet: "",
       color: 0x98a7ff,
-      goal: "Shape paths, shrines, stones, and mountain rituals.",
+      goal: "Build housing, shrines, and holy places in special spots that pay homage to nature.",
       avatarUrl: runtimeConfig.avatars.sol,
       position: { x: -5, y: 0, z: -21 },
       target: { x: -3, y: 0, z: -17 },
       nextActionAt: 1600,
+    },
+     {
+      id: "atlas",
+      name: "atlas",
+      epithet: "",
+      color: 0x98a7ff,
+      goal: "Build roads, bridges, paths, trails, boats, balloons, and waterways, streams, rivers, ponds, lagoons, wells, and aquaducts.",
+      avatarUrl: runtimeConfig.avatars.sol,
+      position: { x: -5, y: 0, z: -21 },
+      target: { x: -3, y: 0, z: -17 },
+      nextActionAt: 2400,
     },
   ];
 }
@@ -414,11 +425,11 @@ async function startPixel3DGeneration(thing: GeneratedThing): Promise<AssetForge
       enableSprites: false,
       customPrompts: {
         gameStyle:
-          "Tiny cozy WebGPU floating-world asset for Tellus, stylized, readable from a distance, game-ready low-poly proportions.",
+          "A tropical island paradise WebGPU floating-world, assets for Tellus should be on white background with only one object each, stylized, game-ready low-poly proportions.",
       },
       metadata: {
         provider: PIXEL3D_PROVIDER,
-        useGPT5Enhancement: true,
+        useGPT5Enhancement: false,
       },
     }),
   });
@@ -1143,7 +1154,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an autonomous agent inside Tellus, a tiny living WebGPU world. Decide one concise thing to generate next. Return only JSON with keys prompt and intent. The prompt should describe a visible 3D object, plant, animal, landmark, path, or habitat feature.",
+            "You are an autonomous agent inside Tellus, a tiny living WebGPU world. You can generate 3d assets to populate the world however you choose. Decide one concise thing to generate next. Return only JSON with keys prompt and intent. The prompt should be a detailed description of the asset you wich to bring into the world. Whatever you choose it should be a visible 3D object, plant, animal, landmark, agent, or habitat feature.",
         },
         {
           role: "user",
