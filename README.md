@@ -74,7 +74,7 @@ Vercel uses the `/api/chat` serverless function.
 ```text
 HYADES_BASE_URL=http://192.168.1.187
 HYADES_API_KEY=sk-hy-...
-VITE_TELLUS_AGENT_MODEL=nemotron3-omni
+VITE_TELLUS_AGENT_MODEL=glm-5.1
 ```
 
 When configured, Johnny, Mira, and Sol ask `/api/chat` for their next

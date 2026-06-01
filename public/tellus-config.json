@@ -1,7 +1,7 @@
 {
   "assetForgeApiBase": "",
   "generationProvider": "local",
-  "agentModel": "nemotron3-omni",
+  "agentModel": "glm-5.1",
   "skyboxUrl": "/skybox/free_-_skybox_basic_sky.glb",
   "avatars": {}
 }
