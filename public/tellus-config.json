@@ -1,7 +1,7 @@
 {
   "assetForgeApiBase": "",
   "generationProvider": "local",
-  "agentModel": "glm-5.1",
+  "agentModel": "GLM-5.1",
   "skyboxUrl": "/skybox/free_-_skybox_basic_sky.glb",
   "avatars": {}
 }

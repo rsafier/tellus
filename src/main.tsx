@@ -196,7 +196,7 @@ const runtimeConfig: TellusRuntimeConfig = {
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
   agentModel:
     import.meta.env.VITE_TELLUS_AGENT_MODEL ??
-    "glm-5.1",
+    "GLM-5.1",
   generationProvider:
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
@@ -1138,7 +1138,7 @@ async function askAgentForDecision(
     body: JSON.stringify({
       model: runtimeConfig.agentModel,
       temperature: 0.85,
-      max_tokens: 180,
+      max_tokens: 700,
       messages: [
         {
           role: "system",
