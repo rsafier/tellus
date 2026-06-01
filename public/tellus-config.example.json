@@ -1,6 +1,6 @@
 {
   "assetForgeApiBase": "",
-  "generationProvider": "instantmesh-gradio",
+  "generationProvider": "local",
   "agentModel": "glm-5.1",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "avatars": {
