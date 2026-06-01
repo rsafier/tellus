@@ -116,6 +116,7 @@ interface TellusWorldApi {
 interface TellusRuntimeConfig {
   assetForgeApiBase: string;
   agentModel: string;
+  generationProvider: "local" | "asset-forge" | "instantmesh-gradio";
   skyboxUrl: string;
   avatars: Partial<Record<AgentId, string>>;
 }
@@ -147,6 +148,12 @@ interface AssetForgePipelineStatus {
     modelUrl?: string;
   };
   error?: string;
+}
+
+interface DirectGenerationResponse {
+  jobId: string;
+  modelUrl: string;
+  provider: string;
 }
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
@@ -190,6 +197,10 @@ const runtimeConfig: TellusRuntimeConfig = {
   agentModel:
     import.meta.env.VITE_TELLUS_AGENT_MODEL ??
     "gpt-5.4-mini",
+  generationProvider:
+    (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
+      | TellusRuntimeConfig["generationProvider"]
+      | undefined) ?? "local",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
   avatars: {
     johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
@@ -322,6 +333,15 @@ function applyRuntimeConfig(config: unknown): void {
     runtimeConfig.agentModel = agentModel.trim();
   }
 
+  const generationProvider = config.generationProvider;
+  if (
+    generationProvider === "local" ||
+    generationProvider === "asset-forge" ||
+    generationProvider === "instantmesh-gradio"
+  ) {
+    runtimeConfig.generationProvider = generationProvider;
+  }
+
   const skyboxUrl = config.skyboxUrl;
   if (typeof skyboxUrl === "string" && skyboxUrl.trim()) {
     runtimeConfig.skyboxUrl = skyboxUrl.trim();
@@ -420,6 +440,28 @@ async function waitForPixel3DModelUrl(pipelineId: string): Promise<string> {
     }
   }
   throw new Error(`Pipeline ${pipelineId} timed out`);
+}
+
+function hasExternalGenerationProvider(): boolean {
+  if (runtimeConfig.generationProvider === "asset-forge") {
+    return Boolean(runtimeConfig.assetForgeApiBase);
+  }
+  return runtimeConfig.generationProvider === "instantmesh-gradio";
+}
+
+async function startDirectInstantMeshGeneration(
+  thing: GeneratedThing,
+): Promise<DirectGenerationResponse> {
+  const response = await fetch("/api/generate-3d", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: thing.id,
+      prompt: thing.prompt,
+      kind: thing.kind,
+    }),
+  });
+  return readJsonResponse<DirectGenerationResponse>(response);
 }
 
 function createTerrainGeometry(): THREE.BufferGeometry {
@@ -1266,7 +1308,7 @@ function createTellusWorld(
       position,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
       color: kindColor(kind, request.prompt),
-      generationStatus: runtimeConfig.assetForgeApiBase ? "queued" : "local",
+      generationStatus: hasExternalGenerationProvider() ? "queued" : "local",
     };
     generated.push(thing);
     const mesh = createGeneratedMesh(thing);
@@ -1281,7 +1323,10 @@ function createTellusWorld(
       text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
     });
 
-    if (runtimeConfig.assetForgeApiBase) {
+    if (
+      runtimeConfig.generationProvider === "asset-forge" &&
+      runtimeConfig.assetForgeApiBase
+    ) {
       void startPixel3DGeneration(thing)
         .then(async (pipeline) => {
           thing.pipelineId = pipeline.pipelineId;
@@ -1318,6 +1363,40 @@ function createTellusWorld(
             agentName: "Pixel3D",
             tool: "interact",
             text: `Pixel3D generation fell back to local mesh: ${
+              error instanceof Error ? error.message : "unknown error"
+            }`,
+          });
+          publish();
+        });
+    } else if (runtimeConfig.generationProvider === "instantmesh-gradio") {
+      void startDirectInstantMeshGeneration(thing)
+        .then(async (result) => {
+          thing.pipelineId = result.jobId;
+          thing.modelUrl = result.modelUrl;
+          thing.generationStatus = "ready";
+          addLog({
+            agentId: "world",
+            agentName: "InstantMesh",
+            tool: "generate",
+            text: `Generated ${thing.kind} model for "${thing.prompt}"`,
+          });
+          const model = await loadGeneratedModel(result.modelUrl, thing);
+          const oldMesh = generatedMeshes.get(thing.id);
+          if (oldMesh) {
+            scene.remove(oldMesh);
+            disposeObject(oldMesh);
+          }
+          generatedMeshes.set(thing.id, model);
+          scene.add(model);
+          publish();
+        })
+        .catch((error) => {
+          thing.generationStatus = "failed";
+          addLog({
+            agentId: "world",
+            agentName: "InstantMesh",
+            tool: "interact",
+            text: `InstantMesh generation fell back to local mesh: ${
               error instanceof Error ? error.message : "unknown error"
             }`,
           });

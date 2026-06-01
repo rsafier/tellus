@@ -18,10 +18,32 @@ bun run dev
 
 Open <http://localhost:3344/>.
 
-## Pixel3D / Asset Forge
+## 3D Generation
 
-Tellus can call an Asset Forge instance for Pixel3D generation. Configure the
-browser-visible API base URL:
+Tellus supports three generation modes:
+
+```text
+VITE_TELLUS_GENERATION_PROVIDER=local
+VITE_TELLUS_GENERATION_PROVIDER=asset-forge
+VITE_TELLUS_GENERATION_PROVIDER=instantmesh-gradio
+```
+
+`local` keeps the fast procedural meshes. `asset-forge` calls the Asset Forge
+pipeline. `instantmesh-gradio` calls a direct InstantMesh Gradio adapter through
+Tellus' own `/api/generate-3d` endpoint.
+
+For direct InstantMesh:
+
+```text
+INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
+INSTANTMESH_SAMPLE_STEPS=30
+```
+
+InstantMesh is image-to-3D, while Tellus agents speak in text prompts. The
+adapter creates a simple concept image from the prompt, sends it to InstantMesh,
+and returns a proxied GLB URL that the WebGPU scene can load.
+
+For Asset Forge / Pixel3D, configure the browser-visible API base URL:
 
 ```bash
 cp .env.example .env.local

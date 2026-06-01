@@ -1,5 +1,34 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import generate3DHandler from "./api/generate-3d";
+import gradioFileHandler from "./api/gradio-file";
+
+async function bodyFromRequest(request: import("node:http").IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function sendWebResponse(
+  response: import("node:http").ServerResponse,
+  webResponse: Response,
+) {
+  response.statusCode = webResponse.status;
+  webResponse.headers.forEach((value, key) => response.setHeader(key, value));
+  if (!webResponse.body) {
+    response.end();
+    return;
+  }
+  const reader = webResponse.body.getReader();
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    response.write(Buffer.from(next.value));
+  }
+  response.end();
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -7,7 +36,6 @@ export default defineConfig(({ mode }) => {
   const hyadesApiKey = env.HYADES_API_KEY;
 
   return {
-    plugins: [react()],
     server: {
       host: true,
       port: 3344,
@@ -33,5 +61,43 @@ export default defineConfig(({ mode }) => {
           }
         : undefined,
     },
+    plugins: [
+      react(),
+      {
+        name: "tellus-api-dev",
+        configureServer(server) {
+          server.middlewares.use(async (request, response, next) => {
+            if (!request.url?.startsWith("/api/generate-3d")) {
+              next();
+              return;
+            }
+            const body = await bodyFromRequest(request);
+            const webRequest = new Request(
+              `http://localhost${request.url}`,
+              {
+                method: request.method ?? "GET",
+                headers: request.headers as HeadersInit,
+                body:
+                  request.method === "GET" || request.method === "HEAD"
+                    ? undefined
+                    : body,
+              },
+            );
+            await sendWebResponse(response, await generate3DHandler(webRequest));
+          });
+          server.middlewares.use(async (request, response, next) => {
+            if (!request.url?.startsWith("/api/gradio-file")) {
+              next();
+              return;
+            }
+            const webRequest = new Request(`http://localhost${request.url}`, {
+              method: request.method,
+              headers: request.headers as HeadersInit,
+            });
+            await sendWebResponse(response, await gradioFileHandler(webRequest));
+          });
+        },
+      },
+    ],
   };
 });
