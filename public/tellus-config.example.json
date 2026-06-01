@@ -1,7 +1,7 @@
 {
   "assetForgeApiBase": "",
   "generationProvider": "instantmesh-gradio",
-  "agentModel": "gpt-5.4-mini",
+  "agentModel": "nemotron3-omni",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "avatars": {
     "johnny": "https://cdn.example.com/tellus/johnny.glb",

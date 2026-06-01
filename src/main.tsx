@@ -196,7 +196,7 @@ const runtimeConfig: TellusRuntimeConfig = {
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
   agentModel:
     import.meta.env.VITE_TELLUS_AGENT_MODEL ??
-    "gpt-5.4-mini",
+    "nemotron3-omni",
   generationProvider:
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
