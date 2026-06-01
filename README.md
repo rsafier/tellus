@@ -18,6 +18,27 @@ bun run dev
 
 Open <http://localhost:3344/>.
 
+## Coolify
+
+Deploy Tellus as a Dockerfile-based app. The container listens on port `3000`
+and serves both the built WebGPU client and the required `/api/*` routes.
+
+Set these Coolify environment variables:
+
+```text
+PORT=3000
+VITE_TELLUS_GENERATION_PROVIDER=instantmesh-gradio
+INSTANTMESH_GRADIO_BASE_URL=https://your-public-instantmesh-gradio-url
+INSTANTMESH_SAMPLE_STEPS=30
+ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
+ZAI_API_KEY=...
+ZAI_MODEL=GLM-5.1
+```
+
+`INSTANTMESH_GRADIO_BASE_URL` must be reachable from the Coolify server. If the
+InstantMesh app only exists on a home LAN, expose it first through a VPN,
+reverse proxy, or tunnel.
+
 ## 3D Generation
 
 Tellus supports three generation modes:

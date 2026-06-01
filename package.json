@@ -12,6 +12,7 @@
     "dev": "vite --host --port 3344 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host --port 4344",
+    "start": "bun server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },

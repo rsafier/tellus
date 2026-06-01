@@ -4,6 +4,15 @@ const ALLOWED_GRADIO_HOSTS = new Set([
   "127.0.0.1:43839",
 ]);
 
+function allowedGradioHosts(): Set<string> {
+  const hosts = new Set(ALLOWED_GRADIO_HOSTS);
+  const configuredBaseUrl = process.env.INSTANTMESH_GRADIO_BASE_URL?.trim();
+  if (configuredBaseUrl) {
+    hosts.add(new URL(configuredBaseUrl).host);
+  }
+  return hosts;
+}
+
 export async function gradioFileHandler(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const rawUrl = url.searchParams.get("url");
@@ -12,7 +21,7 @@ export async function gradioFileHandler(request: Request): Promise<Response> {
   }
 
   const target = new URL(rawUrl);
-  if (!ALLOWED_GRADIO_HOSTS.has(target.host)) {
+  if (!allowedGradioHosts().has(target.host)) {
     return new Response("Blocked Gradio file host", { status: 403 });
   }
 
