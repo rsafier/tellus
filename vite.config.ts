@@ -4,6 +4,7 @@ import chatHandler from "./api/chat";
 import generate3DHandler from "./api/generate-3d";
 import generatedAssetsHandler from "./api/generated-assets";
 import gradioFileHandler from "./api/gradio-file";
+import tellusStateHandler from "./api/tellus-state";
 
 async function bodyFromRequest(request: import("node:http").IncomingMessage) {
   const chunks: Buffer[] = [];
@@ -155,6 +156,22 @@ export default defineConfig(({ mode }) => {
               headers: request.headers as HeadersInit,
             });
             await sendWebResponse(response, await gradioFileHandler(webRequest));
+          });
+          server.middlewares.use(async (request, response, next) => {
+            if (!request.url?.startsWith("/api/tellus-state")) {
+              next();
+              return;
+            }
+            const body = await bodyFromRequest(request);
+            const webRequest = new Request(`http://localhost${request.url}`, {
+              method: request.method ?? "GET",
+              headers: request.headers as HeadersInit,
+              body:
+                request.method === "GET" || request.method === "HEAD"
+                  ? undefined
+                  : body,
+            });
+            await sendWebResponse(response, await tellusStateHandler(webRequest));
           });
           server.middlewares.use(async (request, response, next) => {
             if (!request.url?.startsWith("/generated-assets/")) {

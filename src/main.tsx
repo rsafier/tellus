@@ -251,6 +251,7 @@ const TERRAIN_SCULPT_STEP = 0.72;
 const terrainSculptOffsets = new Float32Array(
   TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
 );
+let terrainSaveTimer: number | undefined;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
@@ -750,6 +751,64 @@ async function loadRuntimeConfigFile(path: string): Promise<void> {
 async function loadRuntimeConfig(): Promise<void> {
   await loadRuntimeConfigFile("/tellus-config.json");
   await loadRuntimeConfigFile("/tellus-config.local.json");
+}
+
+function terrainOffsetsPayload(): number[] {
+  return Array.from(terrainSculptOffsets, (value) => Number(value.toFixed(4)));
+}
+
+async function loadTellusState(): Promise<void> {
+  const response = await fetch("/api/tellus-state", { cache: "no-store" });
+  if (!response.ok) return;
+  const parsed = (await response.json()) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+  const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
+  if (!Array.isArray(offsets)) return;
+  terrainSculptOffsets.fill(0);
+  for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
+    const value = offsets[i];
+    terrainSculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
+      ? clamp(value, -9, 9)
+      : 0;
+  }
+}
+
+function saveTellusStateSoon(): void {
+  if (terrainSaveTimer !== undefined) {
+    window.clearTimeout(terrainSaveTimer);
+  }
+  terrainSaveTimer = window.setTimeout(() => {
+    terrainSaveTimer = undefined;
+    void fetch("/api/tellus-state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        terrainSculptOffsets: terrainOffsetsPayload(),
+        savedAt: new Date().toISOString(),
+      }),
+    }).catch((error) => {
+      console.warn("Tellus state save failed", error);
+    });
+  }, 650);
+}
+
+function saveTellusStateNow(): void {
+  if (terrainSaveTimer !== undefined) {
+    window.clearTimeout(terrainSaveTimer);
+    terrainSaveTimer = undefined;
+  }
+  void fetch("/api/tellus-state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      version: 1,
+      terrainSculptOffsets: terrainOffsetsPayload(),
+      savedAt: new Date().toISOString(),
+    }),
+  }).catch((error) => {
+    console.warn("Tellus state save failed", error);
+  });
 }
 
 function toAssetId(prompt: string, prefix: string): string {
@@ -2214,6 +2273,7 @@ function createTellusWorld(
       tool: "interact",
       text: `${mode} terrain near the visitor`,
     });
+    saveTellusStateSoon();
     publish();
   };
 
@@ -3221,6 +3281,7 @@ function createTellusWorld(
       if (renderer?.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
       }
+      saveTellusStateNow();
     },
   };
 }
@@ -3285,9 +3346,9 @@ function App(): React.ReactElement {
     if (!container) return;
     let cancelled = false;
     let world: TellusWorldApi | null = null;
-    void loadRuntimeConfig()
+    void Promise.all([loadRuntimeConfig(), loadTellusState()])
       .catch((error) => {
-        console.warn("Tellus runtime config failed to load", error);
+        console.warn("Tellus startup state failed to load", error);
       })
       .then(() => {
         if (cancelled) return;
