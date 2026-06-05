@@ -948,9 +948,11 @@ async function startDirectInstantMeshGeneration(
 async function waitForDirectGeneration(
   initial: DirectGenerationResponse,
   signal?: AbortSignal,
+  onStatus?: (status: DirectGenerationResponse["status"]) => void,
 ): Promise<DirectGenerationResponse> {
   if (initial.modelUrl && initial.status !== "failed") return initial;
   const deadline = Date.now() + 22 * 60 * 1000;
+  let lastStatus = initial.status;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     await new Promise((resolve) => window.setTimeout(resolve, 4000));
@@ -962,6 +964,10 @@ async function waitForDirectGeneration(
     const status = await readJsonResponse<DirectGenerationResponse>(response);
     if (status.status === "failed") {
       throw new Error(status.error ?? `Generation job ${initial.jobId} failed`);
+    }
+    if (status.status && status.status !== lastStatus) {
+      lastStatus = status.status;
+      onStatus?.(status.status);
     }
     if (status.modelUrl) return status;
   }
@@ -2112,6 +2118,14 @@ function createTellusWorld(
   let selectedThingId: string | undefined;
   let sailingThingId: string | undefined;
 
+  const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
+    generated.some(
+      (thing) =>
+        (!creatorId || thing.creatorId === creatorId) &&
+        (thing.generationStatus === "queued" ||
+          thing.generationStatus === "generating"),
+    );
+
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xa7c3ef);
   scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
@@ -2637,16 +2651,32 @@ function createTellusWorld(
         .then(async (initialResult) => {
           if (destroyed || paused || !thingById(thing.id)) return;
           thing.pipelineId = initialResult.jobId;
-          thing.generationStatus = "generating";
+          thing.generationStatus =
+            initialResult.status === "queued" ? "queued" : "generating";
           addLog({
             agentId: "world",
             agentName: providerName,
             tool: "generate",
-            text: `Queued ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId})`,
+            text:
+              initialResult.status === "queued"
+                ? `Queued ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId}); waiting for the Pixal3D worker.`
+                : `Started ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId})`,
           });
           const result = await waitForDirectGeneration(
             initialResult,
             generationController.signal,
+            (status) => {
+              if (destroyed || paused || !thingById(thing.id)) return;
+              if (status === "queued" || status === "generating") {
+                thing.generationStatus = status;
+                addLog({
+                  agentId: "world",
+                  agentName: providerName,
+                  tool: "generate",
+                  text: `${providerName} job ${initialResult.jobId} is ${status}.`,
+                });
+              }
+            },
           );
           if (destroyed || paused || !thingById(thing.id)) return;
           if (!result.modelUrl) {
@@ -2967,6 +2997,14 @@ function createTellusWorld(
       }
 
       if (!paused && now >= agent.nextActionAt) {
+        if (hasPendingGeneratedAsset(agent.id)) {
+          agent.nextActionAt = now + 15_000;
+          if (now >= agent.nextReflectionAt) {
+            runAgentReflection(agent);
+            agent.nextReflectionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
+          }
+          continue;
+        }
         void runAgentTurn(agent);
         agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
         agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;

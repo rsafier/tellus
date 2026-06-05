@@ -39,6 +39,7 @@ interface GenerationJob {
   result?: Generate3DResponse;
   error?: string;
   createdAt: number;
+  startedAt?: number;
 }
 
 interface LegacyPredictResponse {
@@ -141,6 +142,7 @@ interface ComfyHistoryResponse {
 }
 
 const generationJobs = new Map<string, GenerationJob>();
+let generationQueueTail: Promise<void> = Promise.resolve();
 
 function conceptImageDataUrl(prompt: string, kind: string): string {
   const width = 256;
@@ -1267,17 +1269,22 @@ function startGenerationJob(params: {
     createdAt: Date.now(),
   };
   generationJobs.set(job.id, job);
-  void executeGeneration(params)
-    .then((result) => {
+
+  const run = async () => {
+    job.status = "generating";
+    job.startedAt = Date.now();
+    try {
+      const result = await executeGeneration(params);
       job.status = "completed";
       job.result = result;
-    })
-    .catch((error) => {
+    } catch (error) {
       job.status = "failed";
       job.error =
         error instanceof Error ? error.message : "Pixal3D generation failed";
-    });
-  job.status = "generating";
+    }
+  };
+
+  generationQueueTail = generationQueueTail.then(run, run);
   return job;
 }
 
