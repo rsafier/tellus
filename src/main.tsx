@@ -973,6 +973,7 @@ async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<T
   const model = await loadGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, clamp(thing.scale * 2.25, 1.2, 4.2));
+  fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind };
   if (isFreeMovingVehicle(thing)) {
     fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
   } else {
@@ -1739,6 +1740,9 @@ function createTellusWorld(
   let isDragging = false;
   let pointerX = 0;
   let pointerY = 0;
+  let pointerTravel = 0;
+  const pointerNdc = new THREE.Vector2();
+  const raycaster = new THREE.Raycaster();
 
   const snapshot = (): TellusSnapshot => ({
     agents: agents.map((agent) => ({
@@ -2509,6 +2513,7 @@ function createTellusWorld(
     keys.delete(event.key.toLowerCase());
   const handlePointerDown = (event: PointerEvent) => {
     isDragging = true;
+    pointerTravel = 0;
     pointerX = event.clientX;
     pointerY = event.clientY;
   };
@@ -2516,12 +2521,39 @@ function createTellusWorld(
     if (!isDragging) return;
     const dx = event.clientX - pointerX;
     const dy = event.clientY - pointerY;
+    pointerTravel += Math.hypot(dx, dy);
     pointerX = event.clientX;
     pointerY = event.clientY;
     yaw -= dx * 0.006;
     pitch = clamp(pitch - dy * 0.003, -0.82, -0.08);
   };
-  const handlePointerUp = () => {
+  const selectGeneratedAtPointer = (event: PointerEvent) => {
+    const rect = container.getBoundingClientRect();
+    pointerNdc.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    raycaster.setFromCamera(pointerNdc, camera);
+    const intersections = raycaster.intersectObjects(
+      [...generatedMeshes.values()],
+      true,
+    );
+    for (const intersection of intersections) {
+      let object: THREE.Object3D | null = intersection.object;
+      while (object) {
+        const tellusId = object.userData.tellusId;
+        if (typeof tellusId === "string") {
+          selectGenerated(tellusId);
+          return;
+        }
+        object = object.parent;
+      }
+    }
+  };
+  const handlePointerUp = (event: PointerEvent) => {
+    if (isDragging && pointerTravel < 6) {
+      selectGeneratedAtPointer(event);
+    }
     isDragging = false;
   };
   const handleWheel = (event: WheelEvent) => {
