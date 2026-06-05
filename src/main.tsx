@@ -2326,6 +2326,73 @@ function chooseAgentLocation(
   return "near-agent";
 }
 
+function compassDirection(from: Vec3, to: Vec3): string {
+  const angle = Math.atan2(to.z - from.z, to.x - from.x);
+  const directions = ["east", "southeast", "south", "southwest", "west", "northwest", "north", "northeast"];
+  const index = Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % directions.length;
+  return directions[index];
+}
+
+function describeAgentPerception(
+  agent: TellusAgent,
+  generated: GeneratedThing[],
+  logs: TellusLog[],
+): string {
+  const groundHeight = terrainHeight(agent.position.x, agent.position.z);
+  const localTerrain = terrainKind(agent.position.x, agent.position.z, groundHeight);
+  const distanceToPond = Math.hypot(
+    agent.position.x - POND_CENTER.x,
+    agent.position.z - POND_CENTER.z,
+  );
+  const distanceToSummit = Math.hypot(agent.position.x, agent.position.z);
+  const distanceToShore = Math.max(0, WORLD_RADIUS - Math.hypot(agent.position.x, agent.position.z));
+  const nearby = generated
+    .map((thing) => ({
+      thing,
+      distance: distance2D(agent.position, thing.position),
+    }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 8)
+    .map(({ thing, distance }) => {
+      const status = thing.generationStatus && thing.generationStatus !== "ready"
+        ? `, ${thing.generationStatus}`
+        : "";
+      return `- ${Math.round(distance)}m ${compassDirection(agent.position, thing.position)}: ${thing.kind} "${thing.prompt}"${status}, ${thing.scale.toFixed(1)}x`;
+    })
+    .join("\n");
+  const lastOwnAsset = [...generated]
+    .reverse()
+    .find((thing) => thing.creatorId === agent.id);
+  const pending = generated
+    .filter(
+      (thing) =>
+        thing.generationStatus === "queued" ||
+        thing.generationStatus === "generating",
+    )
+    .map((thing) => `- ${thing.kind} "${thing.prompt}" by ${thing.creatorId}: ${thing.generationStatus}`)
+    .join("\n");
+  const recentChanges = logs
+    .filter(
+      (log) =>
+        log.tool === "generate" ||
+        log.text.includes("terrain") ||
+        log.text.includes("Loaded") ||
+        log.text.includes("deleted"),
+    )
+    .slice(-6)
+    .map((log) => `- ${log.agentName}: ${log.text}`)
+    .join("\n");
+
+  return [
+    `You are at x ${agent.position.x.toFixed(1)}, z ${agent.position.z.toFixed(1)}, on ${localTerrain} terrain at height ${groundHeight.toFixed(1)}.`,
+    `Landmarks: pond ${Math.round(distanceToPond)}m away, mountain summit ${Math.round(distanceToSummit)}m away, shore ${Math.round(distanceToShore)}m away.`,
+    `Nearby visible assets:\n${nearby || "none nearby"}`,
+    `Your last generated asset: ${lastOwnAsset ? `${lastOwnAsset.kind} "${lastOwnAsset.prompt}" (${lastOwnAsset.generationStatus ?? "local"})` : "none yet"}`,
+    `Pending asset generation:\n${pending || "none"}`,
+    `Recent visible world changes:\n${recentChanges || "none"}`,
+  ].join("\n\n");
+}
+
 function chatContent(completion: ChatCompletionResponse): string {
   return completion.choices?.[0]?.message?.content?.trim() ?? "";
 }
@@ -2348,6 +2415,7 @@ async function askAgentForDecision(
     .slice(-8)
     .map((log) => `${log.agentName}: ${log.text}`)
     .join("\n");
+  const perception = describeAgentPerception(agent, generated, logs);
 
   const response = await fetch("/api/chat", {
     method: "POST",
@@ -2360,13 +2428,14 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You may generate any visible 3D asset you want: an object, plant, animal, character, building, tool, vehicle, bridge, path segment, terrain feature, water feature, habitat prop, landmark, or other game-ready prop. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt must describe exactly one single asset, not a scene, set, collection, habitat, landscape, or group of objects. Do not repeat or paraphrase any existing object. The speech should be one short in-character sentence said aloud before you act.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual view of where you are, what terrain is underfoot, what objects are nearby, what is pending, and what recently changed. Use that perception to decide one useful visible 3D asset to generate next, especially something that belongs near what you can see. Return only JSON with keys prompt, intent, and speech. The prompt must describe exactly one single asset, not a scene, set, collection, habitat, landscape, or group of objects. Do not repeat or paraphrase any existing object. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
           content: [
             `Agent: ${agent.name}, ${agent.epithet}`,
             `Goal: ${agent.goal}`,
+            `Current perception:\n${perception}`,
             `Current generated count: ${generated.length}`,
             `Recent objects:\n${recentObjects || "none yet"}`,
             `Do not generate these again, even as near synonyms:\n${forbiddenPrompts || "none yet"}`,
@@ -2393,6 +2462,7 @@ async function askAgentForReply(
   generated: GeneratedThing[],
   logs: TellusLog[],
 ): Promise<string> {
+  const perception = describeAgentPerception(agent, generated, logs);
   const recentObjects = generated
     .slice(-10)
     .map((thing) => `${thing.kind}: ${thing.prompt}`)
@@ -2419,6 +2489,7 @@ async function askAgentForReply(
           content: [
             `Agent: ${agent.name}, ${agent.epithet}`,
             `Goal: ${agent.goal}`,
+            `Current perception:\n${perception}`,
             `Visitor says: ${message}`,
             `Recent objects:\n${recentObjects || "none yet"}`,
             `Recent logs:\n${recentLogs || "none yet"}`,
