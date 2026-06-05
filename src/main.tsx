@@ -43,6 +43,7 @@ import {
 } from "three/tsl";
 import {
   type TellusTerrainState,
+  type WorldPresence,
   type WorldPatch,
   isTellusTerrainState,
 } from "./world-protocol";
@@ -1157,6 +1158,25 @@ function terrainFromWorldPatch(parsed: unknown): TellusTerrainState | null {
   return null;
 }
 
+function presenceFromWorldPatch(parsed: unknown): WorldPresence[] | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const patch = parsed as Partial<WorldPatch>;
+  if (
+    (patch.type === "world.snapshot" || patch.type === "presence.updated") &&
+    Array.isArray(patch.presence)
+  ) {
+    return patch.presence.filter(
+      (presence): presence is WorldPresence =>
+        typeof presence.visitorId === "string" &&
+        typeof presence.connectedAt === "string" &&
+        typeof presence.lastSeenAt === "string",
+    );
+  }
+  return null;
+}
+
 async function loadTellusWorldState(): Promise<boolean> {
   const response = await fetch(tellusWorldHttpUrl("state"), { cache: "no-store" });
   if (!response.ok) return false;
@@ -2079,6 +2099,38 @@ function createVisitorMesh(): THREE.Group {
   return group;
 }
 
+function createRemoteVisitorMesh(): THREE.Group {
+  const group = new THREE.Group();
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: 0x8fb8ff,
+    roughness: 0.7,
+  });
+  const markerMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf5f0b8,
+    emissive: 0x334466,
+    emissiveIntensity: 0.35,
+    roughness: 0.55,
+  });
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.46, 1.08, 6, 12),
+    bodyMaterial,
+  );
+  body.position.y = 1.02;
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.38, 16, 12),
+    bodyMaterial,
+  );
+  head.position.y = 1.98;
+  const marker = new THREE.Mesh(
+    new THREE.TorusGeometry(0.52, 0.035, 8, 28),
+    markerMaterial,
+  );
+  marker.position.y = 2.58;
+  marker.rotation.x = Math.PI / 2;
+  group.add(body, head, marker);
+  return group;
+}
+
 function inferGeneratedKind(
   prompt: string,
   agentId: AgentId | "visitor",
@@ -2856,6 +2908,9 @@ function createTellusWorld(
   let worldSocket: WebSocket | null = null;
   let worldSocketReconnectTimer: number | undefined;
   let worldSocketClosedByDestroy = false;
+  const visitorId = tellusVisitorId();
+  const remoteVisitorMeshes = new Map<string, THREE.Group>();
+  let lastPresenceSentAt = 0;
 
   const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
     generated.some(
@@ -3017,9 +3072,46 @@ function createTellusWorld(
     publish();
   };
 
+  const applyRemotePresence = (presence: WorldPresence[]) => {
+    const activeRemoteIds = new Set<string>();
+    for (const remote of presence) {
+      if (remote.visitorId === visitorId || !remote.position) continue;
+      activeRemoteIds.add(remote.visitorId);
+      let mesh = remoteVisitorMeshes.get(remote.visitorId);
+      if (!mesh) {
+        mesh = createRemoteVisitorMesh();
+        remoteVisitorMeshes.set(remote.visitorId, mesh);
+        scene.add(mesh);
+      }
+      const position = groundedPosition(
+        remote.position.x,
+        remote.position.z,
+        remote.position,
+      );
+      mesh.position.set(position.x, position.y, position.z);
+      mesh.userData.lastSeenAt = remote.lastSeenAt;
+    }
+    for (const [remoteId, mesh] of remoteVisitorMeshes) {
+      if (activeRemoteIds.has(remoteId)) continue;
+      scene.remove(mesh);
+      remoteVisitorMeshes.delete(remoteId);
+    }
+  };
+
+  const sendPresenceUpdate = (force = false) => {
+    if (!worldSocket || worldSocket.readyState !== WebSocket.OPEN) return;
+    const now = performance.now();
+    if (!force && now - lastPresenceSentAt < 300) return;
+    lastPresenceSentAt = now;
+    worldSocket.send(JSON.stringify({
+      type: "presence.update",
+      visitorId,
+      position: visitorPosition,
+    }));
+  };
+
   const connectTellusWorldRealtime = () => {
     if (!tellusWorldBackendAvailable || worldSocket || destroyed) return;
-    const visitorId = tellusVisitorId();
     const socket = new WebSocket(tellusWorldWebSocketUrl(visitorId));
     worldSocket = socket;
 
@@ -3034,14 +3126,14 @@ function createTellusWorld(
       if (terrainState) {
         applyRemoteTerrainState(terrainState);
       }
+      const presence = presenceFromWorldPatch(parsed);
+      if (presence) {
+        applyRemotePresence(presence);
+      }
     });
 
     socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({
-        type: "presence.update",
-        visitorId,
-        position: visitorPosition,
-      }));
+      sendPresenceUpdate(true);
     });
 
     socket.addEventListener("close", () => {
@@ -4001,6 +4093,7 @@ function createTellusWorld(
           mesh.rotation.y = boat.rotationY;
         }
       }
+      sendPresenceUpdate();
       publish();
       return;
     }
@@ -4009,6 +4102,7 @@ function createTellusWorld(
       visitorPosition.z + movement.z,
       visitorPosition,
     );
+    sendPresenceUpdate();
   };
 
   const moveAgents = (now: number, delta: number) => {
@@ -4064,6 +4158,7 @@ function createTellusWorld(
       visitorPosition.z,
     );
     visitor.rotation.y = yaw;
+    sendPresenceUpdate();
 
     const ripples = pondWater.getObjectByName("tellus-pond-ripples");
     if (ripples) {
@@ -4510,6 +4605,10 @@ function createTellusWorld(
         window.clearTimeout(worldSocketReconnectTimer);
       }
       worldSocket?.close();
+      for (const mesh of remoteVisitorMeshes.values()) {
+        scene.remove(mesh);
+      }
+      remoteVisitorMeshes.clear();
       resizeObserver?.disconnect();
       renderer?.dispose();
       if (renderer?.domElement.parentElement === container) {
