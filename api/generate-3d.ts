@@ -58,7 +58,13 @@ interface GeneratedAssetManifestEntry {
 
 interface TextImageResult {
   imageUrl: string;
-  provider: "request" | "openai" | "automatic1111" | "comfyui" | "procedural";
+  provider:
+    | "request"
+    | "openai"
+    | "automatic1111"
+    | "comfyui"
+    | "gradio"
+    | "procedural";
   imagePrompt: string;
   storedImageUrl?: string;
   storedImagePath?: string;
@@ -76,6 +82,17 @@ interface OpenAIImageResponse {
 
 interface Automatic1111ImageResponse {
   images?: string[];
+  error?: string;
+}
+
+interface GradioImageResponse {
+  data?: [
+    FileLikeResult,
+    number,
+    string,
+    number,
+    ...unknown[],
+  ];
   error?: string;
 }
 
@@ -430,6 +447,57 @@ async function generateAutomatic1111ConceptImage(
   };
 }
 
+async function generateGradioConceptImage(
+  prompt: string,
+  kind: string,
+): Promise<TextImageResult> {
+  const baseUrl = (
+    process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
+    process.env.TELLUS_GRADIO_IMAGE_BASE_URL?.trim() ||
+    ""
+  ).replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("TELLUS_TEXT_TO_IMAGE_BASE_URL is not configured");
+  }
+
+  const imagePrompt = imageGenerationPrompt(prompt, kind);
+  const response = await fetch(
+    `${baseUrl}/gradio_api/api/${
+      process.env.TELLUS_GRADIO_IMAGE_API_NAME?.trim() || "generate_image"
+    }`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data: [
+          imagePrompt,
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 9),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_SEED || 42),
+          process.env.TELLUS_TEXT_TO_IMAGE_RANDOM_SEED !== "false",
+        ],
+      }),
+    },
+  );
+  const body = (await response.json()) as GradioImageResponse;
+  if (!response.ok || body.error) {
+    throw new Error(
+      body.error ?? `Gradio image request failed with HTTP ${response.status}`,
+    );
+  }
+
+  const image = body.data?.[0];
+  const imageUrl = image?.url || image?.path;
+  if (!imageUrl) throw new Error("Gradio image request returned no image");
+  return {
+    imageUrl,
+    provider: "gradio",
+    imagePrompt,
+    storedImagePath: body.data?.[2],
+  };
+}
+
 function builtInComfyWorkflow(imagePrompt: string): Record<string, unknown> {
   const checkpoint = process.env.TELLUS_COMFYUI_CHECKPOINT?.trim() || "zTurbo.safetensors";
   const width = Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024);
@@ -628,17 +696,30 @@ async function createTextImage(
 
   const provider = (
     process.env.TELLUS_TEXT_TO_IMAGE_PROVIDER?.trim().toLowerCase() || "auto"
-  ) as "auto" | "openai" | "automatic1111" | "comfyui" | "procedural" | "none";
+  ) as
+    | "auto"
+    | "openai"
+    | "automatic1111"
+    | "comfyui"
+    | "gradio"
+    | "procedural"
+    | "none";
 
   const attempts: Array<() => Promise<TextImageResult>> = [];
   if (provider === "openai") attempts.push(() => generateOpenAIConceptImage(prompt, kind));
   if (provider === "automatic1111") {
     attempts.push(() => generateAutomatic1111ConceptImage(prompt, kind));
   }
+  if (provider === "gradio") {
+    attempts.push(() => generateGradioConceptImage(prompt, kind));
+  }
   if (provider === "comfyui") {
     attempts.push(() => generateComfyUIConceptImage(prompt, kind));
   }
   if (provider === "auto") {
+    if (process.env.TELLUS_GRADIO_IMAGE_BASE_URL?.trim()) {
+      attempts.push(() => generateGradioConceptImage(prompt, kind));
+    }
     if (
       process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
       process.env.COMFYUI_BASE_URL?.trim() ||
@@ -808,7 +889,7 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   } catch {
     // The GLB is the critical artifact. Keep going if image persistence fails.
   }
-  const imageUrl = textImage.storedImageUrl ?? textImage.imageUrl;
+  const imageUrl = textImage.imageUrl;
   const sampleSteps = payload.sampleSteps ?? Number(process.env.INSTANTMESH_SAMPLE_STEPS || 30);
   const seed = payload.seed ?? Date.now() % 1_000_000;
   const response = await fetch(`${baseUrl}/run/predict`, {
