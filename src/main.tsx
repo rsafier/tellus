@@ -1612,12 +1612,12 @@ async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | nul
 
 function assetTargetHeight(thing: GeneratedThing): number {
   const lower = thing.prompt.toLowerCase();
-  const variation = clamp(thing.scale, 0.75, 1.55);
+  const variation = clamp(thing.scale, 0.25, 12);
   const mode = vehicleMode(thing);
-  if (mode === "air") return clamp(4.8 * variation, 4.2, 6.8);
-  if (mode === "water") return clamp(1.45 * variation, 1.2, 2.4);
-  if (mode === "ground") return clamp(2.05 * variation, 1.7, 2.8);
-  if (thing.kind === "tree") return clamp(4.2 * variation, 3.2, 6.2);
+  if (mode === "air") return clamp(4.8 * variation, 1.6, 54);
+  if (mode === "water") return clamp(1.45 * variation, 0.45, 18);
+  if (mode === "ground") return clamp(2.05 * variation, 0.65, 24);
+  if (thing.kind === "tree") return clamp(4.2 * variation, 0.8, 52);
   if (
     lower.includes("hut") ||
     lower.includes("house") ||
@@ -1626,9 +1626,9 @@ function assetTargetHeight(thing: GeneratedThing): number {
     lower.includes("workshop") ||
     lower.includes("building")
   ) {
-    return clamp(3.6 * variation, 3.0, 5.4);
+    return clamp(3.6 * variation, 0.9, 48);
   }
-  if (lower.includes("tower")) return clamp(5.2 * variation, 4.2, 7.4);
+  if (lower.includes("tower")) return clamp(5.2 * variation, 1.2, 64);
   if (
     lower.includes("bridge") ||
     lower.includes("dock") ||
@@ -1637,13 +1637,13 @@ function assetTargetHeight(thing: GeneratedThing): number {
     lower.includes("road") ||
     thing.kind === "path"
   ) {
-    return clamp(0.42 * variation, 0.24, 0.72);
+    return clamp(0.42 * variation, 0.12, 8);
   }
-  if (thing.kind === "animal") return clamp(1.55 * variation, 1.0, 2.45);
-  if (thing.kind === "flower") return clamp(0.58 * variation, 0.38, 0.9);
-  if (thing.kind === "stone") return clamp(1.0 * variation, 0.65, 1.8);
-  if (thing.kind === "shrine") return clamp(2.2 * variation, 1.5, 3.4);
-  return clamp(1.35 * variation, 0.8, 2.35);
+  if (thing.kind === "animal") return clamp(1.55 * variation, 0.45, 24);
+  if (thing.kind === "flower") return clamp(0.58 * variation, 0.16, 9);
+  if (thing.kind === "stone") return clamp(1.0 * variation, 0.25, 18);
+  if (thing.kind === "shrine") return clamp(2.2 * variation, 0.55, 32);
+  return clamp(1.35 * variation, 0.35, 24);
 }
 
 async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
@@ -2754,7 +2754,7 @@ function createTellusWorld(
 
   const setGeneratedScale = (thing: GeneratedThing, scale: number) => {
     const oldTargetHeight = assetTargetHeight(thing);
-    thing.scale = clamp(scale, 0.25, 4);
+    thing.scale = clamp(scale, 0.1, 12);
     const newTargetHeight = assetTargetHeight(thing);
     const mesh = generatedMeshes.get(thing.id);
     if (mesh && oldTargetHeight > 0) {
@@ -4118,7 +4118,7 @@ function App(): React.ReactElement {
                 className="secondary-button"
                 title="Scale down"
                 aria-label="Scale down"
-                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 0.82)}
+                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 0.72)}
               >
                 <Minus size={17} />
               </button>
@@ -4135,7 +4135,7 @@ function App(): React.ReactElement {
                 className="secondary-button"
                 title="Scale up"
                 aria-label="Scale up"
-                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 1.22)}
+                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 1.38)}
               >
                 <Plus size={17} />
               </button>
