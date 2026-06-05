@@ -1321,6 +1321,52 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
   return group;
 }
 
+function createGenerationSwirl(thing: GeneratedThing): THREE.Object3D {
+  const group = new THREE.Group();
+  group.name = thing.id;
+  group.userData = { tellusId: thing.id, kind: thing.kind, generatingSwirl: true };
+
+  const primary = new THREE.Color(thing.color);
+  const light = primary.clone().lerp(new THREE.Color(0xffffff), 0.58);
+  const material = new THREE.MeshBasicMaterial({
+    color: light,
+    transparent: true,
+    opacity: 0.78,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const ringGeometry = new THREE.TorusGeometry(0.52, 0.018, 8, 56);
+  for (let i = 0; i < 3; i++) {
+    const ring = new THREE.Mesh(ringGeometry, material.clone());
+    ring.userData = { swirlRing: i };
+    ring.rotation.x = Math.PI / 2 + i * 0.62;
+    ring.rotation.y = i * 0.48;
+    ring.position.y = 0.55 + i * 0.22;
+    ring.scale.setScalar(0.72 + i * 0.18);
+    group.add(ring);
+  }
+
+  const sparkMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.86,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const sparkGeometry = new THREE.SphereGeometry(0.045, 8, 6);
+  for (let i = 0; i < 7; i++) {
+    const spark = new THREE.Mesh(sparkGeometry, sparkMaterial.clone());
+    const angle = (i / 7) * Math.PI * 2;
+    spark.userData = { swirlSpark: i, baseAngle: angle };
+    spark.position.set(Math.cos(angle) * 0.56, 0.72 + i * 0.09, Math.sin(angle) * 0.56);
+    group.add(spark);
+  }
+
+  group.position.set(thing.position.x, thing.position.y + 0.04, thing.position.z);
+  return group;
+}
+
 function chooseAgentPrompt(
   agent: TellusAgent,
   generated: GeneratedThing[],
@@ -1661,7 +1707,9 @@ function createTellusWorld(
       generationStatus: hasExternalGenerationProvider() ? "queued" : "local",
     };
     generated.push(thing);
-    const mesh = createGeneratedMesh(thing);
+    const mesh = hasExternalGenerationProvider()
+      ? createGenerationSwirl(thing)
+      : createGeneratedMesh(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
 
@@ -1672,6 +1720,17 @@ function createTellusWorld(
       tool: "generate",
       text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
     });
+
+    const showLocalFallbackMesh = () => {
+      const oldMesh = generatedMeshes.get(thing.id);
+      if (oldMesh) {
+        scene.remove(oldMesh);
+        disposeObject(oldMesh);
+      }
+      const fallbackMesh = createGeneratedMesh(thing);
+      generatedMeshes.set(thing.id, fallbackMesh);
+      scene.add(fallbackMesh);
+    };
 
     if (
       runtimeConfig.generationProvider === "asset-forge" &&
@@ -1732,10 +1791,12 @@ function createTellusWorld(
         .catch((error) => {
           if (paused || generationController.signal.aborted) {
             thing.generationStatus = "local";
+            showLocalFallbackMesh();
             publish();
             return;
           }
           thing.generationStatus = "failed";
+          showLocalFallbackMesh();
           addLog({
             agentId: "world",
             agentName: "Pixel3D",
@@ -1793,10 +1854,12 @@ function createTellusWorld(
         .catch((error) => {
           if (paused || generationController.signal.aborted) {
             thing.generationStatus = "local";
+            showLocalFallbackMesh();
             publish();
             return;
           }
           thing.generationStatus = "failed";
+          showLocalFallbackMesh();
           addLog({
             agentId: "world",
             agentName: "InstantMesh",
@@ -2108,7 +2171,37 @@ function createTellusWorld(
 
     let index = 0;
     for (const mesh of generatedMeshes.values()) {
-      mesh.rotation.y += 0.02 * Math.sin(now * 0.0007 + index);
+      if (mesh.userData.generatingSwirl) {
+        mesh.rotation.y = now * 0.0022 + index;
+        mesh.position.y += Math.sin(now * 0.004 + index) * 0.004;
+        for (const child of mesh.children) {
+          if (child.userData.swirlRing !== undefined) {
+            child.rotation.z =
+              now * (0.0028 + child.userData.swirlRing * 0.0007);
+            child.scale.setScalar(
+              0.78 +
+                child.userData.swirlRing * 0.18 +
+                Math.sin(now * 0.004 + child.userData.swirlRing) * 0.045,
+            );
+          }
+          if (child.userData.swirlSpark !== undefined) {
+            const angle =
+              child.userData.baseAngle +
+              now * (0.003 + child.userData.swirlSpark * 0.00018);
+            const radius =
+              0.44 + Math.sin(now * 0.003 + child.userData.swirlSpark) * 0.16;
+            child.position.set(
+              Math.cos(angle) * radius,
+              0.75 +
+                child.userData.swirlSpark * 0.075 +
+                Math.sin(now * 0.005 + child.userData.swirlSpark) * 0.12,
+              Math.sin(angle) * radius,
+            );
+          }
+        }
+      } else {
+        mesh.rotation.y += 0.02 * Math.sin(now * 0.0007 + index);
+      }
       index++;
     }
   };
