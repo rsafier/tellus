@@ -1028,7 +1028,12 @@ async function loadRuntimeConfigFile(path: string): Promise<void> {
 
 async function loadRuntimeConfig(): Promise<void> {
   await loadRuntimeConfigFile("/tellus-config.json");
-  await loadRuntimeConfigFile("/tellus-config.local.json");
+  if (
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1"
+  ) {
+    await loadRuntimeConfigFile("/tellus-config.local.json");
+  }
 }
 
 function terrainOffsetsPayload(): number[] {
