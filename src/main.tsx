@@ -153,7 +153,11 @@ interface TellusWorldApi {
 interface TellusRuntimeConfig {
   assetForgeApiBase: string;
   agentModel: string;
-  generationProvider: "local" | "asset-forge" | "instantmesh-gradio";
+  generationProvider:
+    | "local"
+    | "asset-forge"
+    | "instantmesh-gradio"
+    | "pixal3d-gradio";
   skyboxUrl: string;
   enabledAgents: AgentId[];
   avatars: Partial<Record<AgentId, string>>;
@@ -255,7 +259,7 @@ const runtimeConfig: TellusRuntimeConfig = {
   generationProvider:
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
-      | undefined) ?? "asset-forge",
+      | undefined) ?? "pixal3d-gradio",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
   enabledAgents: ["johnny"],
   avatars: {
@@ -699,7 +703,8 @@ function applyRuntimeConfig(config: unknown): void {
     !import.meta.env.VITE_TELLUS_GENERATION_PROVIDER?.trim() &&
     (generationProvider === "local" ||
       generationProvider === "asset-forge" ||
-      generationProvider === "instantmesh-gradio")
+      generationProvider === "instantmesh-gradio" ||
+      generationProvider === "pixal3d-gradio")
   ) {
     runtimeConfig.generationProvider = generationProvider;
   }
@@ -856,7 +861,10 @@ function hasExternalGenerationProvider(): boolean {
   if (runtimeConfig.generationProvider === "asset-forge") {
     return Boolean(runtimeConfig.assetForgeApiBase);
   }
-  return runtimeConfig.generationProvider === "instantmesh-gradio";
+  return (
+    runtimeConfig.generationProvider === "instantmesh-gradio" ||
+    runtimeConfig.generationProvider === "pixal3d-gradio"
+  );
 }
 
 async function startDirectInstantMeshGeneration(
@@ -2524,14 +2532,21 @@ function createTellusWorld(
         .finally(() => {
           pendingGenerationControllers.delete(thing.id);
         });
-    } else if (runtimeConfig.generationProvider === "instantmesh-gradio") {
+    } else if (
+      runtimeConfig.generationProvider === "instantmesh-gradio" ||
+      runtimeConfig.generationProvider === "pixal3d-gradio"
+    ) {
+      const providerName =
+        runtimeConfig.generationProvider === "pixal3d-gradio"
+          ? "Pixal3D"
+          : "InstantMesh";
       const generationController = new AbortController();
       pendingGenerationControllers.set(thing.id, generationController);
       addLog({
         agentId: "world",
-        agentName: "InstantMesh",
+        agentName: providerName,
         tool: "generate",
-        text: `Sending ${thing.kind} to InstantMesh: "${thing.prompt}"`,
+        text: `Sending ${thing.kind} to ${providerName}: "${thing.prompt}"`,
       });
       void startDirectInstantMeshGeneration(thing, generationController.signal)
         .then(async (result) => {
@@ -2540,9 +2555,9 @@ function createTellusWorld(
           thing.modelUrl = result.modelUrl;
           addLog({
             agentId: "world",
-            agentName: "InstantMesh",
+            agentName: providerName,
             tool: "generate",
-            text: `InstantMesh used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ?? "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
+            text: `${providerName} used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ?? "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
           });
           const model = await loadGeneratedModel(result.modelUrl, thing);
           if (destroyed || paused || !thingById(thing.id)) {
@@ -2559,9 +2574,9 @@ function createTellusWorld(
           scene.add(model);
           addLog({
             agentId: "world",
-            agentName: "InstantMesh",
+            agentName: providerName,
             tool: "interact",
-            text: `Loaded InstantMesh GLB into the scene for ${thing.kind}: ${thing.prompt}`,
+            text: `Loaded ${providerName} GLB into the scene for ${thing.kind}: ${thing.prompt}`,
           });
           publish();
         })
@@ -2577,9 +2592,9 @@ function createTellusWorld(
           showLocalFallbackMesh();
           addLog({
             agentId: "world",
-            agentName: "InstantMesh",
+            agentName: providerName,
             tool: "interact",
-            text: `InstantMesh generation fell back to local mesh: ${
+            text: `${providerName} generation fell back to local mesh: ${
               error instanceof Error ? sanitizeLogText(error.message) : "unknown error"
             }`,
           });

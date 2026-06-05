@@ -13,10 +13,12 @@ interface Generate3DRequest {
   seed?: number;
 }
 
+type Generation3DProvider = "instantmesh-gradio" | "pixal3d-gradio";
+
 interface Generate3DResponse {
   jobId: string;
   modelUrl: string;
-  provider: "instantmesh-gradio";
+  provider: Generation3DProvider;
   rawModelUrl: string;
   storedModelUrl: string;
   storedModelPath: string;
@@ -28,6 +30,11 @@ interface Generate3DResponse {
 
 interface LegacyPredictResponse {
   data?: unknown[];
+  error?: string;
+}
+
+interface GradioCallResponse {
+  event_id?: string;
   error?: string;
 }
 
@@ -43,7 +50,7 @@ interface GeneratedAssetManifestEntry {
   id: string;
   prompt: string;
   kind: string;
-  provider: "instantmesh-gradio";
+  provider: Generation3DProvider;
   rawModelUrl: string;
   modelUrl: string;
   storedModelPath: string;
@@ -811,6 +818,7 @@ async function persistGeneratedModel(params: {
   createdAt: string;
   sampleSteps: number;
   seed: number;
+  provider: Generation3DProvider;
 }): Promise<GeneratedAssetManifestEntry> {
   const root = generatedAssetRoot();
   await mkdir(root, { recursive: true });
@@ -826,7 +834,7 @@ async function persistGeneratedModel(params: {
     id: params.id,
     prompt: params.prompt,
     kind: params.kind,
-    provider: "instantmesh-gradio",
+    provider: params.provider,
     rawModelUrl: params.rawModelUrl,
     modelUrl: `/generated-assets/${encodeURIComponent(filename)}`,
     storedModelPath: finalPath,
@@ -856,6 +864,136 @@ function cleanUpstreamError(status: number, body: string): string {
   return `InstantMesh request failed with HTTP ${status}: ${text.slice(0, 240)}`;
 }
 
+async function uploadImageToGradio(
+  baseUrl: string,
+  image: TextImageResult,
+): Promise<FileLikeResult> {
+  const fetched = await fetchBytes(image.imageUrl);
+  const extension = mimeExtension(fetched.mime);
+  const form = new FormData();
+  form.append(
+    "files",
+    new Blob([new Uint8Array(fetched.bytes)], { type: fetched.mime }),
+    `tellus-source.${extension}`,
+  );
+  const response = await fetch(`${baseUrl}/gradio_api/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(cleanUpstreamError(response.status, body));
+  }
+  const uploaded = (await response.json()) as unknown;
+  const path = Array.isArray(uploaded) ? uploaded[0] : undefined;
+  if (typeof path !== "string") {
+    throw new Error("Pixal3D upload returned no file path");
+  }
+  return {
+    path,
+    orig_name: `tellus-source.${extension}`,
+    mime_type: fetched.mime,
+    is_stream: false,
+    meta: { _type: "gradio.FileData" },
+  } as FileLikeResult;
+}
+
+function parseGradioEventData(text: string): { done: boolean; data?: unknown; error?: string } {
+  const events = text.split(/\n\n+/);
+  let lastEvent = "";
+  for (const event of events) {
+    const lines = event.split(/\n/);
+    const eventName = lines
+      .find((line) => line.startsWith("event:"))
+      ?.slice("event:".length)
+      .trim();
+    const dataText = lines
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).trim())
+      .join("\n");
+    if (eventName) lastEvent = eventName;
+    if (!dataText) continue;
+    const data = JSON.parse(dataText) as unknown;
+    if (eventName === "error") {
+      return {
+        done: true,
+        error:
+          data && typeof data === "object" && "error" in data
+            ? String((data as { error?: unknown }).error)
+            : "Pixal3D generation failed",
+      };
+    }
+    if (eventName === "complete" || eventName === "success") {
+      return { done: true, data };
+    }
+    if (lastEvent === "complete") return { done: true, data };
+  }
+  return { done: false };
+}
+
+async function waitForGradioCallResult(
+  baseUrl: string,
+  apiName: string,
+  eventId: string,
+): Promise<unknown> {
+  const deadline = Date.now() + Number(process.env.PIXAL3D_TIMEOUT_MS || 20 * 60 * 1000);
+  while (Date.now() < deadline) {
+    const response = await fetch(
+      `${baseUrl}/gradio_api/call/${apiName}/${encodeURIComponent(eventId)}`,
+    );
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(cleanUpstreamError(response.status, text));
+    }
+    const result = parseGradioEventData(text);
+    if (result.error) throw new Error(result.error);
+    if (result.done) return result.data;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  throw new Error(`Pixal3D ${apiName} timed out`);
+}
+
+async function generatePixal3DModel(
+  baseUrl: string,
+  image: TextImageResult,
+  seed: number,
+): Promise<string> {
+  const uploadedImage = await uploadImageToGradio(baseUrl, image);
+  const response = await fetch(`${baseUrl}/gradio_api/call/generate_glb`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      data: [
+        uploadedImage,
+        0,
+        Number(process.env.PIXAL3D_MESH_RESOLUTION || 512),
+        Number(process.env.PIXAL3D_TARGET_FACES || 50000),
+        Number(process.env.PIXAL3D_TEXTURE_SIZE || 1024),
+        Number(process.env.PIXAL3D_GEOMETRY_STEPS || 12),
+        Number(process.env.PIXAL3D_TEXTURE_STEPS || 12),
+        Number(process.env.PIXAL3D_REFINE_STEPS || 12),
+        seed,
+        process.env.PIXAL3D_SEED_MODE || "deg",
+        "",
+      ],
+    }),
+  });
+  const body = (await response.json()) as GradioCallResponse;
+  if (!response.ok || body.error || !body.event_id) {
+    throw new Error(
+      body.error ?? `Pixal3D request failed with HTTP ${response.status}`,
+    );
+  }
+  const result = await waitForGradioCallResult(baseUrl, "generate_glb", body.event_id);
+  const candidate = collectCandidates(result).find((value) =>
+    /\.(glb|gltf)(\?|$)/i.test(value),
+  );
+  if (!candidate) {
+    throw new Error("Pixal3D completed without a GLB output");
+  }
+  return resolveGradioFileUrl(baseUrl, candidate);
+}
+
 async function readRequestJson(request: Request): Promise<Generate3DRequest> {
   const parsed = (await request.json()) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -868,17 +1006,32 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   }
 
   const payload = await readRequestJson(request);
-  const baseUrl = process.env.INSTANTMESH_GRADIO_BASE_URL?.trim().replace(/\/+$/, "");
+  const provider: Generation3DProvider =
+    process.env.TELLUS_3D_PROVIDER === "instantmesh-gradio"
+      ? "instantmesh-gradio"
+      : "pixal3d-gradio";
+  const baseUrl = (
+    provider === "pixal3d-gradio"
+      ? process.env.PIXAL3D_GRADIO_BASE_URL
+      : process.env.INSTANTMESH_GRADIO_BASE_URL
+  )
+    ?.trim()
+    .replace(/\/+$/, "");
   if (!baseUrl) {
     return Response.json(
-      { error: "INSTANTMESH_GRADIO_BASE_URL is not configured" },
+      {
+        error:
+          provider === "pixal3d-gradio"
+            ? "PIXAL3D_GRADIO_BASE_URL is not configured"
+            : "INSTANTMESH_GRADIO_BASE_URL is not configured",
+      },
       { status: 503 },
     );
   }
 
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
   const kind = payload.kind?.trim() || "object";
-  const generationId = payload.id || `instantmesh-${Date.now()}`;
+  const generationId = payload.id || `${provider}-${Date.now()}`;
   const createdAt = new Date().toISOString();
   let textImage = await createTextImage(prompt, kind, payload.imageUrl?.trim());
   try {
@@ -895,6 +1048,59 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   const imageUrl = textImage.imageUrl;
   const sampleSteps = payload.sampleSteps ?? Number(process.env.INSTANTMESH_SAMPLE_STEPS || 30);
   const seed = payload.seed ?? Date.now() % 1_000_000;
+  if (provider === "pixal3d-gradio") {
+    let rawModelUrl: string;
+    try {
+      rawModelUrl = await generatePixal3DModel(baseUrl, textImage, seed);
+    } catch (error) {
+      return Response.json(
+        {
+          error:
+            error instanceof Error
+              ? `Pixal3D request failed: ${error.message}`
+              : "Pixal3D request failed",
+        },
+        { status: 502 },
+      );
+    }
+    let stored: GeneratedAssetManifestEntry;
+    try {
+      stored = await persistGeneratedModel({
+        id: generationId,
+        prompt,
+        kind,
+        rawModelUrl,
+        sourceImage: textImage,
+        createdAt,
+        sampleSteps,
+        seed,
+        provider,
+      });
+    } catch (error) {
+      return Response.json(
+        {
+          error: `Pixal3D returned a GLB, but Tellus could not persist it: ${
+            error instanceof Error ? error.message : "unknown storage error"
+          }`,
+          rawModelUrl,
+        },
+        { status: 502 },
+      );
+    }
+    return Response.json({
+      jobId: stored.id,
+      modelUrl: stored.modelUrl,
+      provider,
+      rawModelUrl,
+      storedModelUrl: stored.modelUrl,
+      storedModelPath: stored.storedModelPath,
+      sourceImageUrl: stored.sourceImageUrl,
+      sourceImagePath: stored.sourceImagePath,
+      textImageProvider: stored.textImageProvider,
+      manifestUrl: "/generated-assets/manifest.json",
+    } satisfies Generate3DResponse);
+  }
+
   const response = await fetch(`${baseUrl}/run/predict`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -944,6 +1150,7 @@ export async function generate3DHandler(request: Request): Promise<Response> {
       createdAt,
       sampleSteps,
       seed,
+      provider,
     });
   } catch (error) {
     return Response.json(
@@ -959,7 +1166,7 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   const result: Generate3DResponse = {
     jobId: stored.id,
     modelUrl: stored.modelUrl,
-    provider: "instantmesh-gradio",
+    provider,
     rawModelUrl,
     storedModelUrl: stored.modelUrl,
     storedModelPath: stored.storedModelPath,
