@@ -15,7 +15,7 @@ const contentTypes: Record<string, string> = {
 export function generatedAssetRoot(): string {
   return configuredAssetRoot(
     process.env.TELLUS_GENERATED_ASSET_DIR?.trim() ||
-      "/root/tellus-generated-assets",
+      "Z:\\3d\\assets\\tellus",
   );
 }
 
