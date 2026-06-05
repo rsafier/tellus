@@ -8,4 +8,15 @@ public/avatars/*.gltf
 public/avatars/*.vrm
 public/skybox/*.glb
 public/skybox/*.gltf
+public/skybox/**/*.bin
+public/skybox/**/*.glb
+public/skybox/**/*.gltf
+public/skybox/**/*.jpeg
+public/skybox/**/*.jpg
+public/skybox/**/*.png
+!public/skybox/**/README.md
+!public/skybox/**/ATTRIBUTION.md
+!public/skybox/**/license.txt
+!public/skybox/free_-_skybox_in_the_cloud/
+!public/skybox/free_-_skybox_in_the_cloud/**
 !public/skybox/free_-_skybox_basic_sky.glb

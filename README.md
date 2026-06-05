@@ -184,15 +184,21 @@ volume served by your web server.
 
 ## Skybox
 
-To use the external skybox locally, place this file in `public/skybox/` and point
-`public/tellus-config.local.json` at it:
+To use the external skybox locally, place the extracted folder in
+`public/skybox/` and point `public/tellus-config.local.json` at it:
 
 ```text
-free_-_skybox_basic_sky.glb
+free_-_skybox_in_the_cloud/scene.gltf
 ```
 
+If needed, Tellus will also try `/skybox/free_-_skybox_in_the_cloud.glb`,
+`/skybox/skybox_skydays_3.glb`, and the bundled basic skybox as fallbacks.
 Tellus will load it automatically and fall back to the procedural sky if it is
 not present.
+
+Attribution: `FREE - SkyBox In The Cloud` (https://skfb.ly/oIINq) by Paul is
+licensed under Creative Commons Attribution
+(http://creativecommons.org/licenses/by/4.0/).
 
 Large skybox files in `public/skybox/` are ignored by git.
 
