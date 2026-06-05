@@ -60,8 +60,9 @@ For direct InstantMesh:
 INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
 INSTANTMESH_SAMPLE_STEPS=30
 TELLUS_GENERATED_ASSET_DIR=Z:\3d\assets\tellus
-TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111
-TELLUS_TEXT_TO_IMAGE_BASE_URL=http://192.168.1.177:7860
+TELLUS_TEXT_TO_IMAGE_PROVIDER=comfyui
+TELLUS_TEXT_TO_IMAGE_BASE_URL=http://192.168.1.177:8188
+TELLUS_COMFYUI_WORKFLOW_PATH=Z:\3d\assets\tellus\workflows\z-turbo-api.json
 ```
 
 For deployed builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL that the
@@ -76,11 +77,18 @@ therefore runs a middle step:
 text prompt -> concept image -> InstantMesh -> persisted GLB
 ```
 
-Set `TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111` with
-`TELLUS_TEXT_TO_IMAGE_BASE_URL`, or set `TELLUS_TEXT_TO_IMAGE_PROVIDER=openai`
-with `OPENAI_API_KEY`. If the provider is unset, Tellus auto-detects those env
-vars. If no text-to-image service is configured, Tellus falls back to a simple
-procedural BMP sketch. The source concept image, returned GLB, and
+Set `TELLUS_TEXT_TO_IMAGE_PROVIDER=comfyui` with
+`TELLUS_TEXT_TO_IMAGE_BASE_URL` pointing at ComfyUI, usually port `8188`. For a
+tuned setup such as Z Turbo, export the Comfy workflow in API format and set
+`TELLUS_COMFYUI_WORKFLOW_PATH` to that JSON file. Tellus replaces `{{prompt}}`,
+`{{negative_prompt}}`, `{{seed}}`, `{{width}}`, and `{{height}}` placeholders if
+they are present; if no placeholders are present, it patches the first positive
+`CLIPTextEncode` node it can find.
+
+Tellus can also use `TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111` with
+`TELLUS_TEXT_TO_IMAGE_BASE_URL`, or `TELLUS_TEXT_TO_IMAGE_PROVIDER=openai` with
+`OPENAI_API_KEY`. If no text-to-image service is configured, Tellus falls back
+to a simple procedural BMP sketch. The source concept image, returned GLB, and
 `manifest.json` are written to `TELLUS_GENERATED_ASSET_DIR`, or
 `/root/tellus-generated-assets` when that env var is unset.
 

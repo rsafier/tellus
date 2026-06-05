@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { generatedAssetRoot } from "./generated-assets";
 
 interface Generate3DRequest {
@@ -58,7 +58,7 @@ interface GeneratedAssetManifestEntry {
 
 interface TextImageResult {
   imageUrl: string;
-  provider: "request" | "openai" | "automatic1111" | "procedural";
+  provider: "request" | "openai" | "automatic1111" | "comfyui" | "procedural";
   imagePrompt: string;
   storedImageUrl?: string;
   storedImagePath?: string;
@@ -77,6 +77,25 @@ interface OpenAIImageResponse {
 interface Automatic1111ImageResponse {
   images?: string[];
   error?: string;
+}
+
+interface ComfyPromptResponse {
+  prompt_id?: string;
+  error?: unknown;
+}
+
+interface ComfyImageOutput {
+  filename?: string;
+  subfolder?: string;
+  type?: string;
+}
+
+interface ComfyHistoryResponse {
+  outputs?: Record<string, { images?: ComfyImageOutput[] }>;
+  status?: {
+    status_str?: string;
+    completed?: boolean;
+  };
 }
 
 function conceptImageDataUrl(prompt: string, kind: string): string {
@@ -262,6 +281,15 @@ function generatedFilenameBase(params: {
   return `${timestamp}-${slugify(params.kind)}-${slugify(params.prompt) || params.id}`;
 }
 
+function hostPath(value: string): string {
+  const windowsDrivePath = /^([a-zA-Z]):[\\/](.*)$/.exec(value);
+  if (!windowsDrivePath || process.platform === "win32") return resolve(value);
+  const [, drive, rest] = windowsDrivePath;
+  return resolve(
+    `/mnt/${drive.toLowerCase()}/${rest.replace(/[\\/]+/g, "/")}`,
+  );
+}
+
 function mimeExtension(mime: string): string {
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
   if (mime.includes("webp")) return "webp";
@@ -402,6 +430,189 @@ async function generateAutomatic1111ConceptImage(
   };
 }
 
+function builtInComfyWorkflow(imagePrompt: string): Record<string, unknown> {
+  const checkpoint = process.env.TELLUS_COMFYUI_CHECKPOINT?.trim() || "zTurbo.safetensors";
+  const width = Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024);
+  const height = Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024);
+  const steps = Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 8);
+  const cfg = Number(process.env.TELLUS_TEXT_TO_IMAGE_CFG_SCALE || 1.5);
+  const sampler = process.env.TELLUS_TEXT_TO_IMAGE_SAMPLER || "euler";
+  const scheduler = process.env.TELLUS_COMFYUI_SCHEDULER || "normal";
+  const negative =
+    process.env.TELLUS_TEXT_TO_IMAGE_NEGATIVE_PROMPT?.trim() ||
+    "text, watermark, logo, cropped, blurry, background clutter, multiple objects";
+
+  return {
+    "1": {
+      class_type: "CheckpointLoaderSimple",
+      inputs: { ckpt_name: checkpoint },
+    },
+    "2": {
+      class_type: "CLIPTextEncode",
+      inputs: { text: imagePrompt, clip: ["1", 1] },
+    },
+    "3": {
+      class_type: "CLIPTextEncode",
+      inputs: { text: negative, clip: ["1", 1] },
+    },
+    "4": {
+      class_type: "EmptyLatentImage",
+      inputs: { width, height, batch_size: 1 },
+    },
+    "5": {
+      class_type: "KSampler",
+      inputs: {
+        seed: Math.floor(Math.random() * 1_000_000_000),
+        steps,
+        cfg,
+        sampler_name: sampler,
+        scheduler,
+        denoise: 1,
+        model: ["1", 0],
+        positive: ["2", 0],
+        negative: ["3", 0],
+        latent_image: ["4", 0],
+      },
+    },
+    "6": {
+      class_type: "VAEDecode",
+      inputs: { samples: ["5", 0], vae: ["1", 2] },
+    },
+    "7": {
+      class_type: "SaveImage",
+      inputs: {
+        filename_prefix: process.env.TELLUS_COMFYUI_FILENAME_PREFIX || "tellus",
+        images: ["6", 0],
+      },
+    },
+  };
+}
+
+function replaceWorkflowPlaceholders(value: unknown, replacements: Record<string, string>): unknown {
+  if (typeof value === "string") {
+    return Object.entries(replacements).reduce(
+      (result, [key, replacement]) => result.replaceAll(`{{${key}}}`, replacement),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceWorkflowPlaceholders(item, replacements));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        replaceWorkflowPlaceholders(item, replacements),
+      ]),
+    );
+  }
+  return value;
+}
+
+function patchComfyPromptText(workflow: unknown, imagePrompt: string): unknown {
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    return workflow;
+  }
+  const patched = workflow as Record<string, unknown>;
+  for (const node of Object.values(patched)) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+    const nodeRecord = node as Record<string, unknown>;
+    if (nodeRecord.class_type !== "CLIPTextEncode") continue;
+    const inputs = nodeRecord.inputs;
+    if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) continue;
+    const inputRecord = inputs as Record<string, unknown>;
+    const text = inputRecord.text;
+    if (typeof text === "string" && text.includes("{{prompt}}")) {
+      inputRecord.text = text.replaceAll("{{prompt}}", imagePrompt);
+      continue;
+    }
+    if (typeof text === "string" && !/negative|watermark|blurry|text/i.test(text)) {
+      inputRecord.text = imagePrompt;
+      break;
+    }
+  }
+  return patched;
+}
+
+async function comfyWorkflow(imagePrompt: string): Promise<unknown> {
+  const templatePath = process.env.TELLUS_COMFYUI_WORKFLOW_PATH?.trim();
+  if (!templatePath) return builtInComfyWorkflow(imagePrompt);
+
+  const template = JSON.parse(await readFile(hostPath(templatePath), "utf8")) as unknown;
+  const replaced = replaceWorkflowPlaceholders(template, {
+    prompt: imagePrompt,
+    negative_prompt:
+      process.env.TELLUS_TEXT_TO_IMAGE_NEGATIVE_PROMPT?.trim() ||
+      "text, watermark, logo, cropped, blurry, background clutter, multiple objects",
+    seed: `${Math.floor(Math.random() * 1_000_000_000)}`,
+    width: `${Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024)}`,
+    height: `${Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024)}`,
+  });
+  return patchComfyPromptText(replaced, imagePrompt);
+}
+
+async function waitForComfyImage(
+  baseUrl: string,
+  promptId: string,
+): Promise<ComfyImageOutput> {
+  const deadline = Date.now() + Number(process.env.TELLUS_COMFYUI_TIMEOUT_MS || 180_000);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const response = await fetch(`${baseUrl}/history/${encodeURIComponent(promptId)}`);
+    if (!response.ok) continue;
+    const allHistory = (await response.json()) as Record<string, ComfyHistoryResponse>;
+    const history = allHistory[promptId];
+    const output = Object.values(history?.outputs ?? {}).flatMap(
+      (item) => item.images ?? [],
+    )[0];
+    if (output?.filename) return output;
+    if (history?.status?.completed && !output) {
+      throw new Error("ComfyUI workflow completed without an image output");
+    }
+  }
+  throw new Error(`ComfyUI prompt ${promptId} timed out`);
+}
+
+async function generateComfyUIConceptImage(
+  prompt: string,
+  kind: string,
+): Promise<TextImageResult> {
+  const baseUrl = (
+    process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
+    process.env.COMFYUI_BASE_URL?.trim() ||
+    ""
+  ).replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("TELLUS_TEXT_TO_IMAGE_BASE_URL is not configured");
+  }
+
+  const imagePrompt = imageGenerationPrompt(prompt, kind);
+  const workflow = await comfyWorkflow(imagePrompt);
+  const response = await fetch(`${baseUrl}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: workflow,
+      client_id: `tellus-${Date.now().toString(36)}`,
+    }),
+  });
+  const body = (await response.json()) as ComfyPromptResponse;
+  if (!response.ok || body.error || !body.prompt_id) {
+    throw new Error(`ComfyUI prompt request failed with HTTP ${response.status}`);
+  }
+
+  const image = await waitForComfyImage(baseUrl, body.prompt_id);
+  const imageUrl = new URL("/view", `${baseUrl}/`);
+  imageUrl.searchParams.set("filename", image.filename ?? "");
+  imageUrl.searchParams.set("subfolder", image.subfolder ?? "");
+  imageUrl.searchParams.set("type", image.type ?? "output");
+  return {
+    imageUrl: imageUrl.toString(),
+    provider: "comfyui",
+    imagePrompt,
+  };
+}
+
 async function createTextImage(
   prompt: string,
   kind: string,
@@ -417,14 +628,24 @@ async function createTextImage(
 
   const provider = (
     process.env.TELLUS_TEXT_TO_IMAGE_PROVIDER?.trim().toLowerCase() || "auto"
-  ) as "auto" | "openai" | "automatic1111" | "procedural" | "none";
+  ) as "auto" | "openai" | "automatic1111" | "comfyui" | "procedural" | "none";
 
   const attempts: Array<() => Promise<TextImageResult>> = [];
   if (provider === "openai") attempts.push(() => generateOpenAIConceptImage(prompt, kind));
   if (provider === "automatic1111") {
     attempts.push(() => generateAutomatic1111ConceptImage(prompt, kind));
   }
+  if (provider === "comfyui") {
+    attempts.push(() => generateComfyUIConceptImage(prompt, kind));
+  }
   if (provider === "auto") {
+    if (
+      process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
+      process.env.COMFYUI_BASE_URL?.trim() ||
+      process.env.TELLUS_COMFYUI_WORKFLOW_PATH?.trim()
+    ) {
+      attempts.push(() => generateComfyUIConceptImage(prompt, kind));
+    }
     if (
       process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
       process.env.AUTOMATIC1111_BASE_URL?.trim()
