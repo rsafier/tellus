@@ -316,7 +316,7 @@ const runtimeConfig: TellusRuntimeConfig = {
   generationProvider:
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
-      | undefined) ?? "pixal3d-gradio",
+      | undefined) ?? "instantmesh-gradio",
   worldApiBase:
     import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "",
   worldId: import.meta.env.VITE_TELLUS_WORLD_ID ?? "main",
