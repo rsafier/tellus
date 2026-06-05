@@ -8,9 +8,20 @@ const contentTypes: Record<string, string> = {
 };
 
 export function generatedAssetRoot(): string {
-  return resolve(
+  return configuredAssetRoot(
     process.env.TELLUS_GENERATED_ASSET_DIR?.trim() ||
       "/root/tellus-generated-assets",
+  );
+}
+
+function configuredAssetRoot(value: string): string {
+  const windowsDrivePath = /^([a-zA-Z]):[\\/](.*)$/.exec(value);
+  if (!windowsDrivePath) return resolve(value);
+  if (process.platform === "win32") return resolve(value);
+
+  const [, drive, rest] = windowsDrivePath;
+  return resolve(
+    `/mnt/${drive.toLowerCase()}/${rest.replace(/[\\/]+/g, "/")}`,
   );
 }
 

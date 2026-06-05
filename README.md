@@ -59,7 +59,7 @@ For direct InstantMesh:
 ```text
 INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
 INSTANTMESH_SAMPLE_STEPS=30
-TELLUS_GENERATED_ASSET_DIR=/path/to/Tank 3D/Tellus/generated-assets
+TELLUS_GENERATED_ASSET_DIR=Z:\3d\assets\tellus
 ```
 
 For deployed builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL that the
@@ -72,8 +72,10 @@ adapter creates a simple concept image from the prompt, sends it to InstantMesh,
 persists the returned GLB, and returns a stable `/generated-assets/...` URL that
 the WebGPU scene can load. Generated files and `manifest.json` are written to
 `TELLUS_GENERATED_ASSET_DIR`, or `/root/tellus-generated-assets` when that env
-var is unset. Point `TELLUS_GENERATED_ASSET_DIR` at the real Tank 3D or Z-drive
-folder on the host that runs Tellus.
+var is unset. Point `TELLUS_GENERATED_ASSET_DIR` at `Z:\3d\assets\tellus` on a
+Windows host, or mount that drive as `/mnt/z/3d/assets/tellus` on a Linux host or
+container. Tellus also translates Windows drive syntax such as
+`Z:\3d\assets\tellus` to `/mnt/z/3d/assets/tellus` when it is running on Linux.
 
 For Asset Forge / Pixel3D, configure the browser-visible API base URL:
 
