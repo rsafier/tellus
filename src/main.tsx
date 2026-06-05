@@ -889,17 +889,7 @@ function createFloatingRim(): THREE.Mesh {
 
 function createOceanSurface(): THREE.Mesh {
   const geometry = new THREE.CircleGeometry(OCEAN_RADIUS, 192);
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x234f72,
-    emissive: 0x173d58,
-    emissiveIntensity: 0.16,
-    roughness: 0.42,
-    metalness: 0,
-    transparent: true,
-    opacity: 0.82,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
+  const material = createBackdropWaterMaterial();
   const ocean = new THREE.Mesh(geometry, material);
   ocean.name = "tellus-surrounding-ocean";
   ocean.rotation.x = -Math.PI / 2;
@@ -1032,21 +1022,6 @@ function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
   return material;
 }
 
-function createWaterDistortionVeil(): THREE.Mesh {
-  const geometry = new THREE.CircleGeometry(POND_RADIUS * 0.92, 128);
-  const material = new THREE.MeshBasicMaterial({
-    color: 0xd8fbff,
-    transparent: true,
-    opacity: 0.16,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  const veil = new THREE.Mesh(geometry, material);
-  veil.name = "tellus-water-distortion-veil";
-  return veil;
-}
-
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   if (Array.isArray(material)) {
     for (const item of material) item.dispose();
@@ -1168,10 +1143,15 @@ function createPondWater(): THREE.Group {
   group.userData = { waterSurface: true };
 
   const waterLevel = terrainHeight(POND_CENTER.x, POND_CENTER.z) + 0.55;
-  const waterMaterial = createBackdropWaterMaterial();
   const water = new THREE.Mesh(
     new THREE.CircleGeometry(POND_RADIUS, 96),
-    waterMaterial,
+    new THREE.MeshBasicMaterial({
+      color: 0x6fb7d7,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
   );
   water.name = "tellus-pond-surface";
   water.rotation.x = -Math.PI / 2;
@@ -1211,12 +1191,7 @@ function createPondWater(): THREE.Group {
   shore.rotation.x = -Math.PI / 2;
   shore.position.set(POND_CENTER.x, waterLevel - 0.035, POND_CENTER.z);
 
-  const veil = createWaterDistortionVeil();
-  veil.rotation.x = -Math.PI / 2;
-  veil.position.set(POND_CENTER.x, waterLevel + 0.055, POND_CENTER.z);
-  veil.renderOrder = 3;
-
-  group.add(shore, water, veil, ripples);
+  group.add(shore, water, ripples);
   return group;
 }
 
@@ -2692,15 +2667,6 @@ function createTellusWorld(
           material.opacity = Math.max(0, 0.32 * (1 - phase));
         }
       });
-    }
-
-    const waterVeil = pondWater.getObjectByName("tellus-water-distortion-veil");
-    if (waterVeil) {
-      waterVeil.rotation.z = now * 0.00018;
-      const material = (waterVeil as THREE.Mesh).material;
-      if (material instanceof THREE.MeshBasicMaterial) {
-        material.opacity = 0.12 + Math.sin(now * 0.0017) * 0.035;
-      }
     }
 
     for (const agent of agents) {
