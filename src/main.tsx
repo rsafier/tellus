@@ -308,6 +308,7 @@ let terrainSaveTimer: number | undefined;
 let terrainStateDirty = false;
 let terrainStateLoaded = false;
 let terrainStateRevision = 0;
+let pageVisitorId: string | undefined;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 let tellusWorldBackendAvailable = false;
 const runtimeConfig: TellusRuntimeConfig = {
@@ -1082,12 +1083,8 @@ function tellusWorldWebSocketUrl(visitorId: string): string {
 }
 
 function tellusVisitorId(): string {
-  const storageKey = "tellus.visitorId";
-  const existing = window.localStorage.getItem(storageKey);
-  if (existing) return existing;
-  const visitorId = crypto.randomUUID();
-  window.localStorage.setItem(storageKey, visitorId);
-  return visitorId;
+  pageVisitorId ??= crypto.randomUUID();
+  return pageVisitorId;
 }
 
 function applyTellusTerrainState(parsed: unknown): boolean {
@@ -1205,6 +1202,7 @@ function generatedFromWorldPatch(parsed: unknown): WorldGeneratedThing[] | null 
 }
 
 async function loadTellusWorldState(): Promise<boolean> {
+  if (!runtimeConfig.worldApiBase) return false;
   const response = await fetch(tellusWorldHttpUrl("state"), { cache: "no-store" });
   if (!response.ok) return false;
   const terrain = terrainFromWorldPatch(await response.json());
@@ -4948,7 +4946,8 @@ function App(): React.ReactElement {
     if (!container) return;
     let cancelled = false;
     let world: TellusWorldApi | null = null;
-    void Promise.all([loadRuntimeConfig(), loadTellusState()])
+    void loadRuntimeConfig()
+      .then(() => loadTellusState())
       .catch((error) => {
         console.warn("Tellus startup state failed to load", error);
       })
