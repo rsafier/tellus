@@ -14,6 +14,9 @@
     "preview": "vite preview --host --port 4344",
     "start": "bun server.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:worker": "tsc -p tsconfig.cloudflare.json --noEmit",
+    "dev:worker": "wrangler dev --config wrangler.toml",
+    "deploy:worker": "wrangler deploy --config wrangler.toml",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
@@ -27,12 +30,14 @@
     "three": "0.183.2"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260605.1",
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/three": "0.183.1",
     "typescript": "^5.9.3",
     "vite": "^8.0.12",
-    "vitest": "4.1.0"
+    "vitest": "4.1.0",
+    "wrangler": "^4.98.0"
   }
 }
