@@ -5,12 +5,6 @@ import generate3DHandler from "./api/generate-3d";
 import generatedAssetsHandler from "./api/generated-assets";
 import gradioFileHandler from "./api/gradio-file";
 
-function normalizeHyadesBaseUrl(baseUrl: string) {
-  return /\/v\d+\/?$/i.test(baseUrl)
-    ? baseUrl
-    : `${baseUrl.replace(/\/+$/, "")}/v1`;
-}
-
 async function bodyFromRequest(request: import("node:http").IncomingMessage) {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -44,6 +38,7 @@ export default defineConfig(({ mode }) => {
     "ZAI_BASE_URL",
     "ZAI_API_KEY",
     "ZAI_MODEL",
+    "ZAI_THINKING_TYPE",
     "HYADES_BASE_URL",
     "HYADES_API_KEY",
     "OPENAI_API_KEY",
@@ -75,9 +70,11 @@ export default defineConfig(({ mode }) => {
   ]) {
     if (env[key]) process.env[key] = env[key];
   }
-  const hyadesBaseUrl = normalizeHyadesBaseUrl(
+  const hyadesBaseUrl = /\/v\d+\/?$/i.test(
     env.HYADES_BASE_URL ?? "http://192.168.1.187/v1",
-  );
+  )
+    ? (env.HYADES_BASE_URL ?? "http://192.168.1.187/v1")
+    : `${(env.HYADES_BASE_URL ?? "http://192.168.1.187").replace(/\/+$/, "")}/v1`;
   const hyadesApiKey = env.HYADES_API_KEY;
 
   return {
@@ -85,16 +82,8 @@ export default defineConfig(({ mode }) => {
       host: true,
       port: 3344,
       strictPort: true,
-      proxy: !env.ZAI_API_KEY && hyadesApiKey
+      proxy: hyadesApiKey
         ? {
-            "/api/chat": {
-              target: hyadesBaseUrl,
-              changeOrigin: true,
-              rewrite: () => "/chat/completions",
-              headers: {
-                Authorization: `Bearer ${hyadesApiKey}`,
-              },
-            },
             "/api/tts": {
               target: hyadesBaseUrl,
               changeOrigin: true,
@@ -112,7 +101,7 @@ export default defineConfig(({ mode }) => {
         name: "tellus-api-dev",
         configureServer(server) {
           server.middlewares.use(async (request, response, next) => {
-            if (!request.url?.startsWith("/api/chat") || !env.ZAI_API_KEY) {
+            if (!request.url?.startsWith("/api/chat")) {
               next();
               return;
             }

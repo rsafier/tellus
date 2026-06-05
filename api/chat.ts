@@ -5,30 +5,31 @@ function chatHeaders(apiKey: string): Headers {
   });
 }
 
-function chatProviderConfig(): { baseUrl: string; apiKey: string; name: string } {
-  const zaiApiKey = process.env.ZAI_API_KEY;
-  if (zaiApiKey) {
-    return {
-      baseUrl:
-        process.env.ZAI_BASE_URL ?? "https://api.z.ai/api/coding/paas/v4",
-      apiKey: zaiApiKey,
-      name: "Z.ai",
-    };
+function zaiProviderConfig(): { baseUrl: string; apiKey: string; name: string } {
+  const apiKey = process.env.ZAI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("ZAI_API_KEY is required for Tellus agent chat");
   }
 
-  const apiKey = process.env.HYADES_API_KEY;
-  if (!apiKey) {
-    throw new Error("ZAI_API_KEY or HYADES_API_KEY is required");
-  }
-  const hyadesBaseUrl = process.env.HYADES_BASE_URL ?? "http://192.168.1.187/v1";
-  const normalizedHyadesBaseUrl = /\/v\d+\/?$/i.test(hyadesBaseUrl)
-    ? hyadesBaseUrl
-    : `${hyadesBaseUrl.replace(/\/+$/, "")}/v1`;
   return {
-    baseUrl: normalizedHyadesBaseUrl,
+    baseUrl:
+      process.env.ZAI_BASE_URL?.trim() ??
+      "https://api.z.ai/api/coding/paas/v4",
     apiKey,
-    name: "Hyades",
+    name: "Z.ai",
   };
+}
+
+async function chatRequestBody(request: Request): Promise<string> {
+  const payload = (await request.json()) as Record<string, unknown>;
+  const model = process.env.ZAI_MODEL?.trim();
+  if (model) payload.model = model;
+  if (!payload.thinking) {
+    payload.thinking = {
+      type: process.env.ZAI_THINKING_TYPE?.trim() || "disabled",
+    };
+  }
+  return JSON.stringify(payload);
 }
 
 export default async function handler(request: Request): Promise<Response> {
@@ -36,12 +37,12 @@ export default async function handler(request: Request): Promise<Response> {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const provider = chatProviderConfig();
   try {
+    const provider = zaiProviderConfig();
     const upstream = await fetch(`${provider.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       headers: chatHeaders(provider.apiKey),
-      body: await request.text(),
+      body: await chatRequestBody(request),
     });
     return new Response(upstream.body, {
       status: upstream.status,
@@ -55,7 +56,7 @@ export default async function handler(request: Request): Promise<Response> {
         error:
           error instanceof Error
             ? error.message
-            : `${provider.name} proxy failed`,
+            : "Z.ai proxy failed",
       },
       { status: 502 },
     );
