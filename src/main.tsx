@@ -43,6 +43,8 @@ import "./styles.css";
 type AgentId = "johnny" | "mira" | "sol" | "atlas";
 
 type TerrainKind = "meadow" | "rock" | "snow" | "beach" | "dirt" | "water";
+type TerrainPaintKind = Exclude<TerrainKind, "water">;
+type TerrainEditMode = "raise" | "lower" | "flatten" | TerrainPaintKind;
 type GeneratedKind =
   | "tree"
   | "flower"
@@ -102,6 +104,7 @@ interface DistantIslandSpec {
   scaleZ: number;
   rotationY: number;
   sculptOffsets: Float32Array;
+  paint: Uint8Array;
 }
 
 interface TellusLog {
@@ -147,7 +150,7 @@ interface TellusWorldApi {
   moveGeneratedToWater(id: string): void;
   boardGenerated(id: string): void;
   disembark(): void;
-  sculptTerrain(mode: "raise" | "lower" | "flatten"): void;
+  sculptTerrain(mode: TerrainEditMode): void;
   talkToAgent(agentId: AgentId, message: string): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
@@ -246,6 +249,8 @@ const DISTANT_ISLAND_COUNT = 18;
 const TERRAIN_SEGMENTS = 96;
 const DISTANT_TERRAIN_SEGMENTS = 32;
 const DISTANT_TERRAIN_VERTEX_COUNT = DISTANT_TERRAIN_SEGMENTS + 1;
+const CENTRAL_WALK_RADIUS = WORLD_RADIUS - 0.5;
+const DISTANT_WALK_LOCAL_RADIUS = 1.02;
 const AGENT_SPEED = 5.2;
 const PLAYER_SPEED = 13;
 const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
@@ -258,6 +263,7 @@ const TERRAIN_SCULPT_STEP = 0.72;
 const terrainSculptOffsets = new Float32Array(
   TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
 );
+const terrainPaint = new Uint8Array(TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT);
 let terrainSaveTimer: number | undefined;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 const runtimeConfig: TellusRuntimeConfig = {
@@ -294,6 +300,26 @@ const terrainColors: Record<TerrainKind, THREE.Color> = {
   dirt: new THREE.Color(0x8a7241),
   water: new THREE.Color(0x256f92),
 };
+
+const terrainPaintKinds = [
+  "meadow",
+  "beach",
+  "dirt",
+  "rock",
+  "snow",
+] as const satisfies readonly TerrainPaintKind[];
+
+function terrainPaintCode(kind: TerrainPaintKind): number {
+  return terrainPaintKinds.indexOf(kind) + 1;
+}
+
+function terrainPaintKindFromCode(code: number): TerrainPaintKind | null {
+  return terrainPaintKinds[code - 1] ?? null;
+}
+
+function isTerrainPaintMode(mode: TerrainEditMode): mode is TerrainPaintKind {
+  return terrainPaintKinds.includes(mode as TerrainPaintKind);
+}
 
 function createAgentSeeds(): TellusAgent[] {
   const seeds: TellusAgent[] = [
@@ -396,6 +422,33 @@ function terrainSculptOffsetAt(x: number, z: number): number {
   );
 }
 
+function centralTerrainGridCoords(
+  x: number,
+  z: number,
+): { xIndex: number; zIndex: number } {
+  return {
+    xIndex: Math.round(
+      clamp(
+        ((x / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
+        0,
+        TERRAIN_SEGMENTS,
+      ),
+    ),
+    zIndex: Math.round(
+      clamp(
+        ((z / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
+        0,
+        TERRAIN_SEGMENTS,
+      ),
+    ),
+  };
+}
+
+function centralTerrainPaintAt(x: number, z: number): TerrainPaintKind | null {
+  const { xIndex, zIndex } = centralTerrainGridCoords(x, z);
+  return terrainPaintKindFromCode(terrainPaint[terrainGridIndex(xIndex, zIndex)]);
+}
+
 function distantIslandLocalPoint(
   spec: DistantIslandSpec,
   x: number,
@@ -454,6 +507,9 @@ function createDistantIslandSpec(index: number): DistantIslandSpec {
     sculptOffsets: new Float32Array(
       DISTANT_TERRAIN_VERTEX_COUNT * DISTANT_TERRAIN_VERTEX_COUNT,
     ),
+    paint: new Uint8Array(
+      DISTANT_TERRAIN_VERTEX_COUNT * DISTANT_TERRAIN_VERTEX_COUNT,
+    ),
   };
 }
 
@@ -509,6 +565,43 @@ function distantIslandSculptOffsetAt(
   );
 }
 
+function distantTerrainGridCoords(
+  spec: DistantIslandSpec,
+  x: number,
+  z: number,
+): { xIndex: number; zIndex: number } {
+  const { x: localX, z: localZ } = distantIslandLocalPoint(spec, x, z);
+  const radiusX = spec.bottomRadius * 0.92;
+  const radiusZ = radiusX * spec.scaleZ;
+  return {
+    xIndex: Math.round(
+      clamp(
+        ((localX / (radiusX * 2)) + 0.5) * DISTANT_TERRAIN_SEGMENTS,
+        0,
+        DISTANT_TERRAIN_SEGMENTS,
+      ),
+    ),
+    zIndex: Math.round(
+      clamp(
+        ((localZ / (radiusZ * 2)) + 0.5) * DISTANT_TERRAIN_SEGMENTS,
+        0,
+        DISTANT_TERRAIN_SEGMENTS,
+      ),
+    ),
+  };
+}
+
+function distantTerrainPaintAt(
+  spec: DistantIslandSpec,
+  x: number,
+  z: number,
+): TerrainPaintKind | null {
+  const { xIndex, zIndex } = distantTerrainGridCoords(spec, x, z);
+  return terrainPaintKindFromCode(
+    spec.paint[distantTerrainGridIndex(xIndex, zIndex)],
+  );
+}
+
 function nearestDistantIsland(
   x: number,
   z: number,
@@ -533,10 +626,10 @@ function distantIslandHeight(spec: DistantIslandSpec, x: number, z: number): num
 }
 
 function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
-  if (Math.hypot(x, z) <= WORLD_RADIUS - 2) {
+  if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) {
     return { x, y: terrainHeight(x, z), z };
   }
-  const distantIsland = nearestDistantIsland(x, z, 0.96);
+  const distantIsland = nearestDistantIsland(x, z, DISTANT_WALK_LOCAL_RADIUS);
   if (distantIsland) {
     return { x, y: distantIslandHeight(distantIsland, x, z), z };
   }
@@ -545,10 +638,10 @@ function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
 
 function normalizedDiscPosition(x: number, z: number): Vec3 {
   const radius = Math.hypot(x, z);
-  if (radius <= WORLD_RADIUS - 2) {
+  if (radius <= CENTRAL_WALK_RADIUS) {
     return { x, y: terrainHeight(x, z), z };
   }
-  const scale = (WORLD_RADIUS - 2) / radius;
+  const scale = CENTRAL_WALK_RADIUS / radius;
   const nx = x * scale;
   const nz = z * scale;
   return { x: nx, y: terrainHeight(nx, nz), z: nz };
@@ -734,6 +827,8 @@ function terrainHeight(x: number, z: number): number {
 }
 
 function terrainKind(x: number, z: number, y: number): TerrainKind {
+  const painted = centralTerrainPaintAt(x, z);
+  if (painted) return painted;
   const pondDistance = Math.hypot(x - 18, z + 12);
   if (pondDistance < 7 && y < 1.9) return "water";
   if (y > 13.5) return "snow";
@@ -830,6 +925,10 @@ function terrainOffsetsPayload(): number[] {
   return Array.from(terrainSculptOffsets, (value) => Number(value.toFixed(4)));
 }
 
+function terrainPaintPayload(): number[] {
+  return Array.from(terrainPaint);
+}
+
 function distantTerrainOffsetsPayload(): Record<string, number[]> {
   return Object.fromEntries(
     distantIslandSpecs.map((spec) => [
@@ -839,11 +938,19 @@ function distantTerrainOffsetsPayload(): Record<string, number[]> {
   );
 }
 
+function distantTerrainPaintPayload(): Record<string, number[]> {
+  return Object.fromEntries(
+    distantIslandSpecs.map((spec) => [String(spec.seed), Array.from(spec.paint)]),
+  );
+}
+
 function tellusStatePayload(): string {
   return JSON.stringify({
     version: 2,
     terrainSculptOffsets: terrainOffsetsPayload(),
+    terrainPaint: terrainPaintPayload(),
     distantIslandSculptOffsets: distantTerrainOffsetsPayload(),
+    distantIslandPaint: distantTerrainPaintPayload(),
     savedAt: new Date().toISOString(),
   });
 }
@@ -854,7 +961,9 @@ async function loadTellusState(): Promise<void> {
   const parsed = (await response.json()) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
   const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
+  const paint = (parsed as { terrainPaint?: unknown }).terrainPaint;
   terrainSculptOffsets.fill(0);
+  terrainPaint.fill(0);
   if (Array.isArray(offsets)) {
     for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
       const value = offsets[i];
@@ -863,19 +972,47 @@ async function loadTellusState(): Promise<void> {
         : 0;
     }
   }
+  if (Array.isArray(paint)) {
+    for (let i = 0; i < Math.min(paint.length, terrainPaint.length); i++) {
+      const value = paint[i];
+      terrainPaint[i] =
+        typeof value === "number" && Number.isFinite(value)
+          ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+          : 0;
+    }
+  }
   const distantOffsets = (parsed as {
     distantIslandSculptOffsets?: unknown;
   }).distantIslandSculptOffsets;
+  const distantPaint = (parsed as {
+    distantIslandPaint?: unknown;
+  }).distantIslandPaint;
   for (const spec of distantIslandSpecs) {
     spec.sculptOffsets.fill(0);
-    if (!distantOffsets || typeof distantOffsets !== "object") continue;
-    const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
-    if (!Array.isArray(values)) continue;
-    for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
-      const value = values[i];
-      spec.sculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
-        ? clamp(value, -9, 9)
-        : 0;
+    spec.paint.fill(0);
+    if (distantOffsets && typeof distantOffsets === "object") {
+      const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
+      if (Array.isArray(values)) {
+        for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
+          const value = values[i];
+          spec.sculptOffsets[i] =
+            typeof value === "number" && Number.isFinite(value)
+              ? clamp(value, -9, 9)
+              : 0;
+        }
+      }
+    }
+    if (distantPaint && typeof distantPaint === "object") {
+      const values = (distantPaint as Record<string, unknown>)[String(spec.seed)];
+      if (Array.isArray(values)) {
+        for (let i = 0; i < Math.min(values.length, spec.paint.length); i++) {
+          const value = values[i];
+          spec.paint[i] =
+            typeof value === "number" && Number.isFinite(value)
+              ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+              : 0;
+        }
+      }
     }
   }
 }
@@ -1175,10 +1312,13 @@ function createDistantIslandTerrainGeometry(
       const world = distantIslandWorldPoint(spec, px, pz);
       const y = distantIslandHeight(spec, world.x, world.z) - SEA_LEVEL;
       positions.push(px, y, pz);
-      const color = new THREE.Color(0x5a9735).lerp(
-        new THREE.Color(0x7a6a4a),
-        clamp(localRadius * 0.42, 0, 0.42),
-      );
+      const painted = distantTerrainPaintAt(spec, world.x, world.z);
+      const color = painted
+        ? terrainColors[painted].clone()
+        : new THREE.Color(0x5a9735).lerp(
+            new THREE.Color(0x7a6a4a),
+            clamp(localRadius * 0.42, 0, 0.42),
+          );
       const noise = 0.9 + rand(spec.seed + xIndex * 41 + zIndex * 83) * 0.14;
       color.multiplyScalar(noise);
       colors.push(color.r, color.g, color.b);
@@ -2426,8 +2566,9 @@ function createTellusWorld(
     mesh.geometry = createDistantIslandTerrainGeometry(spec);
   };
 
-  const sculptTerrain = (mode: "raise" | "lower" | "flatten") => {
+  const sculptTerrain = (mode: TerrainEditMode) => {
     const center = visitorPosition;
+    const paintCode = isTerrainPaintMode(mode) ? terrainPaintCode(mode) : 0;
     const distantIsland =
       Math.hypot(center.x, center.z) > WORLD_RADIUS - 2
         ? nearestDistantIsland(center.x, center.z, 1.04)
@@ -2451,7 +2592,9 @@ function createTellusWorld(
           const falloff =
             (1 + Math.cos((distance / TERRAIN_SCULPT_RADIUS) * Math.PI)) * 0.5;
           const index = distantTerrainGridIndex(xIndex, zIndex);
-          if (mode === "flatten") {
+          if (paintCode) {
+            if (falloff > 0.18) distantIsland.paint[index] = paintCode;
+          } else if (mode === "flatten") {
             const currentHeight =
               SEA_LEVEL +
               0.28 +
@@ -2486,7 +2629,9 @@ function createTellusWorld(
           const falloff =
             (1 + Math.cos((distance / TERRAIN_SCULPT_RADIUS) * Math.PI)) * 0.5;
           const index = terrainGridIndex(xIndex, zIndex);
-          if (mode === "flatten") {
+          if (paintCode) {
+            if (falloff > 0.18) terrainPaint[index] = paintCode;
+          } else if (mode === "flatten") {
             const currentHeight = baseTerrainHeight(x, z) + terrainSculptOffsets[index];
             terrainSculptOffsets[index] +=
               (targetHeight - currentHeight) * falloff * 0.62;
@@ -2514,8 +2659,8 @@ function createTellusWorld(
       agentName: "Visitor",
       tool: "interact",
       text: distantIsland
-        ? `${mode} terrain on distant island ${distantIsland.seed}`
-        : `${mode} terrain near the visitor`,
+        ? `${paintCode ? `paint ${mode}` : mode} terrain on distant island ${distantIsland.seed}`
+        : `${paintCode ? `paint ${mode}` : mode} terrain near the visitor`,
     });
     saveTellusStateSoon();
     publish();
@@ -3771,6 +3916,41 @@ function App(): React.ReactElement {
               onClick={() => worldRef.current?.sculptTerrain("flatten")}
             >
               <span>Flatten</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("meadow")}
+            >
+              <span>Meadow</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("beach")}
+            >
+              <span>Beach</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("dirt")}
+            >
+              <span>Dirt</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("rock")}
+            >
+              <span>Rock</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("snow")}
+            >
+              <span>Snow</span>
             </button>
           </div>
         </section>
