@@ -332,13 +332,13 @@ async function fetchBytes(url: string): Promise<{ bytes: Buffer; mime: string }>
 }
 
 function imageGenerationPrompt(prompt: string, kind: string): string {
+  const assetDescription = prompt.trim();
   return [
-    prompt,
-    "",
-    `Create one ${kind} asset concept image for a stylized 3D game world.`,
-    "Show exactly one centered subject, full body or full object, isolated on a plain white background.",
-    "Use clear readable silhouette, soft studio lighting, no text, no labels, no UI, no crop, no background scene.",
-    "Low-poly friendly proportions, game-ready asset concept art, front three-quarter view.",
+    `Generate a high quality game asset for ${assetDescription} on a plain white background.`,
+    `The output must show exactly one single complete ${kind} asset.`,
+    "Do not include a scene, landscape, habitat, collection, extra props, text, logo, watermark, UI, frame, or label.",
+    "Center the asset, show the full object without cropping, use a clear readable silhouette, soft studio lighting, and front three-quarter view.",
+    "Stylized low-poly friendly proportions, game-ready concept art, isolated subject.",
   ].join(" ");
 }
 

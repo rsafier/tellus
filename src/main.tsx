@@ -1438,7 +1438,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You may generate any visible 3D asset you want: objects, plants, animals, characters, buildings, tools, vehicles, bridges, paths, terrain features, water features, habitats, landmarks, or other game-ready props. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt should be a detailed description of exactly one asset or cohesive small scene-piece you wish to bring into the world. The speech should be one short in-character sentence said aloud before you act.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You may generate any visible 3D asset you want: an object, plant, animal, character, building, tool, vehicle, bridge, path segment, terrain feature, water feature, habitat prop, landmark, or other game-ready prop. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt must describe exactly one single asset, not a scene, set, collection, habitat, landscape, or group of objects. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
