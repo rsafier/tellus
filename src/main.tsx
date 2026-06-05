@@ -1,18 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Bot,
   Box,
-  Compass,
   Leaf,
   MessageCircle,
   Mic,
   Mountain,
   Pause,
   Play,
+  RotateCcw,
+  RotateCw,
   Send,
   Ship,
   Sparkles,
+  Trash2,
   Wand2,
 } from "lucide-react";
 import * as THREE from "three";
@@ -73,6 +79,7 @@ interface GeneratedThing {
   prompt: string;
   creatorId: AgentId | "visitor";
   position: Vec3;
+  rotationY: number;
   scale: number;
   color: number;
   modelUrl?: string;
@@ -130,6 +137,8 @@ interface TellusWorldApi {
   interact(request: InteractRequest): TellusLog;
   selectGenerated(id?: string): void;
   moveGenerated(id: string, dx: number, dz: number): void;
+  rotateGenerated(id: string, radians: number): void;
+  deleteGenerated(id: string): void;
   moveGeneratedToWater(id: string): void;
   boardGenerated(id: string): void;
   disembark(): void;
@@ -246,7 +255,7 @@ const runtimeConfig: TellusRuntimeConfig = {
   generationProvider:
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
-      | undefined) ?? "local",
+      | undefined) ?? "asset-forge",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
   enabledAgents: ["johnny"],
   avatars: {
@@ -1206,6 +1215,7 @@ async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<T
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, assetTargetHeight(thing));
   fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind };
+  fitted.rotation.y = thing.rotationY;
   if (isFreeMovingVehicle(thing)) {
     fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
   } else {
@@ -1672,6 +1682,7 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
       placeObjectAboveGround(group, thing.position, 0.025);
     }
   }
+  group.rotation.y = thing.rotationY;
   return group;
 }
 
@@ -2186,6 +2197,7 @@ function createTellusWorld(
   const updateThingMeshPosition = (thing: GeneratedThing) => {
     const mesh = generatedMeshes.get(thing.id);
     if (!mesh) return;
+    mesh.rotation.y = thing.rotationY;
     if (
       mesh.userData.generatingSwirl ||
       isFreeMovingVehicle(thing) ||
@@ -2226,6 +2238,46 @@ function createTellusWorld(
       visitorPosition = { ...position };
     }
     updateThingMeshPosition(thing);
+    publish();
+  };
+
+  const rotateGenerated = (id: string, radians: number) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    thing.rotationY += radians;
+    const mesh = generatedMeshes.get(id);
+    if (mesh) mesh.rotation.y = thing.rotationY;
+    publish();
+  };
+
+  const deleteGenerated = (id: string) => {
+    const index = generated.findIndex((thing) => thing.id === id);
+    if (index < 0) return;
+    const [thing] = generated.splice(index, 1);
+    pendingGenerationControllers.get(id)?.abort();
+    pendingGenerationControllers.delete(id);
+    const mesh = generatedMeshes.get(id);
+    if (mesh) {
+      scene.remove(mesh);
+      disposeObject(mesh);
+      generatedMeshes.delete(id);
+    }
+    if (sailingThingId === id) {
+      sailingThingId = undefined;
+      visitorPosition = groundedPosition(
+        thing.position.x,
+        thing.position.z,
+        visitorPosition,
+      );
+    }
+    selectedThingId =
+      generated[Math.min(index, generated.length - 1)]?.id ?? undefined;
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "interact",
+      text: `deleted ${thing.kind}: ${thing.prompt}`,
+    });
     publish();
   };
 
@@ -2362,6 +2414,7 @@ function createTellusWorld(
       prompt: request.prompt,
       creatorId: request.creatorId,
       position,
+      rotationY: 0,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
       color: kindColor(kind, request.prompt),
       generationStatus: hasExternalGenerationProvider() ? "queued" : "local",
@@ -2406,7 +2459,7 @@ function createTellusWorld(
       });
       void startPixel3DGeneration(thing, generationController.signal)
         .then(async (pipeline) => {
-          if (destroyed || paused) return;
+          if (destroyed || paused || !thingById(thing.id)) return;
           thing.pipelineId = pipeline.pipelineId;
           thing.generationStatus = "generating";
           addLog({
@@ -2419,7 +2472,7 @@ function createTellusWorld(
             pipeline.pipelineId,
             generationController.signal,
           );
-          if (destroyed || paused) return;
+          if (destroyed || paused || !thingById(thing.id)) return;
           thing.modelUrl = modelUrl;
           addLog({
             agentId: "world",
@@ -2428,7 +2481,7 @@ function createTellusWorld(
             text: `Pixel3D returned a model URL for ${thing.kind}; loading it into Tellus.`,
           });
           const model = await loadGeneratedModel(modelUrl, thing);
-          if (destroyed || paused) {
+          if (destroyed || paused || !thingById(thing.id)) {
             disposeObject(model);
             return;
           }
@@ -2449,6 +2502,7 @@ function createTellusWorld(
           publish();
         })
         .catch((error) => {
+          if (!thingById(thing.id)) return;
           if (paused || generationController.signal.aborted) {
             thing.generationStatus = "local";
             showLocalFallbackMesh();
@@ -2481,7 +2535,7 @@ function createTellusWorld(
       });
       void startDirectInstantMeshGeneration(thing, generationController.signal)
         .then(async (result) => {
-          if (destroyed || paused) return;
+          if (destroyed || paused || !thingById(thing.id)) return;
           thing.pipelineId = result.jobId;
           thing.modelUrl = result.modelUrl;
           addLog({
@@ -2491,7 +2545,7 @@ function createTellusWorld(
             text: `InstantMesh used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ?? "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
           });
           const model = await loadGeneratedModel(result.modelUrl, thing);
-          if (destroyed || paused) {
+          if (destroyed || paused || !thingById(thing.id)) {
             disposeObject(model);
             return;
           }
@@ -2512,6 +2566,7 @@ function createTellusWorld(
           publish();
         })
         .catch((error) => {
+          if (!thingById(thing.id)) return;
           if (paused || generationController.signal.aborted) {
             thing.generationStatus = "local";
             showLocalFallbackMesh();
@@ -2759,7 +2814,8 @@ function createTellusWorld(
       if (mesh) {
         mesh.position.set(boat.position.x, boat.position.y, boat.position.z);
         if (movement.lengthSq() > 0.001) {
-          mesh.rotation.y = Math.atan2(movement.x, movement.z);
+          boat.rotationY = Math.atan2(movement.x, movement.z);
+          mesh.rotation.y = boat.rotationY;
         }
       }
       publish();
@@ -3084,6 +3140,8 @@ function createTellusWorld(
     interact,
     selectGenerated,
     moveGenerated,
+    rotateGenerated,
+    deleteGenerated,
     moveGeneratedToWater,
     boardGenerated,
     disembark,
@@ -3348,7 +3406,7 @@ function App(): React.ReactElement {
         {selectedThing && (
           <section className="asset-card">
             <div className="section-heading">
-              <Compass size={16} />
+              <Box size={16} />
               <span>Position Asset</span>
             </div>
             <select
@@ -3371,24 +3429,29 @@ function App(): React.ReactElement {
                 {selectedThing.position.z.toFixed(1)}
               </span>
             </div>
-            <div className="nudge-grid">
+            <div className="transform-grid">
               <button
                 type="button"
                 className="secondary-button"
+                title="Move forward"
+                aria-label="Move forward"
                 onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 0, -2)}
               >
-                <span>N</span>
+                <ArrowUp size={17} />
               </button>
               <button
                 type="button"
                 className="secondary-button"
+                title="Move left"
+                aria-label="Move left"
                 onClick={() => worldRef.current?.moveGenerated(selectedThing.id, -2, 0)}
               >
-                <span>W</span>
+                <ArrowLeft size={17} />
               </button>
               <button
                 type="button"
                 className="secondary-button"
+                title="Move to water, air, or island edge"
                 onClick={() => worldRef.current?.moveGeneratedToWater(selectedThing.id)}
               >
                 <span>
@@ -3402,18 +3465,48 @@ function App(): React.ReactElement {
               <button
                 type="button"
                 className="secondary-button"
+                title="Move right"
+                aria-label="Move right"
                 onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 2, 0)}
               >
-                <span>E</span>
+                <ArrowRight size={17} />
               </button>
               <button
                 type="button"
                 className="secondary-button"
+                title="Rotate left"
+                aria-label="Rotate left"
+                onClick={() => worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 8)}
+              >
+                <RotateCcw size={17} />
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                title="Move backward"
+                aria-label="Move backward"
                 onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 0, 2)}
               >
-                <span>S</span>
+                <ArrowDown size={17} />
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                title="Rotate right"
+                aria-label="Rotate right"
+                onClick={() => worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 8)}
+              >
+                <RotateCw size={17} />
               </button>
             </div>
+            <button
+              type="button"
+              className="danger-button wide-button"
+              onClick={() => worldRef.current?.deleteGenerated(selectedThing.id)}
+            >
+              <Trash2 size={16} />
+              <span>Delete Asset</span>
+            </button>
             {selectedThingVehicleMode && (
               <button
                 type="button"

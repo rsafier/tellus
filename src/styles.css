@@ -315,6 +315,47 @@ textarea {
   grid-column: 2;
 }
 
+.transform-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.transform-grid button:first-child {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.transform-grid button:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.transform-grid button:nth-child(3) {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.transform-grid button:nth-child(4) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.transform-grid button:nth-child(5) {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+.transform-grid button:nth-child(6) {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.transform-grid button:nth-child(7) {
+  grid-column: 3;
+  grid-row: 3;
+}
+
 .wide-button {
   width: 100%;
 }
@@ -337,6 +378,19 @@ textarea {
   background: #6a8e3f;
   color: #101610;
   font-weight: 800;
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(214 115 102 / 42%);
+  background: rgb(88 35 31 / 72%);
+  color: #ffe6df;
+  font-weight: 750;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 10px;
 }
 
 .secondary-button:disabled {
