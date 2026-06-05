@@ -45,6 +45,7 @@ export default defineConfig(({ mode }) => {
     "HYADES_API_KEY",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
+    "ANIGEN_GRADIO_BASE_URL",
     "AUTOMATIC1111_BASE_URL",
     "COMFYUI_BASE_URL",
     "INSTANTMESH_GRADIO_BASE_URL",
