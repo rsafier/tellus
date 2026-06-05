@@ -28,6 +28,7 @@ body {
 }
 
 button,
+select,
 textarea {
   font: inherit;
 }
@@ -185,6 +186,7 @@ textarea {
 .stat-grid div,
 .tool-card,
 .prompt-card,
+.asset-card,
 .agents-card,
 .log-card {
   border: 1px solid rgb(255 255 255 / 10%);
@@ -208,6 +210,7 @@ textarea {
 
 .tool-card,
 .prompt-card,
+.asset-card,
 .agents-card,
 .log-card {
   padding: 12px;
@@ -258,6 +261,51 @@ textarea {
 
 .prompt-card textarea:focus {
   border-color: rgb(192 226 153 / 50%);
+}
+
+.asset-card {
+  display: grid;
+  gap: 10px;
+}
+
+.asset-select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgb(255 255 255 / 12%);
+  background: rgb(0 0 0 / 24%);
+  color: #f5f0dc;
+  outline: none;
+  padding: 9px 10px;
+}
+
+.asset-select:focus {
+  border-color: rgb(192 226 153 / 50%);
+}
+
+.asset-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #a6bc96;
+  font-size: 12px;
+}
+
+.nudge-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.nudge-grid button:first-child {
+  grid-column: 2;
+}
+
+.nudge-grid button:last-child {
+  grid-column: 2;
+}
+
+.wide-button {
+  width: 100%;
 }
 
 .prompt-actions {

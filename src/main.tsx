@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Bot,
   Box,
+  Compass,
   Leaf,
   MessageCircle,
   Mic,
@@ -10,6 +11,7 @@ import {
   Pause,
   Play,
   Send,
+  Ship,
   Sparkles,
   Wand2,
 } from "lucide-react";
@@ -105,11 +107,18 @@ interface TellusSnapshot {
   generated: GeneratedThing[];
   logs: TellusLog[];
   paused: boolean;
+  selectedThingId?: string;
+  sailingThingId?: string;
 }
 
 interface TellusWorldApi {
   generate(request: GenerateRequest): GeneratedThing;
   interact(request: InteractRequest): TellusLog;
+  selectGenerated(id?: string): void;
+  moveGenerated(id: string, dx: number, dz: number): void;
+  moveGeneratedToWater(id: string): void;
+  boardGenerated(id: string): void;
+  disembark(): void;
   talkToAgent(agentId: AgentId, message: string): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
@@ -318,6 +327,83 @@ function normalizedDiscPosition(x: number, z: number): Vec3 {
   const nx = x * scale;
   const nz = z * scale;
   return { x: nx, y: terrainHeight(nx, nz), z: nz };
+}
+
+function oceanPosition(x: number, z: number): Vec3 {
+  const radius = Math.hypot(x, z);
+  const maxRadius = OCEAN_RADIUS - 12;
+  if (radius <= maxRadius) return { x, y: SEA_LEVEL + 0.14, z };
+  const scale = maxRadius / radius;
+  return { x: x * scale, y: SEA_LEVEL + 0.14, z: z * scale };
+}
+
+type VehicleMode = "water" | "air" | "ground";
+
+function vehicleMode(thing: GeneratedThing): VehicleMode | null {
+  const lower = thing.prompt.toLowerCase();
+  if (
+    thing.kind === "balloon" ||
+    lower.includes("balloon") ||
+    lower.includes("airship") ||
+    lower.includes("zeppelin") ||
+    lower.includes("glider") ||
+    lower.includes("flying") ||
+    lower.includes("air boat")
+  ) {
+    return "air";
+  }
+  if (
+    lower.includes("boat") ||
+    lower.includes("ship") ||
+    lower.includes("sail") ||
+    lower.includes("canoe") ||
+    lower.includes("raft") ||
+    lower.includes("skiff") ||
+    lower.includes("dinghy")
+  ) {
+    return "water";
+  }
+  if (
+    lower.includes("vehicle") ||
+    lower.includes("cart") ||
+    lower.includes("wagon") ||
+    lower.includes("carriage") ||
+    lower.includes("car ") ||
+    lower.includes("truck") ||
+    lower.includes("horse")
+  ) {
+    return "ground";
+  }
+  return null;
+}
+
+function isVehicleThing(thing: GeneratedThing): boolean {
+  return vehicleMode(thing) !== null;
+}
+
+function isFreeMovingVehicle(thing: GeneratedThing): boolean {
+  const mode = vehicleMode(thing);
+  return mode === "water" || mode === "air";
+}
+
+function airPosition(x: number, z: number): Vec3 {
+  const radius = Math.hypot(x, z);
+  const maxRadius = OCEAN_RADIUS - 14;
+  const scale = radius > maxRadius ? maxRadius / radius : 1;
+  const nx = x * scale;
+  const nz = z * scale;
+  const groundY =
+    Math.hypot(nx, nz) <= WORLD_RADIUS
+      ? terrainHeight(nx, nz)
+      : SEA_LEVEL;
+  return { x: nx, y: groundY + 12, z: nz };
+}
+
+function movedVehiclePosition(thing: GeneratedThing, x: number, z: number): Vec3 {
+  const mode = vehicleMode(thing);
+  if (mode === "air") return airPosition(x, z);
+  if (mode === "water") return oceanPosition(x, z);
+  return normalizedDiscPosition(x, z);
 }
 
 function terrainHeight(x: number, z: number): number {
@@ -887,7 +973,11 @@ async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<T
   const model = await loadGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, clamp(thing.scale * 2.25, 1.2, 4.2));
-  placeObjectAboveGround(fitted, thing.position, 0.08);
+  if (isFreeMovingVehicle(thing)) {
+    fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
+  } else {
+    placeObjectAboveGround(fitted, thing.position, 0.08);
+  }
   return fitted;
 }
 
@@ -1328,7 +1418,11 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
     group.add(seed);
   }
 
-  placeObjectAboveGround(group, thing.position, 0.025);
+  if (isFreeMovingVehicle(thing) || Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS) {
+    group.position.set(thing.position.x, thing.position.y, thing.position.z);
+  } else {
+    placeObjectAboveGround(group, thing.position, 0.025);
+  }
   return group;
 }
 
@@ -1590,6 +1684,8 @@ function createTellusWorld(
   const pendingAgentDecisions = new Set<AgentId>();
   const pendingGenerationControllers = new Map<string, AbortController>();
   const keys = new Set<string>();
+  let selectedThingId: string | undefined;
+  let sailingThingId: string | undefined;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xa7c3ef);
@@ -1656,6 +1752,8 @@ function createTellusWorld(
     })),
     logs: logs.slice(-80),
     paused,
+    selectedThingId,
+    sailingThingId,
   });
 
   const publish = () => onSnapshot(snapshot());
@@ -1677,6 +1775,119 @@ function createTellusWorld(
       controller.abort();
     }
     pendingGenerationControllers.clear();
+  };
+
+  const thingById = (id: string): GeneratedThing | undefined =>
+    generated.find((thing) => thing.id === id);
+
+  const updateThingMeshPosition = (thing: GeneratedThing) => {
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return;
+    if (
+      mesh.userData.generatingSwirl ||
+      isFreeMovingVehicle(thing) ||
+      Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
+    ) {
+      mesh.position.set(thing.position.x, thing.position.y, thing.position.z);
+      if (mesh.userData.generatingSwirl) {
+        mesh.userData.baseY = mesh.position.y;
+      }
+      return;
+    }
+    placeObjectAboveGround(mesh, thing.position, 0.04);
+  };
+
+  const selectGenerated = (id?: string) => {
+    selectedThingId = id && thingById(id) ? id : undefined;
+    publish();
+  };
+
+  const moveGenerated = (id: string, dx: number, dz: number) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    const position =
+      isVehicleThing(thing) || sailingThingId === id
+        ? movedVehiclePosition(thing, thing.position.x + dx, thing.position.z + dz)
+        : normalizedDiscPosition(thing.position.x + dx, thing.position.z + dz);
+    thing.position = position;
+    if (sailingThingId === id) {
+      visitorPosition = { ...position };
+    }
+    updateThingMeshPosition(thing);
+    publish();
+  };
+
+  const moveGeneratedToWater = (id: string) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    const mode = vehicleMode(thing);
+    const angle = Math.atan2(visitorPosition.z, visitorPosition.x) || 0.2;
+    const radius =
+      mode === "air"
+        ? Math.max(14, Math.hypot(thing.position.x, thing.position.z))
+        : WORLD_RADIUS + 5;
+    thing.position =
+      mode === "air"
+        ? airPosition(Math.cos(angle) * radius, Math.sin(angle) * radius)
+        : mode === "water"
+          ? oceanPosition(Math.cos(angle) * radius, Math.sin(angle) * radius)
+          : normalizedDiscPosition(
+              Math.cos(angle) * (WORLD_RADIUS - 4),
+              Math.sin(angle) * (WORLD_RADIUS - 4),
+            );
+    updateThingMeshPosition(thing);
+    publish();
+  };
+
+  const boardGenerated = (id: string) => {
+    const thing = thingById(id);
+    const mode = thing ? vehicleMode(thing) : null;
+    if (!thing || !mode) return;
+    sailingThingId = id;
+    selectedThingId = id;
+    if (mode === "water" && Math.hypot(thing.position.x, thing.position.z) < WORLD_RADIUS - 1) {
+      moveGeneratedToWater(id);
+    } else if (mode === "air") {
+      thing.position = airPosition(thing.position.x, thing.position.z);
+    }
+    const boarded = thingById(id);
+    if (boarded) {
+      visitorPosition = { ...boarded.position };
+      updateThingMeshPosition(boarded);
+    }
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "interact",
+      text: `boarded ${thing.kind}: ${thing.prompt}`,
+    });
+    publish();
+  };
+
+  const disembark = () => {
+    if (!sailingThingId) return;
+    const boat = thingById(sailingThingId);
+    sailingThingId = undefined;
+    if (boat) {
+      const mode = vehicleMode(boat);
+      const shoreDirection = new THREE.Vector3(boat.position.x, 0, boat.position.z);
+      if (mode === "air") {
+        visitorPosition = normalizedDiscPosition(boat.position.x, boat.position.z);
+      } else if (shoreDirection.lengthSq() > 0.001) {
+        shoreDirection.normalize();
+        visitorPosition = normalizedDiscPosition(
+          shoreDirection.x * (WORLD_RADIUS - 2),
+          shoreDirection.z * (WORLD_RADIUS - 2),
+        );
+      }
+    }
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "interact",
+      text: "stepped back onto Tellus.",
+    });
+    publish();
   };
 
   const chooseLocation = (request: GenerateRequest): Vec3 => {
@@ -2094,6 +2305,28 @@ function createTellusWorld(
     if (keys.has("a")) movement.sub(right);
     if (movement.lengthSq() === 0) return;
     movement.normalize().multiplyScalar(PLAYER_SPEED * delta);
+    if (sailingThingId) {
+      const boat = thingById(sailingThingId);
+      if (!boat) {
+        sailingThingId = undefined;
+        return;
+      }
+      boat.position = movedVehiclePosition(
+        boat,
+        boat.position.x + movement.x,
+        boat.position.z + movement.z,
+      );
+      visitorPosition = { ...boat.position };
+      const mesh = generatedMeshes.get(boat.id);
+      if (mesh) {
+        mesh.position.set(boat.position.x, boat.position.y, boat.position.z);
+        if (movement.lengthSq() > 0.001) {
+          mesh.rotation.y = Math.atan2(movement.x, movement.z);
+        }
+      }
+      publish();
+      return;
+    }
     visitorPosition = normalizedDiscPosition(
       visitorPosition.x + movement.x,
       visitorPosition.z + movement.z,
@@ -2392,6 +2625,11 @@ function createTellusWorld(
   return {
     generate,
     interact,
+    selectGenerated,
+    moveGenerated,
+    moveGeneratedToWater,
+    boardGenerated,
+    disembark,
     talkToAgent,
     setPaused,
     submitVisitorPrompt,
@@ -2498,6 +2736,13 @@ function App(): React.ReactElement {
       snapshot.agents[0],
     [selectedAgent, snapshot.agents],
   );
+  const selectedThing = useMemo(
+    () =>
+      snapshot.generated.find((thing) => thing.id === snapshot.selectedThingId) ??
+      snapshot.generated[snapshot.generated.length - 1],
+    [snapshot.generated, snapshot.selectedThingId],
+  );
+  const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
 
   const submitPrompt = () => {
     worldRef.current?.submitVisitorPrompt(prompt);
@@ -2524,6 +2769,7 @@ function App(): React.ReactElement {
           <span>WASD</span>
           <span>drag to look</span>
           <span>scroll to zoom</span>
+          {snapshot.sailingThingId && <span>piloting</span>}
         </div>
       </section>
 
@@ -2609,6 +2855,96 @@ function App(): React.ReactElement {
             </button>
           </div>
         </section>
+
+        {selectedThing && (
+          <section className="asset-card">
+            <div className="section-heading">
+              <Compass size={16} />
+              <span>Position Asset</span>
+            </div>
+            <select
+              className="asset-select"
+              value={selectedThing.id}
+              onChange={(event) =>
+                worldRef.current?.selectGenerated(event.target.value)
+              }
+            >
+              {snapshot.generated.map((thing) => (
+                <option key={thing.id} value={thing.id}>
+                  {thing.kind}: {thing.prompt.slice(0, 42)}
+                </option>
+              ))}
+            </select>
+            <div className="asset-meta">
+              <span>{selectedThing.generationStatus ?? "local"}</span>
+              <span>
+                x {selectedThing.position.x.toFixed(1)} z{" "}
+                {selectedThing.position.z.toFixed(1)}
+              </span>
+            </div>
+            <div className="nudge-grid">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 0, -2)}
+              >
+                <span>N</span>
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, -2, 0)}
+              >
+                <span>W</span>
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => worldRef.current?.moveGeneratedToWater(selectedThing.id)}
+              >
+                <span>
+                  {selectedThingVehicleMode === "air"
+                    ? "Lift"
+                    : selectedThingVehicleMode === "water"
+                      ? "Water"
+                      : "Edge"}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 2, 0)}
+              >
+                <span>E</span>
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 0, 2)}
+              >
+                <span>S</span>
+              </button>
+            </div>
+            {selectedThingVehicleMode && (
+              <button
+                type="button"
+                className="primary-button wide-button"
+                onClick={() =>
+                  snapshot.sailingThingId === selectedThing.id
+                    ? worldRef.current?.disembark()
+                    : worldRef.current?.boardGenerated(selectedThing.id)
+                }
+              >
+                <Ship size={16} />
+                <span>
+                  {snapshot.sailingThingId === selectedThing.id
+                    ? "Disembark"
+                    : "Board and Pilot"}
+                </span>
+              </button>
+            )}
+          </section>
+        )}
 
         <section className="agents-card">
           <div className="section-heading">
