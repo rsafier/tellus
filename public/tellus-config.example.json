@@ -1,7 +1,10 @@
 {
   "assetForgeApiBase": "",
+  "apiBase": "https://tellus-api.example.com",
   "generationProvider": "instantmesh-gradio",
   "agentModel": "GLM-5.1",
+  "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
+  "worldId": "main",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "enabledAgents": ["johnny"],
   "avatars": {

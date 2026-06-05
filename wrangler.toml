@@ -1,0 +1,15 @@
+name = "tellus-world"
+main = "cloudflare/world-worker.ts"
+compatibility_date = "2026-06-05"
+
+[[durable_objects.bindings]]
+name = "TELLUS_WORLD"
+class_name = "TellusWorld"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TellusWorld"]
+
+[[queues.producers]]
+binding = "TELLUS_GENERATION_QUEUE"
+queue = "tellus-generation"

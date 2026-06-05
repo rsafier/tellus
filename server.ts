@@ -57,32 +57,54 @@ async function serveStatic(pathname: string): Promise<Response> {
 
 const port = Number(process.env.PORT ?? 3000);
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Max-Age": "86400",
+};
+
+function withCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(corsHeaders)) {
+    headers.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, service: "tellus" });
+      return withCors(Response.json({ ok: true, service: "tellus" }));
     }
     if (url.pathname.startsWith("/api/chat")) {
-      return chatHandler(request);
+      return withCors(await chatHandler(request));
     }
     if (url.pathname.startsWith("/api/generate-3d")) {
-      return generate3DHandler(request);
+      return withCors(await generate3DHandler(request));
     }
     if (url.pathname.startsWith("/api/gradio-file")) {
-      return gradioFileHandler(request);
+      return withCors(await gradioFileHandler(request));
     }
     if (url.pathname.startsWith("/api/tellus-state")) {
-      return tellusStateHandler(request);
+      return withCors(await tellusStateHandler(request));
     }
     if (url.pathname.startsWith("/api/world-feedback")) {
-      return worldFeedbackHandler(request);
+      return withCors(await worldFeedbackHandler(request));
     }
     if (url.pathname.startsWith("/generated-assets/")) {
-      return generatedAssetsHandler(request);
+      return withCors(await generatedAssetsHandler(request));
     }
-    return serveStatic(url.pathname);
+    return withCors(await serveStatic(url.pathname));
   },
 });
 
