@@ -25,7 +25,10 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { MeshBasicNodeMaterial, WebGPURenderer } from "three/webgpu";
+import {
+  MeshBasicNodeMaterial,
+  WebGPURenderer,
+} from "three/webgpu";
 import {
   color,
   linearDepth,
@@ -267,6 +270,13 @@ const TERRAIN_SCULPT_RADIUS = 6.2;
 const TERRAIN_SCULPT_STEP = 0.72;
 const WORLD_FEEDBACK_INTERVAL_MS = 75_000;
 const WORLD_FEEDBACK_START_DELAY_MS = 14_000;
+const SKYBOX_FALLBACK_URLS = [
+  "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
+  "/skybox/free_-_skybox_in_the_cloud.glb",
+  "/skybox/skybox_skydays_3.glb",
+  "/skybox/free_-_skybox_basic_sky.glb",
+];
+const SKYBOX_VERTICAL_OFFSET = 0;
 const terrainSculptOffsets = new Float32Array(
   TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
 );
@@ -1365,9 +1375,21 @@ function createFloatingRim(): THREE.Mesh {
   return new THREE.Mesh(geometry, material);
 }
 
-function createOceanSurface(): THREE.Mesh {
+function createFallbackOceanMaterial(): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    color: 0x49a8d8,
+    transparent: true,
+    opacity: 0.72,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+}
+
+function createOceanSurface(useBackdropWater: boolean): THREE.Mesh {
   const geometry = new THREE.CircleGeometry(OCEAN_RADIUS, 192);
-  const material = createBackdropWaterMaterial();
+  const material = useBackdropWater
+    ? createBackdropWaterMaterial()
+    : createFallbackOceanMaterial();
   const ocean = new THREE.Mesh(geometry, material);
   ocean.name = "tellus-surrounding-ocean";
   ocean.rotation.x = -Math.PI / 2;
@@ -1630,9 +1652,11 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
   const scale = largestAxis > 0 ? 520 / largestAxis : 1;
 
   model.name = "tellus-external-skybox";
-  model.position.sub(center);
+  model.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
   model.scale.setScalar(scale);
   model.renderOrder = -100;
+  model.userData.skyboxBoundsCenter = center;
+  model.userData.skyboxBoundsScale = scale;
 
   model.traverse((child) => {
     child.frustumCulled = false;
@@ -1644,9 +1668,10 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
       const skyMaterial = new THREE.MeshBasicMaterial({
         map,
         color: map ? 0xffffff : 0xaac8f2,
-        side: THREE.BackSide,
+        side: THREE.DoubleSide,
         depthWrite: false,
         depthTest: false,
+        fog: false,
         toneMapped: false,
       });
       material.side = THREE.DoubleSide;
@@ -1659,11 +1684,28 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
   return model;
 }
 
-async function loadSkyboxModel(): Promise<THREE.Object3D | null> {
-  if (!runtimeConfig.skyboxUrl) return null;
-  const response = await fetch(runtimeConfig.skyboxUrl, { method: "HEAD" });
-  if (!response.ok) return null;
-  return prepareSkyboxModel(await loadGltfObject(runtimeConfig.skyboxUrl));
+async function loadSkyboxModel(): Promise<
+  { model: THREE.Object3D; url: string } | null
+> {
+  const urls = [
+    runtimeConfig.skyboxUrl,
+    ...SKYBOX_FALLBACK_URLS,
+  ].filter(
+    (url, index, all): url is string =>
+      typeof url === "string" &&
+      url.trim().length > 0 &&
+      all.indexOf(url) === index,
+  );
+
+  for (const url of urls) {
+    try {
+      return { model: prepareSkyboxModel(await loadGltfObject(url)), url };
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
 async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | null> {
@@ -1778,38 +1820,6 @@ function createPondWater(): THREE.Group {
   shore.position.set(POND_CENTER.x, waterLevel - 0.035, POND_CENTER.z);
 
   group.add(shore, water, ripples);
-  return group;
-}
-
-function createCloud(seed: number): THREE.Group {
-  const group = new THREE.Group();
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 1,
-    transparent: true,
-    opacity: 0.55,
-  });
-  const count = 4 + Math.floor(rand(seed) * 4);
-  for (let i = 0; i < count; i++) {
-    const puff = new THREE.Mesh(
-      new THREE.SphereGeometry(2.5 + rand(seed + i) * 2, 12, 8),
-      material,
-    );
-    puff.scale.y = 0.35;
-    puff.position.set(
-      (i - count / 2) * 2.5,
-      rand(seed + i * 7) * 1.3,
-      rand(seed + i * 13) * 2,
-    );
-    group.add(puff);
-  }
-  const angle = rand(seed * 2) * Math.PI * 2;
-  const radius = 55 + rand(seed * 3) * 55;
-  group.position.set(
-    Math.cos(angle) * radius,
-    34 + rand(seed * 4) * 18,
-    Math.sin(angle) * radius,
-  );
   return group;
 }
 
@@ -2573,7 +2583,7 @@ function createTellusWorld(
   let animationId = 0;
   let lastTime = performance.now();
   let tick = 0;
-  let renderer: WebGPURenderer | null = null;
+  let renderer: THREE.WebGLRenderer | WebGPURenderer | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let renderIssueLogged = false;
 
@@ -2593,6 +2603,7 @@ function createTellusWorld(
   const keys = new Set<string>();
   let selectedThingId: string | undefined;
   let sailingThingId: string | undefined;
+  let externalSkybox: THREE.Object3D | null = null;
   let visualFeedback = "";
   let nextWorldFeedbackAt =
     performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
@@ -2613,7 +2624,8 @@ function createTellusWorld(
 
   const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
   const fallbackSky = createSkyDome();
-  const ocean = createOceanSurface();
+  const useWebGPU = "gpu" in navigator;
+  const ocean = createOceanSurface(useWebGPU);
   const archipelago = createDistantArchipelago();
   const terrain = new THREE.Mesh(
     createTerrainGeometry(),
@@ -2638,10 +2650,6 @@ function createTellusWorld(
   sun.position.set(-55, 58, 42);
   sun.castShadow = true;
   scene.add(sun, new THREE.HemisphereLight(0xb6ccff, 0x3d5332, 2.25));
-
-  for (let i = 0; i < 14; i++) {
-    scene.add(createCloud(100 + i * 19));
-  }
 
   for (const agent of agents) {
     const mesh = createAgentMesh(agent);
@@ -3677,6 +3685,21 @@ function createTellusWorld(
     );
     camera.position.copy(target).add(offset);
     camera.lookAt(target);
+    if (externalSkybox) {
+      const skyboxCenter =
+        externalSkybox.userData.skyboxBoundsCenter instanceof THREE.Vector3
+          ? externalSkybox.userData.skyboxBoundsCenter
+          : new THREE.Vector3();
+      const skyboxScale =
+        typeof externalSkybox.userData.skyboxBoundsScale === "number"
+          ? externalSkybox.userData.skyboxBoundsScale
+          : 1;
+      externalSkybox.position.set(
+        camera.position.x - skyboxCenter.x * skyboxScale,
+        camera.position.y + SKYBOX_VERTICAL_OFFSET - skyboxCenter.y * skyboxScale,
+        camera.position.z - skyboxCenter.z * skyboxScale,
+      );
+    }
   };
 
   const refreshWorldFeedback = (now: number) => {
@@ -3807,21 +3830,21 @@ function createTellusWorld(
   container.addEventListener("wheel", handleWheel, { passive: true });
 
   const init = async () => {
-    if (!("gpu" in navigator)) {
-      addLog({
-        agentId: "world",
-        agentName: "Tellus",
-        tool: "interact",
-        text: "WebGPU is not available in this browser. Tellus needs WebGPU.",
-      });
-      return;
-    }
-
     try {
-      renderer = new WebGPURenderer({ antialias: true, alpha: false });
+      if (useWebGPU) {
+        renderer = new WebGPURenderer({ antialias: true, alpha: false });
+        await renderer.init();
+      } else {
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        addLog({
+          agentId: "world",
+          agentName: "Tellus",
+          tool: "interact",
+          text: "WebGPU is not available in this browser. Using simplified WebGL preview.",
+        });
+      }
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.shadowMap.enabled = true;
-      await renderer.init();
       container.appendChild(renderer.domElement);
       resizeObserver = new ResizeObserver(() => resize());
       resizeObserver.observe(container);
@@ -3858,17 +3881,20 @@ function createTellusWorld(
           });
       }
       void loadSkyboxModel()
-        .then((skybox) => {
-          if (!skybox || destroyed) return;
+        .then((skyboxResult) => {
+          if (!skyboxResult || destroyed) return;
           scene.remove(fallbackSky);
           fallbackSky.geometry.dispose();
           disposeMaterial(fallbackSky.material);
-          scene.add(skybox);
+          externalSkybox = skyboxResult.model;
+          scene.add(skyboxResult.model);
           addLog({
             agentId: "world",
             agentName: "Tellus",
             tool: "interact",
-            text: "Loaded external skybox: free_-_skybox_basic_sky.glb",
+            text: `Loaded external skybox: ${
+              skyboxResult.url.split("/").pop() ?? skyboxResult.url
+            }`,
           });
         })
         .catch((error) => {
