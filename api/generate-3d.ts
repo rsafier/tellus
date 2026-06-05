@@ -13,9 +13,13 @@ interface Generate3DRequest {
   removeBackground?: boolean;
   sampleSteps?: number;
   seed?: number;
+  provider?: Generation3DProvider;
 }
 
-type Generation3DProvider = "instantmesh-gradio" | "pixal3d-gradio";
+type Generation3DProvider =
+  | "instantmesh-gradio"
+  | "pixal3d-gradio"
+  | "anigen-gradio";
 
 interface Generate3DResponse {
   jobId: string;
@@ -1144,6 +1148,33 @@ async function readRequestJson(request: Request): Promise<Generate3DRequest> {
   return parsed as Generate3DRequest;
 }
 
+function generationProviderFromValue(value: unknown): Generation3DProvider {
+  if (
+    value === "instantmesh-gradio" ||
+    value === "pixal3d-gradio" ||
+    value === "anigen-gradio"
+  ) {
+    return value;
+  }
+  return process.env.TELLUS_3D_PROVIDER === "instantmesh-gradio"
+    ? "instantmesh-gradio"
+    : process.env.TELLUS_3D_PROVIDER === "anigen-gradio"
+      ? "anigen-gradio"
+      : "pixal3d-gradio";
+}
+
+function providerBaseUrl(provider: Generation3DProvider): string | undefined {
+  if (provider === "pixal3d-gradio") return process.env.PIXAL3D_GRADIO_BASE_URL;
+  if (provider === "anigen-gradio") return process.env.ANIGEN_GRADIO_BASE_URL;
+  return process.env.INSTANTMESH_GRADIO_BASE_URL;
+}
+
+function missingProviderConfigMessage(provider: Generation3DProvider): string {
+  if (provider === "pixal3d-gradio") return "PIXAL3D_GRADIO_BASE_URL is not configured";
+  if (provider === "anigen-gradio") return "ANIGEN_GRADIO_BASE_URL is not configured";
+  return "INSTANTMESH_GRADIO_BASE_URL is not configured";
+}
+
 async function executeGeneration(params: {
   payload: Generate3DRequest;
   provider: Generation3DProvider;
@@ -1153,6 +1184,11 @@ async function executeGeneration(params: {
   const { payload, provider, baseUrl, generationId } = params;
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
   const kind = payload.kind?.trim() || "object";
+  if (provider === "anigen-gradio") {
+    throw new Error(
+      "Anigen animated generation is selectable, but its Gradio API adapter is not implemented yet",
+    );
+  }
   const createdAt = new Date().toISOString();
   let textImage = await createTextImage(prompt, kind, payload.imageUrl?.trim());
   try {
@@ -1280,7 +1316,7 @@ function startGenerationJob(params: {
     } catch (error) {
       job.status = "failed";
       job.error =
-        error instanceof Error ? error.message : "Pixal3D generation failed";
+        error instanceof Error ? error.message : `${params.provider} generation failed`;
     }
   };
 
@@ -1314,31 +1350,19 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   }
 
   const payload = await readRequestJson(request);
-  const provider: Generation3DProvider =
-    process.env.TELLUS_3D_PROVIDER === "instantmesh-gradio"
-      ? "instantmesh-gradio"
-      : "pixal3d-gradio";
-  const baseUrl = (
-    provider === "pixal3d-gradio"
-      ? process.env.PIXAL3D_GRADIO_BASE_URL
-      : process.env.INSTANTMESH_GRADIO_BASE_URL
-  )
+  const provider = generationProviderFromValue(payload.provider);
+  const baseUrl = providerBaseUrl(provider)
     ?.trim()
     .replace(/\/+$/, "");
   if (!baseUrl) {
     return Response.json(
-      {
-        error:
-          provider === "pixal3d-gradio"
-            ? "PIXAL3D_GRADIO_BASE_URL is not configured"
-            : "INSTANTMESH_GRADIO_BASE_URL is not configured",
-      },
+      { error: missingProviderConfigMessage(provider) },
       { status: 503 },
     );
   }
 
   const generationId = payload.id || `${provider}-${Date.now()}`;
-  if (provider === "pixal3d-gradio") {
+  if (provider === "pixal3d-gradio" || provider === "anigen-gradio") {
     const job = startGenerationJob({ payload, provider, baseUrl, generationId });
     return Response.json(
       {

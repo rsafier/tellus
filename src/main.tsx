@@ -48,6 +48,12 @@ type AgentId = "johnny" | "mira" | "sol" | "atlas";
 type TerrainKind = "meadow" | "rock" | "snow" | "beach" | "dirt" | "water";
 type TerrainPaintKind = Exclude<TerrainKind, "water">;
 type TerrainEditMode = "raise" | "lower" | "flatten" | TerrainPaintKind;
+type GenerationProvider =
+  | "local"
+  | "asset-forge"
+  | "instantmesh-gradio"
+  | "pixal3d-gradio"
+  | "anigen-gradio";
 type GeneratedKind =
   | "tree"
   | "flower"
@@ -137,6 +143,7 @@ interface TellusSnapshot {
   generated: GeneratedThing[];
   logs: TellusLog[];
   paused: boolean;
+  generationProvider: GenerationProvider;
   selectedThingId?: string;
   sailingThingId?: string;
 }
@@ -155,6 +162,7 @@ interface TellusWorldApi {
   disembark(): void;
   sculptTerrain(mode: TerrainEditMode): void;
   talkToAgent(agentId: AgentId, message: string): void;
+  setGenerationProvider(provider: GenerationProvider): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
   snapshot(): TellusSnapshot;
@@ -164,11 +172,7 @@ interface TellusWorldApi {
 interface TellusRuntimeConfig {
   assetForgeApiBase: string;
   agentModel: string;
-  generationProvider:
-    | "local"
-    | "asset-forge"
-    | "instantmesh-gradio"
-    | "pixal3d-gradio";
+  generationProvider: GenerationProvider;
   skyboxUrl: string;
   enabledAgents: AgentId[];
   avatars: Partial<Record<AgentId, string>>;
@@ -302,6 +306,13 @@ const runtimeConfig: TellusRuntimeConfig = {
   },
 };
 const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
+const generationProviderLabels: Record<GenerationProvider, string> = {
+  local: "Local placeholder",
+  "asset-forge": "Pixel3D legacy",
+  "instantmesh-gradio": "Fast asset",
+  "pixal3d-gradio": "High quality",
+  "anigen-gradio": "Animated",
+};
 const allAgentIds = ["johnny", "mira", "sol", "atlas"] as const;
 
 type MaterialWithTextureMaps = THREE.Material & {
@@ -919,7 +930,8 @@ function applyRuntimeConfig(config: unknown): void {
     (generationProvider === "local" ||
       generationProvider === "asset-forge" ||
       generationProvider === "instantmesh-gradio" ||
-      generationProvider === "pixal3d-gradio")
+      generationProvider === "pixal3d-gradio" ||
+      generationProvider === "anigen-gradio")
   ) {
     runtimeConfig.generationProvider = generationProvider;
   }
@@ -1245,7 +1257,8 @@ function hasExternalGenerationProvider(): boolean {
   }
   return (
     runtimeConfig.generationProvider === "instantmesh-gradio" ||
-    runtimeConfig.generationProvider === "pixal3d-gradio"
+    runtimeConfig.generationProvider === "pixal3d-gradio" ||
+    runtimeConfig.generationProvider === "anigen-gradio"
   );
 }
 
@@ -1261,6 +1274,7 @@ async function startDirectInstantMeshGeneration(
       id: thing.id,
       prompt: thing.prompt,
       kind: thing.kind,
+      provider: runtimeConfig.generationProvider,
     }),
   });
   return readJsonResponse<DirectGenerationResponse>(response);
@@ -1628,6 +1642,13 @@ async function loadGltfObject(url: string): Promise<THREE.Object3D> {
   return (await cached).clone(true);
 }
 
+async function loadGeneratedGltfObject(
+  url: string,
+): Promise<{ model: THREE.Object3D; animations: THREE.AnimationClip[] }> {
+  const gltf = await new GLTFLoader().loadAsync(url);
+  return { model: gltf.scene, animations: gltf.animations };
+}
+
 function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
   const bounds = new THREE.Box3().setFromObject(model);
   const center = bounds.getCenter(new THREE.Vector3());
@@ -1736,10 +1757,13 @@ function assetTargetHeight(thing: GeneratedThing): number {
 }
 
 async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
-  const model = await loadGltfObject(url);
+  const { model, animations } = await loadGeneratedGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, assetTargetHeight(thing));
   fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind };
+  if (animations.length > 0) {
+    fitted.userData.animations = animations;
+  }
   fitted.rotation.y = thing.rotationY;
   if (isFreeMovingVehicle(thing)) {
     fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
@@ -2581,6 +2605,7 @@ function createTellusWorld(
   const generated: GeneratedThing[] = [];
   const logs: TellusLog[] = [];
   const generatedMeshes = new Map<string, THREE.Object3D>();
+  const generatedAnimationMixers = new Map<string, THREE.AnimationMixer>();
   const agentMeshes = new Map<AgentId, THREE.Group>();
   const pendingAgentDecisions = new Set<AgentId>();
   const pendingGenerationControllers = new Map<string, AbortController>();
@@ -2667,6 +2692,7 @@ function createTellusWorld(
     })),
     logs: logs.slice(-80),
     paused,
+    generationProvider: runtimeConfig.generationProvider,
     selectedThingId,
     sailingThingId,
   });
@@ -2837,6 +2863,26 @@ function createTellusWorld(
   const thingById = (id: string): GeneratedThing | undefined =>
     generated.find((thing) => thing.id === id);
 
+  const stopGeneratedAnimation = (id: string) => {
+    const mixer = generatedAnimationMixers.get(id);
+    if (!mixer) return;
+    mixer.stopAllAction();
+    generatedAnimationMixers.delete(id);
+  };
+
+  const startGeneratedAnimation = (id: string, model: THREE.Object3D) => {
+    stopGeneratedAnimation(id);
+    const animations = model.userData.animations;
+    if (!Array.isArray(animations) || animations.length === 0) return;
+    const mixer = new THREE.AnimationMixer(model);
+    for (const clip of animations) {
+      if (clip instanceof THREE.AnimationClip) {
+        mixer.clipAction(clip).play();
+      }
+    }
+    generatedAnimationMixers.set(id, mixer);
+  };
+
   const updateThingMeshPosition = (thing: GeneratedThing) => {
     const mesh = generatedMeshes.get(thing.id);
     if (!mesh) return;
@@ -2925,6 +2971,7 @@ function createTellusWorld(
     pendingGenerationControllers.delete(id);
     const mesh = generatedMeshes.get(id);
     if (mesh) {
+      stopGeneratedAnimation(id);
       scene.remove(mesh);
       disposeObject(mesh);
       generatedMeshes.delete(id);
@@ -3104,6 +3151,7 @@ function createTellusWorld(
     const showLocalFallbackMesh = () => {
       const oldMesh = generatedMeshes.get(thing.id);
       if (oldMesh) {
+        stopGeneratedAnimation(thing.id);
         scene.remove(oldMesh);
         disposeObject(oldMesh);
       }
@@ -3155,10 +3203,12 @@ function createTellusWorld(
           thing.generationStatus = "ready";
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
+            stopGeneratedAnimation(thing.id);
             scene.remove(oldMesh);
             disposeObject(oldMesh);
           }
           generatedMeshes.set(thing.id, model);
+          startGeneratedAnimation(thing.id, model);
           scene.add(model);
           addLog({
             agentId: "world",
@@ -3193,12 +3243,10 @@ function createTellusWorld(
         });
     } else if (
       runtimeConfig.generationProvider === "instantmesh-gradio" ||
-      runtimeConfig.generationProvider === "pixal3d-gradio"
+      runtimeConfig.generationProvider === "pixal3d-gradio" ||
+      runtimeConfig.generationProvider === "anigen-gradio"
     ) {
-      const providerName =
-        runtimeConfig.generationProvider === "pixal3d-gradio"
-          ? "Pixal3D"
-          : "InstantMesh";
+      const providerName = generationProviderLabels[runtimeConfig.generationProvider];
       const generationController = new AbortController();
       pendingGenerationControllers.set(thing.id, generationController);
       addLog({
@@ -3219,7 +3267,7 @@ function createTellusWorld(
             tool: "generate",
             text:
               initialResult.status === "queued"
-                ? `Queued ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId}); waiting for the Pixal3D worker.`
+                ? `Queued ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId}); waiting for the ${providerName} worker.`
                 : `Started ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId})`,
           });
           const result = await waitForDirectGeneration(
@@ -3257,10 +3305,12 @@ function createTellusWorld(
           thing.generationStatus = "ready";
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
+            stopGeneratedAnimation(thing.id);
             scene.remove(oldMesh);
             disposeObject(oldMesh);
           }
           generatedMeshes.set(thing.id, model);
+          startGeneratedAnimation(thing.id, model);
           scene.add(model);
           addLog({
             agentId: "world",
@@ -3381,6 +3431,18 @@ function createTellusWorld(
       },
       creatorId: "visitor",
     });
+  };
+
+  const setGenerationProvider = (provider: GenerationProvider) => {
+    if (runtimeConfig.generationProvider === provider) return;
+    runtimeConfig.generationProvider = provider;
+    addLog({
+      agentId: "world",
+      agentName: "Tellus",
+      tool: "interact",
+      text: `Generation pipeline set to ${generationProviderLabels[provider]}.`,
+    });
+    publish();
   };
 
   const setPaused = (nextPaused: boolean) => {
@@ -3729,6 +3791,9 @@ function createTellusWorld(
     tick++;
     moveVisitor(delta);
     moveAgents(now, delta);
+    for (const mixer of generatedAnimationMixers.values()) {
+      mixer.update(delta);
+    }
     syncMeshes(now);
     updateCamera();
     try {
@@ -3924,12 +3989,16 @@ function createTellusWorld(
     disembark,
     sculptTerrain,
     talkToAgent,
+    setGenerationProvider,
     setPaused,
     submitVisitorPrompt,
     snapshot,
     destroy: () => {
       destroyed = true;
       abortPendingGeneration();
+      for (const id of generatedAnimationMixers.keys()) {
+        stopGeneratedAnimation(id);
+      }
       cancelAnimationFrame(animationId);
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", handleKeyDown);
@@ -3996,6 +4065,7 @@ function App(): React.ReactElement {
     generated: [],
     logs: [],
     paused: false,
+    generationProvider: runtimeConfig.generationProvider,
   });
   const [prompt, setPrompt] = useState("");
   const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
@@ -4101,6 +4171,26 @@ function App(): React.ReactElement {
             <span>disc</span>
           </div>
         </div>
+
+        <section className="tool-card">
+          <div className="tool-title">
+            <Wand2 size={16} />
+            <span>Generation</span>
+          </div>
+          <select
+            className="asset-select"
+            value={snapshot.generationProvider}
+            onChange={(event) =>
+              worldRef.current?.setGenerationProvider(
+                event.target.value as GenerationProvider,
+              )
+            }
+          >
+            <option value="pixal3d-gradio">High quality - Pixal3D</option>
+            <option value="instantmesh-gradio">Fast asset - InstantMesh</option>
+            <option value="anigen-gradio">Animated - Anigen</option>
+          </select>
+        </section>
 
         <section className="tool-card">
           <div className="tool-title">
