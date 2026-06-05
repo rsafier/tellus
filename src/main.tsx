@@ -1486,20 +1486,62 @@ function createGenerationSwirl(thing: GeneratedThing): THREE.Object3D {
   return group;
 }
 
+const johnnyFallbackIdeas = [
+  "a sunlit footbridge made of pale cedar crossing a small stream",
+  "a tiny workshop hut with mossy shingles and brass tools outside",
+  "a gentle stone creature curled beside a patch of blue flowers",
+  "a hot air balloon moored beside a garden path",
+  "a clear pond with lilies, stepping stones, and a little wooden dock",
+  "a spiral lantern tower that glows softly near the mountain",
+  "a weathered sailboat with a folded cream canvas sail",
+  "a copper rain collector shaped like a broad leaf",
+  "a carved stone waygate with glowing moss in its grooves",
+  "a tiny apiary box painted yellow beside wildflowers",
+  "a driftwood fishing pier with rope-wrapped posts",
+  "a round observatory hut with a brass telescope on top",
+  "a blue ceramic fountain shaped like a moon shell",
+  "a small windmill pump with white wooden blades",
+  "a low stone bridge with fern-filled cracks",
+  "a mossy outdoor workbench covered with clay pots",
+  "a floating lantern buoy tethered to a wooden stake",
+  "a red berry tree with a hollow doorway in its trunk",
+  "a tiny clay kiln with stacked firewood beside it",
+  "a curved boardwalk segment made from dark wet planks",
+  "a one-seat glider with leaf-shaped green wings",
+  "a crystal marker obelisk set into a grassy mound",
+  "a striped canvas market awning on two cedar poles",
+  "a little stone well with a wooden crank and bucket",
+];
+
+function normalizeAssetPrompt(prompt: string): string {
+  return prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(
+      /\b(a|an|the|with|and|of|made|from|for|near|beside|next|to|little|tiny|small)\b/g,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function promptAlreadyExists(prompt: string, generated: GeneratedThing[]): boolean {
+  const normalized = normalizeAssetPrompt(prompt);
+  if (!normalized) return false;
+  return generated.some((thing) => normalizeAssetPrompt(thing.prompt) === normalized);
+}
+
 function chooseAgentPrompt(
   agent: TellusAgent,
   generated: GeneratedThing[],
 ): string {
   if (agent.id === "johnny") {
-    const ideas = [
-      "a sunlit footbridge made of pale cedar crossing a small stream",
-      "a tiny workshop hut with mossy shingles and brass tools outside",
-      "a gentle stone creature curled beside a patch of blue flowers",
-      "a hot air balloon moored beside a garden path",
-      "a clear pond with lilies, stepping stones, and a little wooden dock",
-      "a spiral lantern tower that glows softly near the mountain",
-    ];
-    return ideas[generated.length % ideas.length];
+    const start = generated.length % johnnyFallbackIdeas.length;
+    for (let i = 0; i < johnnyFallbackIdeas.length; i++) {
+      const idea = johnnyFallbackIdeas[(start + i) % johnnyFallbackIdeas.length];
+      if (!promptAlreadyExists(idea, generated)) return idea;
+    }
+    return `a unique carved island relic number ${generated.length + 1} with a distinct silhouette`;
   }
   if (agent.id === "mira") {
     return generated.length % 2 === 0
@@ -1509,6 +1551,28 @@ function chooseAgentPrompt(
   return generated.length % 2 === 0
     ? "a hand-placed stone cairn that points toward the summit"
     : "a narrow dirt path spiraling gently toward the mountain";
+}
+
+function ensureNovelAgentDecision(
+  decision: AgentDecision,
+  agent: TellusAgent,
+  generated: GeneratedThing[],
+): AgentDecision {
+  const prompt = decision.prompt.trim();
+  if (!promptAlreadyExists(prompt, generated)) {
+    return { ...decision, prompt };
+  }
+  const replacementPrompt = chooseAgentPrompt(agent, generated);
+  return {
+    ...decision,
+    prompt: replacementPrompt,
+    intent:
+      decision.intent ??
+      "study what should live near here next and how this new asset changes the world",
+    speech:
+      decision.speech ??
+      "I will add something different so this place keeps unfolding.",
+  };
 }
 
 function extractJsonObject(text: string): unknown {
@@ -1587,6 +1651,10 @@ async function askAgentForDecision(
     .slice(-12)
     .map((thing) => `${thing.kind}: ${thing.prompt}`)
     .join("\n");
+  const forbiddenPrompts = generated
+    .slice(-24)
+    .map((thing) => `- ${thing.prompt}`)
+    .join("\n");
   const recentLogs = logs
     .slice(-8)
     .map((log) => `${log.agentName}: ${log.text}`)
@@ -1603,7 +1671,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You may generate any visible 3D asset you want: an object, plant, animal, character, building, tool, vehicle, bridge, path segment, terrain feature, water feature, habitat prop, landmark, or other game-ready prop. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt must describe exactly one single asset, not a scene, set, collection, habitat, landscape, or group of objects. The speech should be one short in-character sentence said aloud before you act.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You may generate any visible 3D asset you want: an object, plant, animal, character, building, tool, vehicle, bridge, path segment, terrain feature, water feature, habitat prop, landmark, or other game-ready prop. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt must describe exactly one single asset, not a scene, set, collection, habitat, landscape, or group of objects. Do not repeat or paraphrase any existing object. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
@@ -1612,6 +1680,7 @@ async function askAgentForDecision(
             `Goal: ${agent.goal}`,
             `Current generated count: ${generated.length}`,
             `Recent objects:\n${recentObjects || "none yet"}`,
+            `Do not generate these again, even as near synonyms:\n${forbiddenPrompts || "none yet"}`,
             `Recent logs:\n${recentLogs || "none yet"}`,
             `Fallback idea: ${fallbackPrompt}`,
           ].join("\n\n"),
@@ -1622,7 +1691,11 @@ async function askAgentForDecision(
   const completion = await readJsonResponse<ChatCompletionResponse>(response);
   const content = chatContent(completion);
   if (!content) return { prompt: fallbackPrompt };
-  return parseAgentDecision(content, fallbackPrompt);
+  return ensureNovelAgentDecision(
+    parseAgentDecision(content, fallbackPrompt),
+    agent,
+    generated,
+  );
 }
 
 async function askAgentForReply(
