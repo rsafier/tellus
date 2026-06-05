@@ -176,7 +176,7 @@ interface TellusRuntimeConfig {
 }
 
 interface AgentDecision {
-  action?: "generate" | "sculptTerrain" | "moveAsset" | "rotateAsset" | "scaleAsset" | "moveAssetToWater";
+  action?: "generate" | "moveSelf" | "sculptTerrain" | "moveAsset" | "rotateAsset" | "scaleAsset" | "moveAssetToWater";
   prompt: string;
   intent?: string;
   speech?: string;
@@ -2309,7 +2309,8 @@ function finiteNumber(value: unknown): number | undefined {
 }
 
 function agentDecisionAction(value: unknown): AgentDecision["action"] {
-  return value === "sculptTerrain" ||
+  return value === "moveSelf" ||
+    value === "sculptTerrain" ||
     value === "moveAsset" ||
     value === "rotateAsset" ||
     value === "scaleAsset" ||
@@ -2503,7 +2504,7 @@ function describeAgentPerception(
     `Your last generated asset: ${lastOwnAsset ? `${lastOwnAsset.kind} "${lastOwnAsset.prompt}" (${lastOwnAsset.generationStatus ?? "local"})` : "none yet"}`,
     `Pending asset generation:\n${pending || "none"}`,
     `Recent visible world changes:\n${recentChanges || "none"}`,
-    `Visual world feedback from the current camera:\n${visualFeedback || "not captured yet"}`,
+    `Visual world feedback from your stable body camera:\n${visualFeedback || "not captured yet"}`,
   ].join("\n\n");
 }
 
@@ -2550,7 +2551,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual and visual view of where you are, terrain, nearby objects, pending work, and recent changes. Choose exactly one world action. Return only JSON. Use action \"generate\" with keys prompt, intent, speech to add one single asset. Or use action \"sculptTerrain\" with terrainMode one of raise, lower, flatten, meadow, beach, dirt, rock, snow. Or use action \"moveAsset\" with targetId plus dx and dz between -4 and 4. Or use action \"rotateAsset\" with targetId plus rotation between -1 and 1 radians. Or use action \"scaleAsset\" with targetId plus scaleMultiplier between 0.65 and 1.5. Or use action \"moveAssetToWater\" with targetId. Do not repeat existing generated objects. The speech should be one short in-character sentence said aloud before you act.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual view and a visual screenshot from your own stable body camera, not the visitor camera. Choose exactly one world action. Return only JSON. Use action \"moveSelf\" with dx and dz between -8 and 8 to walk your own body to a better viewpoint. Use action \"generate\" with keys prompt, intent, speech to add one single asset. Or use action \"sculptTerrain\" with terrainMode one of raise, lower, flatten, meadow, beach, dirt, rock, snow. Or use action \"moveAsset\" with targetId plus dx and dz between -4 and 4. Or use action \"rotateAsset\" with targetId plus rotation between -1 and 1 radians. Or use action \"scaleAsset\" with targetId plus scaleMultiplier between 0.65 and 1.5. Or use action \"moveAssetToWater\" with targetId. Do not repeat existing generated objects. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
@@ -2676,6 +2677,7 @@ function createTellusWorld(
   scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
 
   const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
+  const agentVisionCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 260);
   const fallbackSky = createSkyDome();
   const useWebGPU = "gpu" in navigator;
   const ocean = createOceanSurface(useWebGPU);
@@ -3514,6 +3516,23 @@ function createTellusWorld(
     const action = decision.action ?? "generate";
     if (action === "generate") return false;
 
+    if (action === "moveSelf") {
+      const dx = clamp(decision.dx ?? 0, -8, 8);
+      const dz = clamp(decision.dz ?? 4, -8, 8);
+      agent.target = groundedPosition(
+        agent.position.x + dx,
+        agent.position.z + dz,
+        agent.position,
+      );
+      addLog({
+        agentId: agent.id,
+        agentName: agent.name,
+        tool: "interact",
+        text: `${agent.name} walks toward x ${agent.target.x.toFixed(1)}, z ${agent.target.z.toFixed(1)} for a steadier look`,
+      });
+      return true;
+    }
+
     if (action === "sculptTerrain") {
       const mode = decision.terrainMode ?? "flatten";
       sculptTerrainAt(mode, agent.position, agent.id, agent.name);
@@ -3655,6 +3674,8 @@ function createTellusWorld(
     const height = Math.max(1, Math.floor(rect.height));
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
+    agentVisionCamera.aspect = width / height;
+    agentVisionCamera.updateProjectionMatrix();
     renderer?.setSize(width, height, false);
   };
 
@@ -3702,12 +3723,16 @@ function createTellusWorld(
   const moveAgents = (now: number, delta: number) => {
     for (const agent of agents) {
       if (distance2D(agent.position, agent.target) < 1.2) {
-        const angle = rand(now * 0.001 + agent.position.x) * Math.PI * 2;
-        const radius = 7 + rand(now * 0.002 + agent.position.z) * 22;
-        agent.target = normalizedDiscPosition(
-          Math.cos(angle) * radius,
-          Math.sin(angle) * radius,
-        );
+        if (agent.id === "johnny") {
+          agent.target = { ...agent.position };
+        } else {
+          const angle = rand(now * 0.001 + agent.position.x) * Math.PI * 2;
+          const radius = 7 + rand(now * 0.002 + agent.position.z) * 22;
+          agent.target = normalizedDiscPosition(
+            Math.cos(angle) * radius,
+            Math.sin(angle) * radius,
+          );
+        }
       }
       const direction = new THREE.Vector3(
         agent.target.x - agent.position.x,
@@ -3808,6 +3833,78 @@ function createTellusWorld(
     }
   };
 
+  const syncExternalSkyboxToCamera = (cameraPosition: THREE.Vector3) => {
+    if (!externalSkybox) return;
+    const skyboxCenter =
+      externalSkybox.userData.skyboxBoundsCenter instanceof THREE.Vector3
+        ? externalSkybox.userData.skyboxBoundsCenter
+        : new THREE.Vector3();
+    const skyboxScale =
+      typeof externalSkybox.userData.skyboxBoundsScale === "number"
+        ? externalSkybox.userData.skyboxBoundsScale
+        : 1;
+    externalSkybox.position.set(
+      cameraPosition.x - skyboxCenter.x * skyboxScale,
+      cameraPosition.y + SKYBOX_VERTICAL_OFFSET - skyboxCenter.y * skyboxScale,
+      cameraPosition.z - skyboxCenter.z * skyboxScale,
+    );
+  };
+
+  const agentVisionLookTarget = (agent: TellusAgent): Vec3 => {
+    if (distance2D(agent.position, agent.target) > 1.2) {
+      return agent.target;
+    }
+    const nearest = generated
+      .map((thing) => ({
+        thing,
+        distance: distance2D(agent.position, thing.position),
+      }))
+      .sort((a, b) => a.distance - b.distance)[0]?.thing;
+    if (nearest) return nearest.position;
+    if (agent.id === "johnny") return POND_CENTER;
+    return normalizedDiscPosition(agent.position.x + 1, agent.position.z + 1);
+  };
+
+  const updateAgentVisionCamera = (agent: TellusAgent) => {
+    const lookTarget = agentVisionLookTarget(agent);
+    const lookDirection = new THREE.Vector3(
+      lookTarget.x - agent.position.x,
+      0,
+      lookTarget.z - agent.position.z,
+    );
+    if (lookDirection.lengthSq() < 0.001) {
+      lookDirection.set(0, 0, 1);
+    }
+    lookDirection.normalize();
+    const eyeHeight = terrainHeight(agent.position.x, agent.position.z) + 2.2;
+    const targetHeight = terrainHeight(lookTarget.x, lookTarget.z) + 1.4;
+    agentVisionCamera.position.set(
+      agent.position.x + lookDirection.x * 0.35,
+      eyeHeight,
+      agent.position.z + lookDirection.z * 0.35,
+    );
+    agentVisionCamera.lookAt(lookTarget.x, targetHeight, lookTarget.z);
+  };
+
+  const captureAgentVisionScreenshot = (agent: TellusAgent): string => {
+    if (!renderer) throw new Error("Renderer is not ready");
+    updateAgentVisionCamera(agent);
+    const agentMesh = agentMeshes.get(agent.id);
+    const wasVisible = agentMesh?.visible;
+    if (agentMesh) agentMesh.visible = false;
+    try {
+      syncExternalSkyboxToCamera(agentVisionCamera.position);
+      renderer.render(scene, agentVisionCamera);
+      return captureCanvasDataUrl(renderer.domElement);
+    } finally {
+      if (agentMesh && wasVisible !== undefined) {
+        agentMesh.visible = wasVisible;
+      }
+      syncExternalSkyboxToCamera(camera.position);
+      renderer.render(scene, camera);
+    }
+  };
+
   const updateCamera = () => {
     const pilotedThing = sailingThingId ? thingById(sailingThingId) : undefined;
     const pilotedMode = pilotedThing ? vehicleMode(pilotedThing) : null;
@@ -3829,21 +3926,7 @@ function createTellusWorld(
     );
     camera.position.copy(target).add(offset);
     camera.lookAt(target);
-    if (externalSkybox) {
-      const skyboxCenter =
-        externalSkybox.userData.skyboxBoundsCenter instanceof THREE.Vector3
-          ? externalSkybox.userData.skyboxBoundsCenter
-          : new THREE.Vector3();
-      const skyboxScale =
-        typeof externalSkybox.userData.skyboxBoundsScale === "number"
-          ? externalSkybox.userData.skyboxBoundsScale
-          : 1;
-      externalSkybox.position.set(
-        camera.position.x - skyboxCenter.x * skyboxScale,
-        camera.position.y + SKYBOX_VERTICAL_OFFSET - skyboxCenter.y * skyboxScale,
-        camera.position.z - skyboxCenter.z * skyboxScale,
-      );
-    }
+    syncExternalSkyboxToCamera(camera.position);
   };
 
   const refreshWorldFeedback = (now: number) => {
@@ -3852,9 +3935,15 @@ function createTellusWorld(
     }
     nextWorldFeedbackAt = now + WORLD_FEEDBACK_INTERVAL_MS;
     worldFeedbackPending = true;
+    const feedbackAgent =
+      agents.find((agent) => agent.id === "johnny") ?? agents[0];
+    if (!feedbackAgent) {
+      worldFeedbackPending = false;
+      return;
+    }
     let screenshotUrl = "";
     try {
-      screenshotUrl = captureCanvasDataUrl(renderer.domElement);
+      screenshotUrl = captureAgentVisionScreenshot(feedbackAgent);
     } catch (error) {
       worldFeedbackPending = false;
       if (!worldFeedbackIssueLogged) {
@@ -3863,7 +3952,7 @@ function createTellusWorld(
           agentId: "world",
           agentName: "Z.ai Vision",
           tool: "interact",
-          text: `World feedback capture unavailable: ${
+          text: `${feedbackAgent.name} vision capture unavailable: ${
             error instanceof Error ? error.message : "unknown capture error"
           }`,
         });
@@ -3879,7 +3968,7 @@ function createTellusWorld(
           agentId: "world",
           agentName: "Z.ai Vision",
           tool: "interact",
-          text: `World feedback updated: ${sanitizeLogText(summary).slice(0, 180)}`,
+          text: `${feedbackAgent.name} vision updated: ${sanitizeLogText(summary).slice(0, 180)}`,
           screenshotUrl,
         });
       })
@@ -3890,7 +3979,7 @@ function createTellusWorld(
           agentId: "world",
           agentName: "Z.ai Vision",
           tool: "interact",
-          text: `World feedback unavailable: ${
+          text: `${feedbackAgent.name} vision unavailable: ${
             error instanceof Error ? error.message : "unknown vision error"
           }`,
           screenshotUrl,
