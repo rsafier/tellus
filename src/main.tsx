@@ -242,9 +242,9 @@ declare global {
   }
 }
 
-const WORLD_RADIUS = 50;
-const OCEAN_RADIUS = 170;
-const SEA_LEVEL = -1.55;
+const WORLD_RADIUS = 72;
+const OCEAN_RADIUS = 240;
+const SEA_LEVEL = -3.35;
 const DISTANT_ISLAND_COUNT = 18;
 const TERRAIN_SEGMENTS = 96;
 const DISTANT_TERRAIN_SEGMENTS = 32;
@@ -838,7 +838,9 @@ function baseTerrainHeight(x: number, z: number): number {
     Math.sin(x * 0.22 + z * 0.08) * 1.05 +
     Math.cos(z * 0.2 - x * 0.06) * 0.72 +
     Math.sin((x + z) * 0.11) * 0.42;
-  const rimDrop = Math.max(0, (r - 30) / 12) * 5.8;
+  const rimStart = WORLD_RADIUS * 0.72;
+  const rimWidth = WORLD_RADIUS * 0.28;
+  const rimDrop = Math.max(0, (r - rimStart) / rimWidth) * 5.8;
   const pond = Math.exp(-((x - 18) ** 2 + (z + 12) ** 2) / 65) * 2.5;
   return mound + shoulder + southernRise + ridge - rimDrop - pond - 0.65;
 }
@@ -857,6 +859,10 @@ function terrainKind(x: number, z: number, y: number): TerrainKind {
   const pathBand = Math.abs(Math.sin(Math.atan2(z, x) * 3 + 0.5)) < 0.13;
   if (pathBand && Math.hypot(x, z) > 8) return "dirt";
   return "meadow";
+}
+
+function pondWaterLevel(): number {
+  return baseTerrainHeight(POND_CENTER.x, POND_CENTER.z) + 0.55;
 }
 
 function makeId(prefix: string): string {
@@ -1415,34 +1421,34 @@ function createDistantIsland(spec: DistantIslandSpec): THREE.Group {
   topTerrain.receiveShadow = true;
   group.add(topTerrain);
 
-  const spireCount = 2 + Math.floor(rand(spec.seed + 7) * (spec.size > 1.5 ? 7 : 5));
-  for (let i = 0; i < spireCount; i++) {
-    const spireHeight =
-      (5 + rand(spec.seed + i * 17) * 12) * (0.8 + spec.size * 0.2);
-    const spire = new THREE.Mesh(
-      new THREE.ConeGeometry(
-        (0.7 + rand(spec.seed + i * 13) * 1.8) *
-          (0.9 + spec.size * 0.18),
-        spireHeight,
-        10,
-      ),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0x7a6a4a).lerp(
-          new THREE.Color(0x2c3b48),
-          rand(spec.seed + i),
-        ),
-        roughness: 0.88,
-      }),
-    );
+  const hillCount = 2 + Math.floor(rand(spec.seed + 7) * (spec.size > 1.5 ? 5 : 3));
+  const hillMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x5d8f42).lerp(
+      new THREE.Color(0x7a6a4a),
+      rand(spec.seed + 11) * 0.28,
+    ),
+    roughness: 0.92,
+    metalness: 0,
+  });
+  for (let i = 0; i < hillCount; i++) {
     const localAngle = rand(spec.seed + i * 19) * Math.PI * 2;
-    const localRadius = (1.4 + rand(spec.seed + i * 23) * 6) * spec.size;
-    spire.position.set(
-      Math.cos(localAngle) * localRadius,
-      2.4 + spireHeight * 0.42,
-      Math.sin(localAngle) * localRadius * spec.scaleZ,
+    const localRadius = (1.2 + rand(spec.seed + i * 23) * 5.2) * spec.size;
+    const localX = Math.cos(localAngle) * localRadius;
+    const localZ = Math.sin(localAngle) * localRadius * spec.scaleZ;
+    const world = distantIslandWorldPoint(spec, localX, localZ);
+    const surfaceY = distantIslandHeight(spec, world.x, world.z) - SEA_LEVEL;
+    const hillRadius = (1.9 + rand(spec.seed + i * 13) * 3.6) *
+      (0.7 + spec.size * 0.2);
+    const hillHeight = (0.55 + rand(spec.seed + i * 17) * 1.5) *
+      (0.8 + spec.size * 0.22);
+    const hill = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 18, 10),
+      hillMaterial.clone(),
     );
-    spire.rotation.z = (rand(spec.seed + i * 29) - 0.5) * 0.22;
-    group.add(spire);
+    hill.position.set(localX, surfaceY + hillHeight * 0.28, localZ);
+    hill.scale.set(hillRadius, hillHeight, hillRadius * (0.72 + spec.scaleZ * 0.24));
+    hill.rotation.y = rand(spec.seed + i * 29) * Math.PI;
+    group.add(hill);
   }
 
   return group;
@@ -1458,7 +1464,7 @@ function createDistantArchipelago(): THREE.Group {
 }
 
 function createSkyDome(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(220, 48, 24);
+  const geometry = new THREE.SphereGeometry(320, 48, 24);
   const material = new THREE.MeshBasicMaterial({
     color: 0xa9c8f2,
     side: THREE.BackSide,
@@ -1665,7 +1671,7 @@ function createPondWater(): THREE.Group {
   group.name = "tellus-pond-water";
   group.userData = { waterSurface: true };
 
-  const waterLevel = terrainHeight(POND_CENTER.x, POND_CENTER.z) + 0.55;
+  const waterLevel = pondWaterLevel();
   const water = new THREE.Mesh(
     new THREE.CircleGeometry(POND_RADIUS, 96),
     new THREE.MeshBasicMaterial({
@@ -2551,10 +2557,16 @@ function createTellusWorld(
   };
 
   const updatePondSurfacePosition = () => {
+    const waterLevel = pondWaterLevel();
     const pondSurface = pondWater.getObjectByName("tellus-pond-surface");
-    if (!pondSurface) return;
-    pondSurface.position.y = terrainHeight(POND_CENTER.x, POND_CENTER.z) + 0.55;
-    pondSurface.rotation.z = 0;
+    if (pondSurface) {
+      pondSurface.position.y = waterLevel;
+      pondSurface.rotation.z = 0;
+    }
+    const ripples = pondWater.getObjectByName("tellus-pond-ripples");
+    if (ripples) ripples.position.y = waterLevel + 0.035;
+    const shore = pondWater.getObjectByName("tellus-pond-shore");
+    if (shore) shore.position.y = waterLevel - 0.035;
   };
 
   const refreshTerrainGeometry = () => {
