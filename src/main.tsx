@@ -2453,9 +2453,17 @@ function createTellusWorld(
   };
 
   const updateCamera = () => {
+    const pilotedThing = sailingThingId ? thingById(sailingThingId) : undefined;
+    const pilotedMode = pilotedThing ? vehicleMode(pilotedThing) : null;
+    const targetY =
+      pilotedMode === "water"
+        ? SEA_LEVEL + 4.8
+        : pilotedMode === "air"
+          ? visitorPosition.y + 1.8
+          : visitorPosition.y + 2.7;
     const target = new THREE.Vector3(
       visitorPosition.x,
-      visitorPosition.y + 2.7,
+      targetY,
       visitorPosition.z,
     );
     const offset = new THREE.Vector3(
