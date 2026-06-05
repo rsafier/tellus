@@ -207,6 +207,7 @@ declare global {
 const WORLD_RADIUS = 42;
 const OCEAN_RADIUS = 170;
 const SEA_LEVEL = -1.55;
+const DISTANT_ISLAND_COUNT = 18;
 const TERRAIN_SEGMENTS = 96;
 const AGENT_SPEED = 5.2;
 const PLAYER_SPEED = 13;
@@ -729,22 +730,28 @@ function createOceanSurface(): THREE.Mesh {
   return ocean;
 }
 
-function createDistantIsland(seed: number, angle: number, radius: number): THREE.Group {
+function createDistantIsland(
+  seed: number,
+  angle: number,
+  radius: number,
+  size = 1,
+): THREE.Group {
   const group = new THREE.Group();
   group.name = `tellus-distant-island-${seed}`;
   const x = Math.cos(angle) * radius;
   const z = Math.sin(angle) * radius;
-  group.position.set(x, SEA_LEVEL - 0.12, z);
+  group.position.set(x, SEA_LEVEL - 0.02, z);
 
   const islandColor = new THREE.Color(0x4f8b2e).lerp(
     new THREE.Color(0x243d35),
     rand(seed + 4) * 0.45,
   );
+  const islandHeight = 1.2 + rand(seed + 3) * 0.9;
   const island = new THREE.Mesh(
     new THREE.CylinderGeometry(
-      4.6 + rand(seed + 1) * 4,
-      8.5 + rand(seed + 2) * 7,
-      1.2 + rand(seed + 3),
+      (4.6 + rand(seed + 1) * 4) * size,
+      (8.5 + rand(seed + 2) * 7) * size,
+      islandHeight,
       18,
       1,
     ),
@@ -754,17 +761,17 @@ function createDistantIsland(seed: number, angle: number, radius: number): THREE
       metalness: 0,
     }),
   );
-  island.position.y = 0.35;
+  island.position.y = islandHeight * 0.42;
   island.scale.z = 0.55 + rand(seed + 5) * 0.65;
   island.rotation.y = rand(seed + 6) * Math.PI;
   group.add(island);
 
-  const spireCount = 2 + Math.floor(rand(seed + 7) * 5);
+  const spireCount = 2 + Math.floor(rand(seed + 7) * (size > 1.5 ? 7 : 5));
   for (let i = 0; i < spireCount; i++) {
-    const spireHeight = 5 + rand(seed + i * 17) * 12;
+    const spireHeight = (5 + rand(seed + i * 17) * 12) * (0.8 + size * 0.2);
     const spire = new THREE.Mesh(
       new THREE.ConeGeometry(
-        0.7 + rand(seed + i * 13) * 1.8,
+        (0.7 + rand(seed + i * 13) * 1.8) * (0.9 + size * 0.18),
         spireHeight,
         10,
       ),
@@ -774,7 +781,7 @@ function createDistantIsland(seed: number, angle: number, radius: number): THREE
       }),
     );
     const localAngle = rand(seed + i * 19) * Math.PI * 2;
-    const localRadius = 1.4 + rand(seed + i * 23) * 6;
+    const localRadius = (1.4 + rand(seed + i * 23) * 6) * size;
     spire.position.set(
       Math.cos(localAngle) * localRadius,
       2.4 + spireHeight * 0.42,
@@ -790,10 +797,15 @@ function createDistantIsland(seed: number, angle: number, radius: number): THREE
 function createDistantArchipelago(): THREE.Group {
   const group = new THREE.Group();
   group.name = "tellus-distant-archipelago";
-  for (let i = 0; i < 18; i++) {
-    const angle = (i / 18) * Math.PI * 2 + rand(900 + i) * 0.32;
+  for (let i = 0; i < DISTANT_ISLAND_COUNT; i++) {
+    const angle =
+      (i / DISTANT_ISLAND_COUNT) * Math.PI * 2 + rand(900 + i) * 0.32;
     const radius = 58 + rand(1400 + i) * 72;
-    group.add(createDistantIsland(1800 + i * 43, angle, radius));
+    const isDestinationIsland = i % 5 === 1 || i % 7 === 4;
+    const size = isDestinationIsland
+      ? 2.05 + rand(2500 + i) * 0.85
+      : 0.9 + rand(2600 + i) * 0.42;
+    group.add(createDistantIsland(1800 + i * 43, angle, radius, size));
   }
   return group;
 }
