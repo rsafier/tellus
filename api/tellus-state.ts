@@ -26,7 +26,19 @@ export async function tellusStateHandler(request: Request): Promise<Response> {
 
   if (request.method === "PUT" || request.method === "POST") {
     const body = await request.text();
-    JSON.parse(body);
+    const parsed = JSON.parse(body) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Array.isArray((parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets) &&
+      (parsed as { terrainSculptOffsets: unknown[] }).terrainSculptOffsets.length === 0
+    ) {
+      return Response.json(
+        { error: "Refusing to overwrite Tellus terrain with empty state" },
+        { status: 422 },
+      );
+    }
     const finalPath = await statePath();
     const tempPath = `${finalPath}.tmp`;
     await writeFile(tempPath, body, "utf8");

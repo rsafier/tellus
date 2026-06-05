@@ -294,6 +294,9 @@ const terrainSculptOffsets = new Float32Array(
 );
 const terrainPaint = new Uint8Array(TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT);
 let terrainSaveTimer: number | undefined;
+let terrainStateDirty = false;
+let terrainStateLoaded = false;
+let terrainStateRevision = 0;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
@@ -1020,92 +1023,122 @@ function tellusStatePayload(): string {
 }
 
 async function loadTellusState(): Promise<void> {
-  const response = await fetch("/api/tellus-state", { cache: "no-store" });
-  if (!response.ok) return;
-  const parsed = (await response.json()) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-  const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
-  const paint = (parsed as { terrainPaint?: unknown }).terrainPaint;
-  terrainSculptOffsets.fill(0);
-  terrainPaint.fill(0);
-  if (Array.isArray(offsets)) {
-    for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
-      const value = offsets[i];
-      terrainSculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
-        ? clamp(value, -9, 9)
-        : 0;
+  terrainStateLoaded = false;
+  try {
+    const response = await fetch("/api/tellus-state", { cache: "no-store" });
+    if (!response.ok) {
+      terrainStateLoaded = true;
+      terrainStateDirty = false;
+      return;
     }
-  }
-  if (Array.isArray(paint)) {
-    for (let i = 0; i < Math.min(paint.length, terrainPaint.length); i++) {
-      const value = paint[i];
-      terrainPaint[i] =
-        typeof value === "number" && Number.isFinite(value)
-          ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+    const parsed = (await response.json()) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      terrainStateLoaded = true;
+      terrainStateDirty = false;
+      return;
+    }
+    const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
+    const paint = (parsed as { terrainPaint?: unknown }).terrainPaint;
+    terrainSculptOffsets.fill(0);
+    terrainPaint.fill(0);
+    if (Array.isArray(offsets)) {
+      for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
+        const value = offsets[i];
+        terrainSculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
+          ? clamp(value, -9, 9)
           : 0;
+      }
     }
-  }
-  const distantOffsets = (parsed as {
-    distantIslandSculptOffsets?: unknown;
-  }).distantIslandSculptOffsets;
-  const distantPaint = (parsed as {
-    distantIslandPaint?: unknown;
-  }).distantIslandPaint;
-  for (const spec of distantIslandSpecs) {
-    spec.sculptOffsets.fill(0);
-    spec.paint.fill(0);
-    if (distantOffsets && typeof distantOffsets === "object") {
-      const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
-      if (Array.isArray(values)) {
-        for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
-          const value = values[i];
-          spec.sculptOffsets[i] =
-            typeof value === "number" && Number.isFinite(value)
-              ? clamp(value, -9, 9)
-              : 0;
+    if (Array.isArray(paint)) {
+      for (let i = 0; i < Math.min(paint.length, terrainPaint.length); i++) {
+        const value = paint[i];
+        terrainPaint[i] =
+          typeof value === "number" && Number.isFinite(value)
+            ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+            : 0;
+      }
+    }
+    const distantOffsets = (parsed as {
+      distantIslandSculptOffsets?: unknown;
+    }).distantIslandSculptOffsets;
+    const distantPaint = (parsed as {
+      distantIslandPaint?: unknown;
+    }).distantIslandPaint;
+    for (const spec of distantIslandSpecs) {
+      spec.sculptOffsets.fill(0);
+      spec.paint.fill(0);
+      if (distantOffsets && typeof distantOffsets === "object") {
+        const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
+        if (Array.isArray(values)) {
+          for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
+            const value = values[i];
+            spec.sculptOffsets[i] =
+              typeof value === "number" && Number.isFinite(value)
+                ? clamp(value, -9, 9)
+                : 0;
+          }
+        }
+      }
+      if (distantPaint && typeof distantPaint === "object") {
+        const values = (distantPaint as Record<string, unknown>)[String(spec.seed)];
+        if (Array.isArray(values)) {
+          for (let i = 0; i < Math.min(values.length, spec.paint.length); i++) {
+            const value = values[i];
+            spec.paint[i] =
+              typeof value === "number" && Number.isFinite(value)
+                ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+                : 0;
+          }
         }
       }
     }
-    if (distantPaint && typeof distantPaint === "object") {
-      const values = (distantPaint as Record<string, unknown>)[String(spec.seed)];
-      if (Array.isArray(values)) {
-        for (let i = 0; i < Math.min(values.length, spec.paint.length); i++) {
-          const value = values[i];
-          spec.paint[i] =
-            typeof value === "number" && Number.isFinite(value)
-              ? clamp(Math.round(value), 0, terrainPaintKinds.length)
-              : 0;
-        }
-      }
-    }
+  } finally {
+    terrainStateLoaded = true;
+    terrainStateDirty = false;
   }
 }
 
 function saveTellusStateSoon(): void {
+  terrainStateDirty = true;
+  terrainStateRevision++;
+  if (!terrainStateLoaded) return;
   if (terrainSaveTimer !== undefined) {
     window.clearTimeout(terrainSaveTimer);
   }
+  const saveRevision = terrainStateRevision;
   terrainSaveTimer = window.setTimeout(() => {
     terrainSaveTimer = undefined;
     void fetch("/api/tellus-state", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: tellusStatePayload(),
-    }).catch((error) => {
-      console.warn("Tellus state save failed", error);
-    });
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`state save returned ${response.status}`);
+        }
+        if (terrainStateRevision === saveRevision) {
+          terrainStateDirty = false;
+        }
+      })
+      .catch((error) => {
+        console.warn("Tellus state save failed", error);
+      });
   }, 650);
 }
 
 function saveTellusStateNow(): void {
+  if (!terrainStateDirty || !terrainStateLoaded) return;
   if (terrainSaveTimer !== undefined) {
     window.clearTimeout(terrainSaveTimer);
     terrainSaveTimer = undefined;
   }
   const body = tellusStatePayload();
+  const saveRevision = terrainStateRevision;
   if (navigator.sendBeacon?.("/api/tellus-state", new Blob([body], {
     type: "application/json",
   }))) {
+    terrainStateDirty = false;
     return;
   }
   void fetch("/api/tellus-state", {
@@ -1113,9 +1146,18 @@ function saveTellusStateNow(): void {
     headers: { "Content-Type": "application/json" },
     body,
     keepalive: true,
-  }).catch((error) => {
-    console.warn("Tellus state save failed", error);
-  });
+  })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`state save returned ${response.status}`);
+      }
+      if (terrainStateRevision === saveRevision) {
+        terrainStateDirty = false;
+      }
+    })
+    .catch((error) => {
+      console.warn("Tellus state save failed", error);
+    });
 }
 
 function toAssetId(prompt: string, prefix: string): string {
