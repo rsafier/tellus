@@ -80,6 +80,20 @@ interface GeneratedThing {
   generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
 }
 
+interface DistantIslandSpec {
+  seed: number;
+  angle: number;
+  distance: number;
+  x: number;
+  z: number;
+  size: number;
+  topRadius: number;
+  bottomRadius: number;
+  height: number;
+  scaleZ: number;
+  rotationY: number;
+}
+
 interface TellusLog {
   id: string;
   tick: number;
@@ -319,6 +333,87 @@ function distance2D(a: Vec3, b: Vec3): number {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
+function createDistantIslandSpec(index: number): DistantIslandSpec {
+  const seed = 1800 + index * 43;
+  const angle =
+    (index / DISTANT_ISLAND_COUNT) * Math.PI * 2 + rand(900 + index) * 0.32;
+  const distance = 58 + rand(1400 + index) * 72;
+  const isDestinationIsland = index % 5 === 1 || index % 7 === 4;
+  const size = isDestinationIsland
+    ? 2.05 + rand(2500 + index) * 0.85
+    : 0.9 + rand(2600 + index) * 0.42;
+  const topRadius = (4.6 + rand(seed + 1) * 4) * size;
+  const bottomRadius = (8.5 + rand(seed + 2) * 7) * size;
+  return {
+    seed,
+    angle,
+    distance,
+    x: Math.cos(angle) * distance,
+    z: Math.sin(angle) * distance,
+    size,
+    topRadius,
+    bottomRadius,
+    height: 1.2 + rand(seed + 3) * 0.9,
+    scaleZ: 0.55 + rand(seed + 5) * 0.65,
+    rotationY: rand(seed + 6) * Math.PI,
+  };
+}
+
+const distantIslandSpecs = Array.from(
+  { length: DISTANT_ISLAND_COUNT },
+  (_, index) => createDistantIslandSpec(index),
+);
+
+function distantIslandLocalRadius(
+  spec: DistantIslandSpec,
+  x: number,
+  z: number,
+): number {
+  const dx = x - spec.x;
+  const dz = z - spec.z;
+  const cos = Math.cos(-spec.rotationY);
+  const sin = Math.sin(-spec.rotationY);
+  const localX = dx * cos - dz * sin;
+  const localZ = dx * sin + dz * cos;
+  const radiusX = spec.bottomRadius * 0.92;
+  const radiusZ = radiusX * spec.scaleZ;
+  return Math.hypot(localX / radiusX, localZ / radiusZ);
+}
+
+function nearestDistantIsland(
+  x: number,
+  z: number,
+  maxLocalRadius = 1,
+): DistantIslandSpec | undefined {
+  let nearest: DistantIslandSpec | undefined;
+  let nearestLocalRadius = Infinity;
+  for (const spec of distantIslandSpecs) {
+    const localRadius = distantIslandLocalRadius(spec, x, z);
+    if (localRadius <= maxLocalRadius && localRadius < nearestLocalRadius) {
+      nearest = spec;
+      nearestLocalRadius = localRadius;
+    }
+  }
+  return nearest;
+}
+
+function distantIslandHeight(spec: DistantIslandSpec, x: number, z: number): number {
+  const localRadius = clamp(distantIslandLocalRadius(spec, x, z), 0, 1);
+  const crown = Math.pow(1 - localRadius, 1.75) * spec.height * 0.72;
+  return SEA_LEVEL + 0.28 + crown;
+}
+
+function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
+  if (Math.hypot(x, z) <= WORLD_RADIUS - 2) {
+    return { x, y: terrainHeight(x, z), z };
+  }
+  const distantIsland = nearestDistantIsland(x, z, 0.96);
+  if (distantIsland) {
+    return { x, y: distantIslandHeight(distantIsland, x, z), z };
+  }
+  return fallback ? { ...fallback } : normalizedDiscPosition(x, z);
+}
+
 function normalizedDiscPosition(x: number, z: number): Vec3 {
   const radius = Math.hypot(x, z);
   if (radius <= WORLD_RADIUS - 2) {
@@ -336,6 +431,40 @@ function oceanPosition(x: number, z: number): Vec3 {
   if (radius <= maxRadius) return { x, y: SEA_LEVEL + 0.14, z };
   const scale = maxRadius / radius;
   return { x: x * scale, y: SEA_LEVEL + 0.14, z: z * scale };
+}
+
+function waterBlockedByLand(position: Vec3): boolean {
+  if (Math.hypot(position.x, position.z) < WORLD_RADIUS + 1.2) return true;
+  return Boolean(nearestDistantIsland(position.x, position.z, 1.08));
+}
+
+function waterVehiclePosition(x: number, z: number, fallback?: Vec3): Vec3 {
+  const position = oceanPosition(x, z);
+  if (!waterBlockedByLand(position)) return position;
+  return fallback ? { ...fallback } : oceanPosition(WORLD_RADIUS + 5, 0);
+}
+
+function distantIslandShorePosition(spec: DistantIslandSpec, x: number, z: number): Vec3 {
+  const dx = x - spec.x;
+  const dz = z - spec.z;
+  const cos = Math.cos(-spec.rotationY);
+  const sin = Math.sin(-spec.rotationY);
+  const localX = dx * cos - dz * sin;
+  const localZ = dx * sin + dz * cos;
+  const angle = Math.atan2(localZ / spec.scaleZ, localX) || 0.2;
+  const radiusX = spec.bottomRadius * 0.68;
+  const radiusZ = radiusX * spec.scaleZ;
+  const shoreLocalX = Math.cos(angle) * radiusX;
+  const shoreLocalZ = Math.sin(angle) * radiusZ;
+  const worldCos = Math.cos(spec.rotationY);
+  const worldSin = Math.sin(spec.rotationY);
+  const shoreX = spec.x + shoreLocalX * worldCos - shoreLocalZ * worldSin;
+  const shoreZ = spec.z + shoreLocalX * worldSin + shoreLocalZ * worldCos;
+  return {
+    x: shoreX,
+    y: distantIslandHeight(spec, shoreX, shoreZ),
+    z: shoreZ,
+  };
 }
 
 type VehicleMode = "water" | "air" | "ground";
@@ -400,11 +529,16 @@ function airPosition(x: number, z: number): Vec3 {
   return { x: nx, y: groundY + 12, z: nz };
 }
 
-function movedVehiclePosition(thing: GeneratedThing, x: number, z: number): Vec3 {
+function movedVehiclePosition(
+  thing: GeneratedThing,
+  x: number,
+  z: number,
+  fallback?: Vec3,
+): Vec3 {
   const mode = vehicleMode(thing);
   if (mode === "air") return airPosition(x, z);
-  if (mode === "water") return oceanPosition(x, z);
-  return normalizedDiscPosition(x, z);
+  if (mode === "water") return waterVehiclePosition(x, z, fallback);
+  return groundedPosition(x, z, fallback);
 }
 
 function terrainHeight(x: number, z: number): number {
@@ -730,28 +864,20 @@ function createOceanSurface(): THREE.Mesh {
   return ocean;
 }
 
-function createDistantIsland(
-  seed: number,
-  angle: number,
-  radius: number,
-  size = 1,
-): THREE.Group {
+function createDistantIsland(spec: DistantIslandSpec): THREE.Group {
   const group = new THREE.Group();
-  group.name = `tellus-distant-island-${seed}`;
-  const x = Math.cos(angle) * radius;
-  const z = Math.sin(angle) * radius;
-  group.position.set(x, SEA_LEVEL - 0.02, z);
+  group.name = `tellus-distant-island-${spec.seed}`;
+  group.position.set(spec.x, SEA_LEVEL - 0.02, spec.z);
 
   const islandColor = new THREE.Color(0x4f8b2e).lerp(
     new THREE.Color(0x243d35),
-    rand(seed + 4) * 0.45,
+    rand(spec.seed + 4) * 0.45,
   );
-  const islandHeight = 1.2 + rand(seed + 3) * 0.9;
   const island = new THREE.Mesh(
     new THREE.CylinderGeometry(
-      (4.6 + rand(seed + 1) * 4) * size,
-      (8.5 + rand(seed + 2) * 7) * size,
-      islandHeight,
+      spec.topRadius,
+      spec.bottomRadius,
+      spec.height,
       18,
       1,
     ),
@@ -761,33 +887,38 @@ function createDistantIsland(
       metalness: 0,
     }),
   );
-  island.position.y = islandHeight * 0.42;
-  island.scale.z = 0.55 + rand(seed + 5) * 0.65;
-  island.rotation.y = rand(seed + 6) * Math.PI;
+  island.position.y = spec.height * 0.42;
+  island.scale.z = spec.scaleZ;
+  island.rotation.y = spec.rotationY;
   group.add(island);
 
-  const spireCount = 2 + Math.floor(rand(seed + 7) * (size > 1.5 ? 7 : 5));
+  const spireCount = 2 + Math.floor(rand(spec.seed + 7) * (spec.size > 1.5 ? 7 : 5));
   for (let i = 0; i < spireCount; i++) {
-    const spireHeight = (5 + rand(seed + i * 17) * 12) * (0.8 + size * 0.2);
+    const spireHeight =
+      (5 + rand(spec.seed + i * 17) * 12) * (0.8 + spec.size * 0.2);
     const spire = new THREE.Mesh(
       new THREE.ConeGeometry(
-        (0.7 + rand(seed + i * 13) * 1.8) * (0.9 + size * 0.18),
+        (0.7 + rand(spec.seed + i * 13) * 1.8) *
+          (0.9 + spec.size * 0.18),
         spireHeight,
         10,
       ),
       new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0x7a6a4a).lerp(new THREE.Color(0x2c3b48), rand(seed + i)),
+        color: new THREE.Color(0x7a6a4a).lerp(
+          new THREE.Color(0x2c3b48),
+          rand(spec.seed + i),
+        ),
         roughness: 0.88,
       }),
     );
-    const localAngle = rand(seed + i * 19) * Math.PI * 2;
-    const localRadius = (1.4 + rand(seed + i * 23) * 6) * size;
+    const localAngle = rand(spec.seed + i * 19) * Math.PI * 2;
+    const localRadius = (1.4 + rand(spec.seed + i * 23) * 6) * spec.size;
     spire.position.set(
       Math.cos(localAngle) * localRadius,
       2.4 + spireHeight * 0.42,
-      Math.sin(localAngle) * localRadius * island.scale.z,
+      Math.sin(localAngle) * localRadius * spec.scaleZ,
     );
-    spire.rotation.z = (rand(seed + i * 29) - 0.5) * 0.22;
+    spire.rotation.z = (rand(spec.seed + i * 29) - 0.5) * 0.22;
     group.add(spire);
   }
 
@@ -797,15 +928,8 @@ function createDistantIsland(
 function createDistantArchipelago(): THREE.Group {
   const group = new THREE.Group();
   group.name = "tellus-distant-archipelago";
-  for (let i = 0; i < DISTANT_ISLAND_COUNT; i++) {
-    const angle =
-      (i / DISTANT_ISLAND_COUNT) * Math.PI * 2 + rand(900 + i) * 0.32;
-    const radius = 58 + rand(1400 + i) * 72;
-    const isDestinationIsland = i % 5 === 1 || i % 7 === 4;
-    const size = isDestinationIsland
-      ? 2.05 + rand(2500 + i) * 0.85
-      : 0.9 + rand(2600 + i) * 0.42;
-    group.add(createDistantIsland(1800 + i * 43, angle, radius, size));
+  for (const spec of distantIslandSpecs) {
+    group.add(createDistantIsland(spec));
   }
   return group;
 }
@@ -1896,8 +2020,17 @@ function createTellusWorld(
     if (!thing) return;
     const position =
       isVehicleThing(thing) || sailingThingId === id
-        ? movedVehiclePosition(thing, thing.position.x + dx, thing.position.z + dz)
-        : normalizedDiscPosition(thing.position.x + dx, thing.position.z + dz);
+        ? movedVehiclePosition(
+            thing,
+            thing.position.x + dx,
+            thing.position.z + dz,
+            thing.position,
+          )
+        : groundedPosition(
+            thing.position.x + dx,
+            thing.position.z + dz,
+            thing.position,
+          );
     thing.position = position;
     if (sailingThingId === id) {
       visitorPosition = { ...position };
@@ -1919,10 +2052,15 @@ function createTellusWorld(
       mode === "air"
         ? airPosition(Math.cos(angle) * radius, Math.sin(angle) * radius)
         : mode === "water"
-          ? oceanPosition(Math.cos(angle) * radius, Math.sin(angle) * radius)
-          : normalizedDiscPosition(
+          ? waterVehiclePosition(
+              Math.cos(angle) * radius,
+              Math.sin(angle) * radius,
+              thing.position,
+            )
+          : groundedPosition(
               Math.cos(angle) * (WORLD_RADIUS - 4),
               Math.sin(angle) * (WORLD_RADIUS - 4),
+              thing.position,
             );
     updateThingMeshPosition(thing);
     publish();
@@ -1934,7 +2072,7 @@ function createTellusWorld(
     if (!thing || !mode) return;
     sailingThingId = id;
     selectedThingId = id;
-    if (mode === "water" && Math.hypot(thing.position.x, thing.position.z) < WORLD_RADIUS - 1) {
+    if (mode === "water" && waterBlockedByLand(thing.position)) {
       moveGeneratedToWater(id);
     } else if (mode === "air") {
       thing.position = airPosition(thing.position.x, thing.position.z);
@@ -1959,14 +2097,34 @@ function createTellusWorld(
     sailingThingId = undefined;
     if (boat) {
       const mode = vehicleMode(boat);
-      const shoreDirection = new THREE.Vector3(boat.position.x, 0, boat.position.z);
-      if (mode === "air") {
-        visitorPosition = normalizedDiscPosition(boat.position.x, boat.position.z);
+      const nearbyIsland = nearestDistantIsland(
+        boat.position.x,
+        boat.position.z,
+        1.45,
+      );
+      const shoreDirection = new THREE.Vector3(
+        boat.position.x,
+        0,
+        boat.position.z,
+      );
+      if (mode === "water" && nearbyIsland) {
+        visitorPosition = distantIslandShorePosition(
+          nearbyIsland,
+          boat.position.x,
+          boat.position.z,
+        );
+      } else if (mode === "air") {
+        visitorPosition = groundedPosition(
+          boat.position.x,
+          boat.position.z,
+          visitorPosition,
+        );
       } else if (shoreDirection.lengthSq() > 0.001) {
         shoreDirection.normalize();
-        visitorPosition = normalizedDiscPosition(
+        visitorPosition = groundedPosition(
           shoreDirection.x * (WORLD_RADIUS - 2),
           shoreDirection.z * (WORLD_RADIUS - 2),
+          visitorPosition,
         );
       }
     }
@@ -2404,6 +2562,7 @@ function createTellusWorld(
         boat,
         boat.position.x + movement.x,
         boat.position.z + movement.z,
+        boat.position,
       );
       visitorPosition = { ...boat.position };
       const mesh = generatedMeshes.get(boat.id);
@@ -2416,9 +2575,10 @@ function createTellusWorld(
       publish();
       return;
     }
-    visitorPosition = normalizedDiscPosition(
+    visitorPosition = groundedPosition(
       visitorPosition.x + movement.x,
       visitorPosition.z + movement.z,
+      visitorPosition,
     );
   };
 
