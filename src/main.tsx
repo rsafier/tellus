@@ -1138,7 +1138,23 @@ async function requestWorldFeedback(canvas: HTMLCanvasElement): Promise<string> 
         "Describe the visible Tellus world in 4-6 concise bullet points for an autonomous in-world agent. Focus on visible terrain, water, generated objects, agent/avatar positions, spatial relationships, and anything that looks unfinished or surprising.",
     }),
   });
-  const payload = await readJsonResponse<WorldFeedbackResponse>(response);
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      `World feedback service returned ${response.status} ${
+        response.statusText || "non-JSON response"
+      }`.trim(),
+    );
+  }
+  const payload = (await response.json()) as WorldFeedbackResponse;
+  if (!response.ok) {
+    throw new Error(
+      payload.error ||
+        `World feedback service returned ${response.status} ${
+          response.statusText || "error"
+        }`.trim(),
+    );
+  }
   if (!payload.summary?.trim()) {
     throw new Error(payload.error || "World feedback returned no summary");
   }

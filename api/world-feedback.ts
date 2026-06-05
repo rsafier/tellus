@@ -21,7 +21,7 @@ interface McpResponse {
 
 const supportedImageTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const maxImageBytes = 4 * 1024 * 1024;
-const mcpTimeoutMs = 90_000;
+const mcpTimeoutMs = 45_000;
 
 function zAiApiKey(): string {
   const apiKey =
@@ -67,12 +67,22 @@ function mcpRequest(id: number, method: string, params: unknown): string {
   return `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
 }
 
+function zaiMcpCommand(): { command: string; args: string[] } {
+  const configured = process.env.ZAI_MCP_COMMAND?.trim();
+  if (configured) return { command: configured, args: [] };
+  return {
+    command: process.execPath,
+    args: [join(process.cwd(), "node_modules", ".bin", "zai-mcp-server")],
+  };
+}
+
 async function analyzeImageWithMcp(
   imagePath: string,
   prompt: string,
 ): Promise<string> {
   const apiKey = zAiApiKey();
-  const child = spawn("npx", ["-y", "@z_ai/mcp-server"], {
+  const mcp = zaiMcpCommand();
+  const child = spawn(mcp.command, mcp.args, {
     env: {
       ...process.env,
       Z_AI_API_KEY: apiKey,
@@ -90,39 +100,78 @@ async function analyzeImageWithMcp(
     stderr += chunk.toString();
   });
 
+  let timedOut = false;
   const timeout = setTimeout(() => {
+    timedOut = true;
     child.kill("SIGTERM");
   }, mcpTimeoutMs);
 
-  child.stdin.write(
-    mcpRequest(1, "initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "tellus-world-feedback", version: "0.1.0" },
-    }),
-  );
-  child.stdin.write(
-    `${JSON.stringify({
-      jsonrpc: "2.0",
-      method: "notifications/initialized",
-      params: {},
-    })}\n`,
-  );
-  child.stdin.write(
-    mcpRequest(2, "tools/call", {
-      name: "analyze_image",
-      arguments: {
-        image_source: imagePath,
-        prompt,
-      },
-    }),
-  );
-  child.stdin.end();
-
-  await new Promise<void>((resolve) => {
-    child.on("close", () => resolve());
+  const exit = new Promise<void>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (timedOut) {
+        reject(new Error("Z.ai vision MCP timed out"));
+        return;
+      }
+      if (code && code !== 0) {
+        reject(
+          new Error(
+            `Z.ai vision MCP exited with code ${code}${signal ? ` (${signal})` : ""}`,
+          ),
+        );
+        return;
+      }
+      resolve();
+    });
   });
-  clearTimeout(timeout);
+
+  try {
+    child.stdin.write(
+      mcpRequest(1, "initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "tellus-world-feedback", version: "0.1.0" },
+      }),
+    );
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+        params: {},
+      })}\n`,
+    );
+    child.stdin.write(
+      mcpRequest(2, "tools/call", {
+        name: "analyze_image",
+        arguments: {
+          image_source: imagePath,
+          prompt,
+        },
+      }),
+    );
+    child.stdin.end();
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  }
+
+  try {
+    await exit;
+  } catch (error) {
+    const cleanStderr = stderr
+      .split(/\r?\n/)
+      .filter((line) => line && !line.includes("npm notice"))
+      .slice(-4)
+      .join(" ");
+    throw new Error(
+      cleanStderr ||
+        (error instanceof Error
+          ? error.message
+          : "Z.ai vision MCP process failed"),
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const responses = stdout
     .split(/\r?\n/)
