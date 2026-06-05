@@ -179,6 +179,8 @@ interface TellusRuntimeConfig {
   assetForgeApiBase: string;
   agentModel: string;
   generationProvider: GenerationProvider;
+  worldApiBase: string;
+  worldId: string;
   skyboxUrl: string;
   enabledAgents: AgentId[];
   avatars: Partial<Record<AgentId, string>>;
@@ -302,11 +304,8 @@ let terrainSaveTimer: number | undefined;
 let terrainStateDirty = false;
 let terrainStateLoaded = false;
 let terrainStateRevision = 0;
-let tellusWorldBackendAvailable = false;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
-const TELLUS_WORLD_ID = import.meta.env.VITE_TELLUS_WORLD_ID ?? "main";
-const TELLUS_WORLD_API_BASE =
-  import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "";
+let tellusWorldBackendAvailable = false;
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
@@ -317,6 +316,9 @@ const runtimeConfig: TellusRuntimeConfig = {
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
       | undefined) ?? "pixal3d-gradio",
+  worldApiBase:
+    import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "",
+  worldId: import.meta.env.VITE_TELLUS_WORLD_ID ?? "main",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
   enabledAgents: ["johnny"],
   avatars: {
@@ -961,6 +963,23 @@ function applyRuntimeConfig(config: unknown): void {
     runtimeConfig.skyboxUrl = skyboxUrl.trim();
   }
 
+  const worldApiBase = config.worldApiBase;
+  if (
+    !import.meta.env.VITE_TELLUS_WORLD_API_BASE?.trim() &&
+    typeof worldApiBase === "string"
+  ) {
+    runtimeConfig.worldApiBase = worldApiBase.trim().replace(/\/+$/, "");
+  }
+
+  const worldId = config.worldId;
+  if (
+    !import.meta.env.VITE_TELLUS_WORLD_ID?.trim() &&
+    typeof worldId === "string" &&
+    worldId.trim()
+  ) {
+    runtimeConfig.worldId = worldId.trim();
+  }
+
   const enabledAgents = config.enabledAgents;
   if (Array.isArray(enabledAgents)) {
     const configuredAgentIds = enabledAgents.filter(
@@ -1037,7 +1056,7 @@ function tellusStatePayload(): string {
 }
 
 function tellusWorldHttpUrl(route: "state" | "action"): string {
-  return `${TELLUS_WORLD_API_BASE}/api/world/${encodeURIComponent(TELLUS_WORLD_ID)}/${route}`;
+  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}`;
 }
 
 function tellusWorldWebSocketUrl(visitorId: string): string {

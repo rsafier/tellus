@@ -2,6 +2,8 @@
   "assetForgeApiBase": "",
   "generationProvider": "instantmesh-gradio",
   "agentModel": "GLM-5.1",
+  "worldApiBase": "",
+  "worldId": "main",
   "skyboxUrl": "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
   "enabledAgents": ["johnny"],
   "avatars": {}

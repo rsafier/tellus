@@ -18,6 +18,56 @@ bun run dev
 
 Open <http://localhost:3344/>.
 
+## Cloudflare Realtime World
+
+Tellus can use a Cloudflare Worker Durable Object as the authoritative shared
+world. The browser talks to:
+
+```text
+GET /api/world/main/state
+POST /api/world/main/action
+WS  /api/world/main/live
+```
+
+The Worker stores one terrain snapshot per world id, broadcasts terrain changes
+over WebSockets, and can enqueue future generation work through
+`TELLUS_GENERATION_QUEUE`.
+
+Local validation:
+
+```bash
+bun run typecheck:worker
+bunx wrangler deploy --dry-run --config wrangler.toml
+```
+
+Cloudflare deploy:
+
+```bash
+wrangler login
+bun run deploy:worker
+```
+
+If the Worker is mounted under the same hostname as the site, leave
+`worldApiBase` empty. If it is deployed on a separate Worker hostname, set one
+of these:
+
+```text
+VITE_TELLUS_WORLD_API_BASE=https://tellus-world.your-subdomain.workers.dev
+VITE_TELLUS_WORLD_ID=main
+```
+
+or runtime config:
+
+```json
+{
+  "worldApiBase": "https://tellus-world.your-subdomain.workers.dev",
+  "worldId": "main"
+}
+```
+
+For same-origin Cloudflare Pages, add a route or Worker binding that sends
+`/api/world/*` to the `tellus-world` Worker.
+
 ## Coolify
 
 Deploy Tellus as a Dockerfile-based app. The container listens on port `3000`
@@ -149,6 +199,8 @@ committed config:
 ```json
 {
   "assetForgeApiBase": "https://your-asset-forge.example.com",
+  "worldApiBase": "https://tellus-world.your-subdomain.workers.dev",
+  "worldId": "main",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "enabledAgents": ["johnny"],
   "avatars": {
