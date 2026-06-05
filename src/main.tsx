@@ -813,6 +813,17 @@ function fitModelToHeight(model: THREE.Object3D, targetHeight: number): THREE.Ob
   return model;
 }
 
+function placeObjectAboveGround(
+  object: THREE.Object3D,
+  position: Vec3,
+  clearance = 0.04,
+): void {
+  object.position.set(position.x, position.y, position.z);
+  const bounds = new THREE.Box3().setFromObject(object);
+  if (!Number.isFinite(bounds.min.y)) return;
+  object.position.y += position.y - bounds.min.y + clearance;
+}
+
 async function loadGltfObject(url: string): Promise<THREE.Object3D> {
   const cached =
     gltfObjectCache.get(url) ??
@@ -876,7 +887,7 @@ async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<T
   const model = await loadGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, clamp(thing.scale * 2.25, 1.2, 4.2));
-  fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
+  placeObjectAboveGround(fitted, thing.position, 0.08);
   return fitted;
 }
 
@@ -1317,7 +1328,7 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
     group.add(seed);
   }
 
-  group.position.set(thing.position.x, thing.position.y, thing.position.z);
+  placeObjectAboveGround(group, thing.position, 0.025);
   return group;
 }
 
@@ -1363,7 +1374,8 @@ function createGenerationSwirl(thing: GeneratedThing): THREE.Object3D {
     group.add(spark);
   }
 
-  group.position.set(thing.position.x, thing.position.y + 0.04, thing.position.z);
+  group.position.set(thing.position.x, thing.position.y + 0.08, thing.position.z);
+  group.userData.baseY = group.position.y;
   return group;
 }
 
@@ -2173,7 +2185,10 @@ function createTellusWorld(
     for (const mesh of generatedMeshes.values()) {
       if (mesh.userData.generatingSwirl) {
         mesh.rotation.y = now * 0.0022 + index;
-        mesh.position.y += Math.sin(now * 0.004 + index) * 0.004;
+        mesh.position.y =
+          (typeof mesh.userData.baseY === "number"
+            ? mesh.userData.baseY
+            : mesh.position.y) + Math.sin(now * 0.004 + index) * 0.045;
         for (const child of mesh.children) {
           if (child.userData.swirlRing !== undefined) {
             child.rotation.z =
@@ -2199,8 +2214,6 @@ function createTellusWorld(
             );
           }
         }
-      } else {
-        mesh.rotation.y += 0.02 * Math.sin(now * 0.0007 + index);
       }
       index++;
     }
