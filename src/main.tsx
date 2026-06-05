@@ -117,6 +117,7 @@ interface TellusLog {
   agentName: string;
   tool: ToolName;
   text: string;
+  screenshotUrl?: string;
 }
 
 interface GenerateRequest {
@@ -175,9 +176,16 @@ interface TellusRuntimeConfig {
 }
 
 interface AgentDecision {
+  action?: "generate" | "sculptTerrain" | "moveAsset" | "rotateAsset" | "scaleAsset" | "moveAssetToWater";
   prompt: string;
   intent?: string;
   speech?: string;
+  terrainMode?: TerrainEditMode;
+  targetId?: string;
+  dx?: number;
+  dz?: number;
+  rotation?: number;
+  scaleMultiplier?: number;
 }
 
 interface ChatCompletionResponse {
@@ -1137,8 +1145,7 @@ function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
   return output.toDataURL("image/jpeg", 0.72);
 }
 
-async function requestWorldFeedback(canvas: HTMLCanvasElement): Promise<string> {
-  const imageDataUrl = captureCanvasDataUrl(canvas);
+async function requestWorldFeedback(imageDataUrl: string): Promise<string> {
   const response = await fetch("/api/world-feedback", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2287,6 +2294,30 @@ function promptAlreadyExists(prompt: string, generated: GeneratedThing[]): boole
   return generated.some((thing) => normalizeAssetPrompt(thing.prompt) === normalized);
 }
 
+function terrainEditModeFromValue(value: unknown): TerrainEditMode | undefined {
+  if (value === "raise" || value === "lower" || value === "flatten") {
+    return value;
+  }
+  if (typeof value === "string" && isTerrainPaintMode(value as TerrainEditMode)) {
+    return value as TerrainPaintKind;
+  }
+  return undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function agentDecisionAction(value: unknown): AgentDecision["action"] {
+  return value === "sculptTerrain" ||
+    value === "moveAsset" ||
+    value === "rotateAsset" ||
+    value === "scaleAsset" ||
+    value === "moveAssetToWater"
+    ? value
+    : "generate";
+}
+
 function chooseAgentPrompt(
   agent: TellusAgent,
   generated: GeneratedThing[],
@@ -2314,13 +2345,17 @@ function ensureNovelAgentDecision(
   agent: TellusAgent,
   generated: GeneratedThing[],
 ): AgentDecision {
+  if (decision.action && decision.action !== "generate") {
+    return decision;
+  }
   const prompt = decision.prompt.trim();
   if (!promptAlreadyExists(prompt, generated)) {
-    return { ...decision, prompt };
+    return { ...decision, action: decision.action ?? "generate", prompt };
   }
   const replacementPrompt = chooseAgentPrompt(agent, generated);
   return {
     ...decision,
+    action: "generate",
     prompt: replacementPrompt,
     intent:
       decision.intent ??
@@ -2350,16 +2385,26 @@ function extractJsonObject(text: string): unknown {
 function parseAgentDecision(content: string, fallbackPrompt: string): AgentDecision {
   const parsed = extractJsonObject(content);
   if (isRecord(parsed)) {
+    const action = agentDecisionAction(parsed.action);
     const prompt = parsed.prompt;
     const intent = parsed.intent;
     const speech = parsed.speech;
     return {
+      action,
       prompt: typeof prompt === "string" && prompt.trim() ? prompt.trim() : fallbackPrompt,
       intent: typeof intent === "string" && intent.trim() ? intent.trim() : undefined,
       speech: typeof speech === "string" && speech.trim() ? speech.trim() : undefined,
+      terrainMode: terrainEditModeFromValue(parsed.terrainMode),
+      targetId: typeof parsed.targetId === "string" && parsed.targetId.trim()
+        ? parsed.targetId.trim()
+        : undefined,
+      dx: finiteNumber(parsed.dx),
+      dz: finiteNumber(parsed.dz),
+      rotation: finiteNumber(parsed.rotation),
+      scaleMultiplier: finiteNumber(parsed.scaleMultiplier),
     };
   }
-  return { prompt: content.trim() || fallbackPrompt };
+  return { action: "generate", prompt: content.trim() || fallbackPrompt };
 }
 
 function chooseAgentLocation(
@@ -2425,7 +2470,7 @@ function describeAgentPerception(
       const status = thing.generationStatus && thing.generationStatus !== "ready"
         ? `, ${thing.generationStatus}`
         : "";
-      return `- ${Math.round(distance)}m ${compassDirection(agent.position, thing.position)}: ${thing.kind} "${thing.prompt}"${status}, ${thing.scale.toFixed(1)}x`;
+      return `- id ${thing.id}: ${Math.round(distance)}m ${compassDirection(agent.position, thing.position)}: ${thing.kind} "${thing.prompt}"${status}, ${thing.scale.toFixed(1)}x`;
     })
     .join("\n");
   const lastOwnAsset = [...generated]
@@ -2486,6 +2531,13 @@ async function askAgentForDecision(
     .map((log) => `${log.agentName}: ${log.text}`)
     .join("\n");
   const perception = describeAgentPerception(agent, generated, logs, visualFeedback);
+  const controllableObjects = generated
+    .slice(-16)
+    .map(
+      (thing) =>
+        `- id ${thing.id}: ${thing.kind} "${thing.prompt}" at x ${thing.position.x.toFixed(1)}, z ${thing.position.z.toFixed(1)}, scale ${thing.scale.toFixed(2)}x`,
+    )
+    .join("\n");
 
   const response = await fetch("/api/chat", {
     method: "POST",
@@ -2498,7 +2550,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual view of where you are, what terrain is underfoot, what objects are nearby, what is pending, and what recently changed. Use that perception to decide one useful visible 3D asset to generate next, especially something that belongs near what you can see. Return only JSON with keys prompt, intent, and speech. The prompt must describe exactly one single asset, not a scene, set, collection, habitat, landscape, or group of objects. Do not repeat or paraphrase any existing object. The speech should be one short in-character sentence said aloud before you act.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual and visual view of where you are, terrain, nearby objects, pending work, and recent changes. Choose exactly one world action. Return only JSON. Use action \"generate\" with keys prompt, intent, speech to add one single asset. Or use action \"sculptTerrain\" with terrainMode one of raise, lower, flatten, meadow, beach, dirt, rock, snow. Or use action \"moveAsset\" with targetId plus dx and dz between -4 and 4. Or use action \"rotateAsset\" with targetId plus rotation between -1 and 1 radians. Or use action \"scaleAsset\" with targetId plus scaleMultiplier between 0.65 and 1.5. Or use action \"moveAssetToWater\" with targetId. Do not repeat existing generated objects. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
@@ -2508,6 +2560,7 @@ async function askAgentForDecision(
             `Current perception:\n${perception}`,
             `Current generated count: ${generated.length}`,
             `Recent objects:\n${recentObjects || "none yet"}`,
+            `Controllable object ids:\n${controllableObjects || "none yet"}`,
             `Do not generate these again, even as near synonyms:\n${forbiddenPrompts || "none yet"}`,
             `Recent logs:\n${recentLogs || "none yet"}`,
             `Fallback idea: ${fallbackPrompt}`,
@@ -2750,8 +2803,12 @@ function createTellusWorld(
     mesh.geometry = createDistantIslandTerrainGeometry(spec);
   };
 
-  const sculptTerrain = (mode: TerrainEditMode) => {
-    const center = visitorPosition;
+  const sculptTerrainAt = (
+    mode: TerrainEditMode,
+    center: Vec3,
+    actorId: AgentId | "visitor",
+    actorName: string,
+  ) => {
     const paintCode = isTerrainPaintMode(mode) ? terrainPaintCode(mode) : 0;
     const distantIsland =
       Math.hypot(center.x, center.z) > WORLD_RADIUS - 2
@@ -2832,15 +2889,19 @@ function createTellusWorld(
       }
     }
     addLog({
-      agentId: "visitor",
-      agentName: "Visitor",
+      agentId: actorId,
+      agentName: actorName,
       tool: "interact",
       text: distantIsland
         ? `${paintCode ? `paint ${mode}` : mode} terrain on distant island ${distantIsland.seed}`
-        : `${paintCode ? `paint ${mode}` : mode} terrain near the visitor`,
+        : `${paintCode ? `paint ${mode}` : mode} terrain near ${actorName}`,
     });
     saveTellusStateSoon();
     publish();
+  };
+
+  const sculptTerrain = (mode: TerrainEditMode) => {
+    sculptTerrainAt(mode, visitorPosition, "visitor", "Visitor");
   };
 
   const abortPendingGeneration = () => {
@@ -3432,6 +3493,88 @@ function createTellusWorld(
     publish();
   };
 
+  const agentActionTarget = (
+    agent: TellusAgent,
+    decision: AgentDecision,
+  ): GeneratedThing | undefined => {
+    if (decision.targetId) {
+      const explicit = thingById(decision.targetId);
+      if (explicit) return explicit;
+    }
+    return (
+      [...generated].reverse().find((thing) => thing.creatorId === agent.id) ??
+      generated[generated.length - 1]
+    );
+  };
+
+  const runAgentWorldAction = (
+    agent: TellusAgent,
+    decision: AgentDecision,
+  ): boolean => {
+    const action = decision.action ?? "generate";
+    if (action === "generate") return false;
+
+    if (action === "sculptTerrain") {
+      const mode = decision.terrainMode ?? "flatten";
+      sculptTerrainAt(mode, agent.position, agent.id, agent.name);
+      return true;
+    }
+
+    const target = agentActionTarget(agent, decision);
+    if (!target) return false;
+    selectedThingId = target.id;
+
+    if (action === "moveAsset") {
+      const dx = clamp(decision.dx ?? 0, -4, 4);
+      const dz = clamp(decision.dz ?? -2, -4, 4);
+      moveGenerated(target.id, dx, dz);
+      addLog({
+        agentId: agent.id,
+        agentName: agent.name,
+        tool: "interact",
+        text: `${agent.name} moved ${target.kind} "${target.prompt}" by x ${dx.toFixed(1)}, z ${dz.toFixed(1)}`,
+      });
+      return true;
+    }
+
+    if (action === "rotateAsset") {
+      const radians = clamp(decision.rotation ?? Math.PI / 8, -1, 1);
+      rotateGenerated(target.id, radians);
+      addLog({
+        agentId: agent.id,
+        agentName: agent.name,
+        tool: "interact",
+        text: `${agent.name} rotated ${target.kind} "${target.prompt}" ${radians.toFixed(2)} radians`,
+      });
+      return true;
+    }
+
+    if (action === "scaleAsset") {
+      const multiplier = clamp(decision.scaleMultiplier ?? 1.15, 0.65, 1.5);
+      scaleGenerated(target.id, multiplier);
+      addLog({
+        agentId: agent.id,
+        agentName: agent.name,
+        tool: "interact",
+        text: `${agent.name} scaled ${target.kind} "${target.prompt}" to ${target.scale.toFixed(2)}x`,
+      });
+      return true;
+    }
+
+    if (action === "moveAssetToWater") {
+      moveGeneratedToWater(target.id);
+      addLog({
+        agentId: agent.id,
+        agentName: agent.name,
+        tool: "interact",
+        text: `${agent.name} repositioned ${target.kind} "${target.prompt}" toward the water or island edge`,
+      });
+      return true;
+    }
+
+    return false;
+  };
+
   const runAgentTurn = async (agent: TellusAgent): Promise<void> => {
     if (paused) return;
     if (pendingAgentDecisions.has(agent.id)) return;
@@ -3453,6 +3596,7 @@ function createTellusWorld(
           text: `${agent.name} says: ${decision.speech}`,
         });
       }
+      if (runAgentWorldAction(agent, decision)) return;
       const thing = generate({
         prompt: decision.prompt,
         location: chooseAgentLocation(agent, decision.prompt),
@@ -3708,7 +3852,25 @@ function createTellusWorld(
     }
     nextWorldFeedbackAt = now + WORLD_FEEDBACK_INTERVAL_MS;
     worldFeedbackPending = true;
-    void requestWorldFeedback(renderer.domElement)
+    let screenshotUrl = "";
+    try {
+      screenshotUrl = captureCanvasDataUrl(renderer.domElement);
+    } catch (error) {
+      worldFeedbackPending = false;
+      if (!worldFeedbackIssueLogged) {
+        worldFeedbackIssueLogged = true;
+        addLog({
+          agentId: "world",
+          agentName: "Z.ai Vision",
+          tool: "interact",
+          text: `World feedback capture unavailable: ${
+            error instanceof Error ? error.message : "unknown capture error"
+          }`,
+        });
+      }
+      return;
+    }
+    void requestWorldFeedback(screenshotUrl)
       .then((summary) => {
         if (destroyed || paused) return;
         visualFeedback = summary;
@@ -3718,6 +3880,7 @@ function createTellusWorld(
           agentName: "Z.ai Vision",
           tool: "interact",
           text: `World feedback updated: ${sanitizeLogText(summary).slice(0, 180)}`,
+          screenshotUrl,
         });
       })
       .catch((error) => {
@@ -3730,6 +3893,7 @@ function createTellusWorld(
           text: `World feedback unavailable: ${
             error instanceof Error ? error.message : "unknown vision error"
           }`,
+          screenshotUrl,
         });
       })
       .finally(() => {
@@ -4429,6 +4593,13 @@ function App(): React.ReactElement {
               <article key={log.id} className={`log-entry ${log.tool}`}>
                 <strong>{log.tool}</strong>
                 <p>{log.text}</p>
+                {log.screenshotUrl && (
+                  <img
+                    className="log-screenshot"
+                    src={log.screenshotUrl}
+                    alt={`${log.agentName} world feedback screenshot`}
+                  />
+                )}
               </article>
             ))}
           </div>
