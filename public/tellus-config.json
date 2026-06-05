@@ -3,5 +3,6 @@
   "generationProvider": "instantmesh-gradio",
   "agentModel": "GLM-5.1",
   "skyboxUrl": "/skybox/free_-_skybox_basic_sky.glb",
+  "enabledAgents": ["johnny"],
   "avatars": {}
 }

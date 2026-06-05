@@ -1,8 +1,8 @@
 # Tellus
 
 Tellus is a tiny WebGPU AI terrarium: a floating disc world with a mountain,
-terrain, water, an avatar, and a few autonomous agents that can `generate` and
-`interact` with objects in the scene.
+terrain, water, an avatar, and an autonomous agent that can `generate` any asset
+it wants and `interact` with objects in the scene.
 
 ## Requirements
 
@@ -107,10 +107,11 @@ ZAI_API_KEY=...
 ZAI_MODEL=GLM-5.1
 ```
 
-When configured, Johnny, Mira, and Sol ask `/api/chat` for their next
-`generate()` prompt. If the endpoint is unavailable, they fall back to the local
-scripted behavior. `/api/tts` is also proxied for the Hyades TTS endpoint, ready
-for a later voice pass.
+When configured, the enabled agent asks `/api/chat` for its next `generate()`
+prompt. If the endpoint is unavailable, it falls back to local scripted
+behavior. By default only Johnny is enabled, and he is configured as a general
+world-forger that can request any visible 3D asset. `/api/tts` is also proxied
+for the Hyades TTS endpoint, ready for a later voice pass.
 
 Tellus reads `public/tellus-config.json` at runtime. The committed file is
 deploy-safe and intentionally has no local asset paths, so Vercel can build even
@@ -122,6 +123,7 @@ committed config:
 {
   "assetForgeApiBase": "https://your-asset-forge.example.com",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
+  "enabledAgents": ["johnny"],
   "avatars": {
     "johnny": "https://cdn.example.com/tellus/johnny.glb",
     "mira": "https://cdn.example.com/tellus/mira.glb",
@@ -129,6 +131,9 @@ committed config:
   }
 }
 ```
+
+To turn more autonomous agents back on later, set `enabledAgents` to any subset
+of `["johnny", "mira", "sol", "atlas"]`.
 
 On Vercel, set `VITE_ASSET_FORGE_API_BASE` and the `VITE_TELLUS_*_AVATAR_URL`
 variables when you want the URLs baked into a build, or replace

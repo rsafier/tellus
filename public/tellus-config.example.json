@@ -3,6 +3,7 @@
   "generationProvider": "instantmesh-gradio",
   "agentModel": "GLM-5.1",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
+  "enabledAgents": ["johnny"],
   "avatars": {
     "johnny": "https://cdn.example.com/tellus/johnny.glb",
     "mira": "https://cdn.example.com/tellus/mira.glb",

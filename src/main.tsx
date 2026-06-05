@@ -121,6 +121,7 @@ interface TellusRuntimeConfig {
   agentModel: string;
   generationProvider: "local" | "asset-forge" | "instantmesh-gradio";
   skyboxUrl: string;
+  enabledAgents: AgentId[];
   avatars: Partial<Record<AgentId, string>>;
 }
 
@@ -207,6 +208,7 @@ const runtimeConfig: TellusRuntimeConfig = {
       | TellusRuntimeConfig["generationProvider"]
       | undefined) ?? "local",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
+  enabledAgents: ["johnny"],
   avatars: {
     johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
     mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
@@ -214,6 +216,7 @@ const runtimeConfig: TellusRuntimeConfig = {
   },
 };
 const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
+const allAgentIds = ["johnny", "mira", "sol", "atlas"] as const;
 
 type MaterialWithTextureMaps = THREE.Material & {
   map?: THREE.Texture | null;
@@ -230,13 +233,13 @@ const terrainColors: Record<TerrainKind, THREE.Color> = {
 };
 
 function createAgentSeeds(): TellusAgent[] {
-  return [
+  const seeds: TellusAgent[] = [
     {
       id: "johnny",
       name: "Johnny",
-      epithet: "orchard-maker",
+      epithet: "world-forger",
       color: 0x7ec850,
-      goal: "Plant orchards, groves, trees, and flowers to make the disc feel generous and full of abundant life. Plant gardens full of peace and light.",
+      goal: "Freely imagine and generate any useful 3D asset for Tellus: terrain features, plants, animals, buildings, tools, vehicles, paths, water features, landmarks, habitats, companions, or strange beautiful objects.",
       avatarUrl: runtimeConfig.avatars.johnny,
       position: { x: -15, y: 0, z: 11 },
       target: { x: -11, y: 0, z: 9 },
@@ -276,6 +279,8 @@ function createAgentSeeds(): TellusAgent[] {
       nextActionAt: 2400,
     },
   ];
+  const enabled = new Set(runtimeConfig.enabledAgents);
+  return seeds.filter((agent) => enabled.has(agent.id));
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -373,10 +378,22 @@ function applyRuntimeConfig(config: unknown): void {
     runtimeConfig.skyboxUrl = skyboxUrl.trim();
   }
 
+  const enabledAgents = config.enabledAgents;
+  if (Array.isArray(enabledAgents)) {
+    const configuredAgentIds = enabledAgents.filter(
+      (agentId): agentId is AgentId =>
+        typeof agentId === "string" &&
+        allAgentIds.includes(agentId as AgentId),
+    );
+    if (configuredAgentIds.length > 0) {
+      runtimeConfig.enabledAgents = [...new Set(configuredAgentIds)];
+    }
+  }
+
   const avatars = config.avatars;
   if (!isRecord(avatars)) return;
 
-  for (const agentId of ["johnny", "mira", "sol"] as const) {
+  for (const agentId of allAgentIds) {
     const avatarUrl = avatars[agentId];
     if (typeof avatarUrl === "string" && avatarUrl.trim()) {
       runtimeConfig.avatars[agentId] = avatarUrl.trim();
@@ -1271,12 +1288,15 @@ function chooseAgentPrompt(
   generated: GeneratedThing[],
 ): string {
   if (agent.id === "johnny") {
-    const count = generated.filter(
-      (thing) => thing.creatorId === "johnny" && thing.kind === "tree",
-    ).length;
-    return count % 3 === 0
-      ? "a crooked apple tree with golden moss at its roots"
-      : "a small ring of young apple trees facing the mountain";
+    const ideas = [
+      "a sunlit footbridge made of pale cedar crossing a small stream",
+      "a tiny workshop hut with mossy shingles and brass tools outside",
+      "a gentle stone creature curled beside a patch of blue flowers",
+      "a hot air balloon moored beside a garden path",
+      "a clear pond with lilies, stepping stones, and a little wooden dock",
+      "a spiral lantern tower that glows softly near the mountain",
+    ];
+    return ideas[generated.length % ideas.length];
   }
   if (agent.id === "mira") {
     return generated.length % 2 === 0
@@ -1319,6 +1339,37 @@ function parseAgentDecision(content: string, fallbackPrompt: string): AgentDecis
   return { prompt: content.trim() || fallbackPrompt };
 }
 
+function chooseAgentLocation(
+  agent: TellusAgent,
+  prompt: string,
+): GenerateRequest["location"] {
+  const lower = prompt.toLowerCase();
+  if (
+    lower.includes("mountain") ||
+    lower.includes("summit") ||
+    lower.includes("tower") ||
+    lower.includes("shrine") ||
+    lower.includes("cairn")
+  ) {
+    return "near-mountain";
+  }
+  if (
+    lower.includes("pond") ||
+    lower.includes("water") ||
+    lower.includes("stream") ||
+    lower.includes("river") ||
+    lower.includes("dock") ||
+    lower.includes("boat") ||
+    lower.includes("lily") ||
+    lower.includes("fish")
+  ) {
+    return "near-pond";
+  }
+  if (agent.id === "sol") return "near-mountain";
+  if (agent.id === "mira") return "near-pond";
+  return "near-agent";
+}
+
 function chatContent(completion: ChatCompletionResponse): string {
   return completion.choices?.[0]?.message?.content?.trim() ?? "";
 }
@@ -1349,7 +1400,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an autonomous agent inside Tellus, a tiny living WebGPU world. You can generate 3d assets to populate the world however you choose. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt should be a detailed description of the asset you wish to bring into the world. The speech should be one short in-character sentence said aloud before you act. Whatever you choose should be a visible 3D object, plant, animal, landmark, agent, or habitat feature.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You may generate any visible 3D asset you want: objects, plants, animals, characters, buildings, tools, vehicles, bridges, paths, terrain features, water features, habitats, landmarks, or other game-ready props. Decide one concise thing to generate next. Return only JSON with keys prompt, intent, and speech. The prompt should be a detailed description of exactly one asset or cohesive small scene-piece you wish to bring into the world. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
@@ -1844,7 +1895,7 @@ function createTellusWorld(
           actorId: agent.id,
           intent:
             agent.id === "johnny"
-              ? "check whether it needs shade, water, or a nearby sapling"
+              ? "study how this asset changes the world and what should exist near it"
               : agent.id === "mira"
                 ? "study how it changes the local habitat"
                 : "decide whether it belongs in the mountain pattern",
@@ -1864,12 +1915,7 @@ function createTellusWorld(
       }
       const thing = generate({
         prompt: decision.prompt,
-        location:
-          agent.id === "sol"
-            ? "near-mountain"
-            : agent.id === "mira"
-              ? "near-pond"
-              : "near-agent",
+        location: chooseAgentLocation(agent, decision.prompt),
         creatorId: agent.id,
       });
       if (decision.intent) {
@@ -1890,14 +1936,10 @@ function createTellusWorld(
           error instanceof Error ? error.message : "unknown error"
         })`,
       });
+      const fallbackPrompt = chooseAgentPrompt(agent, generated);
       generate({
-        prompt: chooseAgentPrompt(agent, generated),
-        location:
-          agent.id === "sol"
-            ? "near-mountain"
-            : agent.id === "mira"
-              ? "near-pond"
-              : "near-agent",
+        prompt: fallbackPrompt,
+        location: chooseAgentLocation(agent, fallbackPrompt),
         creatorId: agent.id,
       });
     } finally {
@@ -2360,7 +2402,7 @@ function App(): React.ReactElement {
         <section className="tool-card">
           <div className="tool-title">
             <Wand2 size={16} />
-            <span>Two tools</span>
+            <span>Asset tools</span>
           </div>
           <div className="tool-list">
             <code>generate(request)</code>
@@ -2409,7 +2451,7 @@ function App(): React.ReactElement {
         <section className="agents-card">
           <div className="section-heading">
             <Sparkles size={16} />
-            <span>Nemotrons</span>
+            <span>Enabled AI</span>
           </div>
           <div className="agent-list">
             {snapshot.agents.map((agent) => (
