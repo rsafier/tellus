@@ -68,6 +68,7 @@ interface TextImageResult {
   imagePrompt: string;
   storedImageUrl?: string;
   storedImagePath?: string;
+  upstreamImageUrl?: string;
 }
 
 interface OpenAIImageResponse {
@@ -772,8 +773,10 @@ async function persistSourceImage(params: {
   await rename(tempPath, finalPath);
   return {
     ...params.image,
-    storedImagePath: finalPath,
+    upstreamImageUrl: params.image.imageUrl,
+    imageUrl: `data:${fetched.mime};base64,${fetched.bytes.toString("base64")}`,
     storedImageUrl: `/generated-assets/${encodeURIComponent(filename)}`,
+    storedImagePath: finalPath,
   };
 }
 
