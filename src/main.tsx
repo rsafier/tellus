@@ -10,9 +10,11 @@ import {
   Leaf,
   MessageCircle,
   Mic,
+  Minus,
   Mountain,
   Pause,
   Play,
+  Plus,
   RotateCcw,
   RotateCw,
   Send,
@@ -138,6 +140,8 @@ interface TellusWorldApi {
   selectGenerated(id?: string): void;
   moveGenerated(id: string, dx: number, dz: number): void;
   rotateGenerated(id: string, radians: number): void;
+  scaleGenerated(id: string, multiplier: number): void;
+  resetGeneratedScale(id: string): void;
   deleteGenerated(id: string): void;
   moveGeneratedToWater(id: string): void;
   boardGenerated(id: string): void;
@@ -2357,6 +2361,30 @@ function createTellusWorld(
     publish();
   };
 
+  const setGeneratedScale = (thing: GeneratedThing, scale: number) => {
+    const oldTargetHeight = assetTargetHeight(thing);
+    thing.scale = clamp(scale, 0.25, 4);
+    const newTargetHeight = assetTargetHeight(thing);
+    const mesh = generatedMeshes.get(thing.id);
+    if (mesh && oldTargetHeight > 0) {
+      mesh.scale.multiplyScalar(newTargetHeight / oldTargetHeight);
+      updateThingMeshPosition(thing);
+    }
+    publish();
+  };
+
+  const scaleGenerated = (id: string, multiplier: number) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    setGeneratedScale(thing, thing.scale * multiplier);
+  };
+
+  const resetGeneratedScale = (id: string) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    setGeneratedScale(thing, 1);
+  };
+
   const deleteGenerated = (id: string) => {
     const index = generated.findIndex((thing) => thing.id === id);
     if (index < 0) return;
@@ -3294,6 +3322,8 @@ function createTellusWorld(
     selectGenerated,
     moveGenerated,
     rotateGenerated,
+    scaleGenerated,
+    resetGeneratedScale,
     deleteGenerated,
     moveGeneratedToWater,
     boardGenerated,
@@ -3582,6 +3612,7 @@ function App(): React.ReactElement {
                 x {selectedThing.position.x.toFixed(1)} z{" "}
                 {selectedThing.position.z.toFixed(1)}
               </span>
+              <span>{selectedThing.scale.toFixed(2)}x</span>
             </div>
             <div className="transform-grid">
               <button
@@ -3651,6 +3682,34 @@ function App(): React.ReactElement {
                 onClick={() => worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 8)}
               >
                 <RotateCw size={17} />
+              </button>
+            </div>
+            <div className="scale-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                title="Scale down"
+                aria-label="Scale down"
+                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 0.82)}
+              >
+                <Minus size={17} />
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                title="Reset scale"
+                onClick={() => worldRef.current?.resetGeneratedScale(selectedThing.id)}
+              >
+                <span>1x</span>
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                title="Scale up"
+                aria-label="Scale up"
+                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 1.22)}
+              >
+                <Plus size={17} />
               </button>
             </div>
             <button

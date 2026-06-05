@@ -356,6 +356,12 @@ textarea {
   grid-row: 3;
 }
 
+.scale-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .wide-button {
   width: 100%;
 }
