@@ -469,10 +469,49 @@ function distantIslandShorePosition(spec: DistantIslandSpec, x: number, z: numbe
 
 type VehicleMode = "water" | "air" | "ground";
 
+const waterMountTerms = [
+  "dolphin",
+  "orca",
+  "whale",
+  "sea turtle",
+  "giant turtle",
+  "hippocampus",
+  "seahorse mount",
+];
+
+const airMountTerms = [
+  "giant eagle",
+  "eagle",
+  "griffin",
+  "gryphon",
+  "dragon",
+  "wyvern",
+  "pegasus",
+  "roc",
+  "flying mount",
+];
+
+const groundMountTerms = [
+  "horse",
+  "pony",
+  "stag",
+  "elk",
+  "camel",
+  "llama",
+  "giant wolf",
+  "mount",
+  "rideable",
+];
+
+function promptIncludesAny(prompt: string, terms: string[]): boolean {
+  return terms.some((term) => prompt.includes(term));
+}
+
 function vehicleMode(thing: GeneratedThing): VehicleMode | null {
   const lower = thing.prompt.toLowerCase();
   if (
     thing.kind === "balloon" ||
+    promptIncludesAny(lower, airMountTerms) ||
     lower.includes("balloon") ||
     lower.includes("airship") ||
     lower.includes("zeppelin") ||
@@ -483,6 +522,7 @@ function vehicleMode(thing: GeneratedThing): VehicleMode | null {
     return "air";
   }
   if (
+    promptIncludesAny(lower, waterMountTerms) ||
     lower.includes("boat") ||
     lower.includes("ship") ||
     lower.includes("sail") ||
@@ -494,17 +534,21 @@ function vehicleMode(thing: GeneratedThing): VehicleMode | null {
     return "water";
   }
   if (
+    promptIncludesAny(lower, groundMountTerms) ||
     lower.includes("vehicle") ||
     lower.includes("cart") ||
     lower.includes("wagon") ||
     lower.includes("carriage") ||
     lower.includes("car ") ||
-    lower.includes("truck") ||
-    lower.includes("horse")
+    lower.includes("truck")
   ) {
     return "ground";
   }
   return null;
+}
+
+function isMountThing(thing: GeneratedThing): boolean {
+  return thing.kind === "animal" && vehicleMode(thing) !== null;
 }
 
 function isVehicleThing(thing: GeneratedThing): boolean {
@@ -1281,7 +1325,11 @@ function inferGeneratedKind(
     lower.includes("animal") ||
     lower.includes("fox") ||
     lower.includes("bird") ||
+    lower.includes("eagle") ||
     lower.includes("horse") ||
+    lower.includes("dolphin") ||
+    lower.includes("orca") ||
+    lower.includes("whale") ||
     lower.includes("fish") ||
     lower.includes("reptile")
   )
@@ -3028,6 +3076,7 @@ function App(): React.ReactElement {
     [snapshot.generated, snapshot.selectedThingId],
   );
   const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
+  const selectedThingIsMount = selectedThing ? isMountThing(selectedThing) : false;
 
   const submitPrompt = () => {
     worldRef.current?.submitVisitorPrompt(prompt);
@@ -3224,7 +3273,9 @@ function App(): React.ReactElement {
                 <span>
                   {snapshot.sailingThingId === selectedThing.id
                     ? "Disembark"
-                    : "Board and Pilot"}
+                    : selectedThingIsMount
+                      ? "Mount and Ride"
+                      : "Board and Pilot"}
                 </span>
               </button>
             )}
