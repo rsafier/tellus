@@ -565,6 +565,27 @@ function distantIslandSculptOffsetAt(
   );
 }
 
+function distantIslandGridWorldPoint(
+  spec: DistantIslandSpec,
+  xIndex: number,
+  zIndex: number,
+): { localX: number; localZ: number; x: number; z: number; localRadius: number } {
+  const radiusX = spec.bottomRadius * 0.92;
+  const radiusZ = radiusX * spec.scaleZ;
+  const localX =
+    (xIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusX * 2;
+  const localZ =
+    (zIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusZ * 2;
+  const world = distantIslandWorldPoint(spec, localX, localZ);
+  return {
+    localX,
+    localZ,
+    x: world.x,
+    z: world.z,
+    localRadius: Math.hypot(localX / radiusX, localZ / radiusZ),
+  };
+}
+
 function distantTerrainGridCoords(
   spec: DistantIslandSpec,
   x: number,
@@ -1298,26 +1319,18 @@ function createDistantIslandTerrainGeometry(
   const positions: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
-  const radiusX = spec.bottomRadius * 0.92;
-  const radiusZ = radiusX * spec.scaleZ;
 
   for (let zIndex = 0; zIndex <= DISTANT_TERRAIN_SEGMENTS; zIndex++) {
-    const localZ = (zIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusZ * 2;
     for (let xIndex = 0; xIndex <= DISTANT_TERRAIN_SEGMENTS; xIndex++) {
-      const localX = (xIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusX * 2;
-      const localRadius = Math.hypot(localX / radiusX, localZ / radiusZ);
-      const edgeScale = localRadius > 1 ? 1 / localRadius : 1;
-      const px = localX * edgeScale;
-      const pz = localZ * edgeScale;
-      const world = distantIslandWorldPoint(spec, px, pz);
-      const y = distantIslandHeight(spec, world.x, world.z) - SEA_LEVEL;
-      positions.push(px, y, pz);
-      const painted = distantTerrainPaintAt(spec, world.x, world.z);
+      const point = distantIslandGridWorldPoint(spec, xIndex, zIndex);
+      const y = distantIslandHeight(spec, point.x, point.z) - SEA_LEVEL;
+      positions.push(point.localX, y, point.localZ);
+      const painted = distantTerrainPaintAt(spec, point.x, point.z);
       const color = painted
         ? terrainColors[painted].clone()
         : new THREE.Color(0x5a9735).lerp(
             new THREE.Color(0x7a6a4a),
-            clamp(localRadius * 0.42, 0, 0.42),
+            clamp(point.localRadius * 0.42, 0, 0.42),
           );
       const noise = 0.9 + rand(spec.seed + xIndex * 41 + zIndex * 83) * 0.14;
       color.multiplyScalar(noise);
@@ -1332,6 +1345,20 @@ function createDistantIslandTerrainGeometry(
       const b = a + 1;
       const c = a + row;
       const d = c + 1;
+      const aPoint = distantIslandGridWorldPoint(spec, x, z);
+      const bPoint = distantIslandGridWorldPoint(spec, x + 1, z);
+      const cPoint = distantIslandGridWorldPoint(spec, x, z + 1);
+      const dPoint = distantIslandGridWorldPoint(spec, x + 1, z + 1);
+      if (
+        Math.max(
+          aPoint.localRadius,
+          bPoint.localRadius,
+          cPoint.localRadius,
+          dPoint.localRadius,
+        ) > 1
+      ) {
+        continue;
+      }
       indices.push(a, c, b, b, c, d);
     }
   }
@@ -2575,19 +2602,12 @@ function createTellusWorld(
         : undefined;
 
     if (distantIsland) {
-      const radiusX = distantIsland.bottomRadius * 0.92;
-      const radiusZ = radiusX * distantIsland.scaleZ;
       const targetHeight = distantIslandHeight(distantIsland, center.x, center.z);
       for (let zIndex = 0; zIndex <= DISTANT_TERRAIN_SEGMENTS; zIndex++) {
-        const localZ =
-          (zIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusZ * 2;
         for (let xIndex = 0; xIndex <= DISTANT_TERRAIN_SEGMENTS; xIndex++) {
-          const localX =
-            (xIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusX * 2;
-          const localRadius = Math.hypot(localX / radiusX, localZ / radiusZ);
-          if (localRadius > 1) continue;
-          const world = distantIslandWorldPoint(distantIsland, localX, localZ);
-          const distance = Math.hypot(world.x - center.x, world.z - center.z);
+          const point = distantIslandGridWorldPoint(distantIsland, xIndex, zIndex);
+          if (point.localRadius > 1) continue;
+          const distance = Math.hypot(point.x - center.x, point.z - center.z);
           if (distance > TERRAIN_SCULPT_RADIUS) continue;
           const falloff =
             (1 + Math.cos((distance / TERRAIN_SCULPT_RADIUS) * Math.PI)) * 0.5;
@@ -2598,7 +2618,7 @@ function createTellusWorld(
             const currentHeight =
               SEA_LEVEL +
               0.28 +
-              Math.pow(1 - clamp(localRadius, 0, 1), 1.75) *
+              Math.pow(1 - clamp(point.localRadius, 0, 1), 1.75) *
                 distantIsland.height *
                 0.72 +
               distantIsland.sculptOffsets[index];
