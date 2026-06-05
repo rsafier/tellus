@@ -1243,7 +1243,7 @@ async function loadTellusState(): Promise<void> {
       console.warn("Tellus world backend failed to load", error);
     }
 
-    const response = await fetch("/api/tellus-state", { cache: "no-store" });
+    const response = await fetch(tellusApiUrl("/api/tellus-state"), { cache: "no-store" });
     if (!response.ok) {
       terrainStateLoaded = true;
       terrainStateDirty = false;
@@ -1273,7 +1273,7 @@ function saveTellusStateSoon(): void {
     void saveTellusWorldState(body)
       .then((savedToWorld) => {
         if (savedToWorld) return new Response(null, { status: 204 });
-        return fetch("/api/tellus-state", {
+        return fetch(tellusApiUrl("/api/tellus-state"), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body,
@@ -1304,13 +1304,13 @@ function saveTellusStateNow(): void {
   void saveTellusWorldState(body, true)
     .then((savedToWorld) => {
       if (savedToWorld) return new Response(null, { status: 204 });
-      if (navigator.sendBeacon?.("/api/tellus-state", new Blob([body], {
+      if (!runtimeConfig.apiBase && navigator.sendBeacon?.("/api/tellus-state", new Blob([body], {
         type: "application/json",
       }))) {
         terrainStateDirty = false;
         return new Response(null, { status: 204 });
       }
-      return fetch("/api/tellus-state", {
+      return fetch(tellusApiUrl("/api/tellus-state"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body,
@@ -3161,6 +3161,15 @@ function createTellusWorld(
     }));
   };
 
+  const publishTerrainStateNow = () => {
+    if (!tellusWorldBackendAvailable || worldSocket?.readyState !== WebSocket.OPEN) return;
+    worldSocket.send(JSON.stringify({
+      type: "terrain.replace",
+      visitorId,
+      terrain: tellusState(),
+    }));
+  };
+
   const connectTellusWorldRealtime = () => {
     if (!tellusWorldBackendAvailable || worldSocket || destroyed) return;
     const socket = new WebSocket(tellusWorldWebSocketUrl(visitorId));
@@ -3308,6 +3317,7 @@ function createTellusWorld(
         : `${paintCode ? `paint ${mode}` : mode} terrain near ${actorName}`,
     });
     saveTellusStateSoon();
+    publishTerrainStateNow();
     publish();
   };
 
@@ -4659,6 +4669,15 @@ function createTellusWorld(
   };
   const handleKeyUp = (event: KeyboardEvent) =>
     keys.delete(event.key.toLowerCase());
+  const handlePageHide = () => {
+    publishTerrainStateNow();
+    saveTellusStateNow();
+  };
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      handlePageHide();
+    }
+  };
   const handlePointerDown = (event: PointerEvent) => {
     isDragging = true;
     pointerTravel = 0;
@@ -4711,6 +4730,8 @@ function createTellusWorld(
   window.addEventListener("resize", resize);
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("keyup", handleKeyUp);
+  window.addEventListener("pagehide", handlePageHide);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
   container.addEventListener("pointerdown", handlePointerDown);
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
@@ -4841,6 +4862,8 @@ function createTellusWorld(
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       container.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
