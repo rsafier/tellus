@@ -177,6 +177,7 @@ interface TellusWorldApi {
 }
 
 interface TellusRuntimeConfig {
+  apiBase: string;
   assetForgeApiBase: string;
   agentModel: string;
   generationProvider: GenerationProvider;
@@ -308,6 +309,8 @@ let terrainStateRevision = 0;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 let tellusWorldBackendAvailable = false;
 const runtimeConfig: TellusRuntimeConfig = {
+  apiBase:
+    import.meta.env.VITE_TELLUS_API_BASE?.replace(/\/+$/, "") ?? "",
   assetForgeApiBase:
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
   agentModel:
@@ -938,6 +941,14 @@ function applyRuntimeConfig(config: unknown): void {
     runtimeConfig.assetForgeApiBase = assetForgeApiBase.trim().replace(/\/+$/, "");
   }
 
+  const apiBase = config.apiBase;
+  if (
+    !import.meta.env.VITE_TELLUS_API_BASE?.trim() &&
+    typeof apiBase === "string"
+  ) {
+    runtimeConfig.apiBase = apiBase.trim().replace(/\/+$/, "");
+  }
+
   const agentModel = config.agentModel;
   if (
     !import.meta.env.VITE_TELLUS_AGENT_MODEL?.trim() &&
@@ -1317,6 +1328,15 @@ function absoluteAssetForgeUrl(path: string): string {
   return `${runtimeConfig.assetForgeApiBase}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function tellusApiUrl(path: string): string {
+  return `${runtimeConfig.apiBase}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function absoluteTellusApiUrl(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return tellusApiUrl(path);
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.text();
@@ -1343,7 +1363,7 @@ function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
 }
 
 async function requestWorldFeedback(imageDataUrl: string): Promise<string> {
-  const response = await fetch("/api/world-feedback", {
+  const response = await fetch(tellusApiUrl("/api/world-feedback"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1470,11 +1490,16 @@ function hasExternalGenerationProvider(): boolean {
   );
 }
 
+function isMissingApiRouteError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /\b(404|405)\b/.test(error.message) || error.message.includes("endpoint unavailable");
+}
+
 async function startDirectInstantMeshGeneration(
   thing: GeneratedThing,
   signal?: AbortSignal,
 ): Promise<DirectGenerationResponse> {
-  const response = await fetch("/api/generate-3d", {
+  const response = await fetch(tellusApiUrl("/api/generate-3d"), {
     method: "POST",
     signal,
     headers: { "Content-Type": "application/json" },
@@ -1485,6 +1510,10 @@ async function startDirectInstantMeshGeneration(
       provider: runtimeConfig.generationProvider,
     }),
   });
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
+    throw new Error("Direct generation endpoint unavailable");
+  }
   return readJsonResponse<DirectGenerationResponse>(response);
 }
 
@@ -1501,9 +1530,13 @@ async function waitForDirectGeneration(
     await new Promise((resolve) => window.setTimeout(resolve, 4000));
     signal?.throwIfAborted();
     const response = await fetch(
-      `/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`,
+      tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`),
       { signal },
     );
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
+      throw new Error("Direct generation endpoint unavailable");
+    }
     const status = await readJsonResponse<DirectGenerationResponse>(response);
     if (status.status === "failed") {
       throw new Error(status.error ?? `Generation job ${initial.jobId} failed`);
@@ -2905,6 +2938,8 @@ function createTellusWorld(
     performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
   let worldFeedbackPending = false;
   let worldFeedbackIssueLogged = false;
+  let worldFeedbackAvailable = true;
+  let directGenerationAvailable = true;
   let worldSocket: WebSocket | null = null;
   let worldSocketReconnectTimer: number | undefined;
   let worldSocketClosedByDestroy = false;
@@ -3522,6 +3557,7 @@ function createTellusWorld(
   const generate = (request: GenerateRequest): GeneratedThing => {
     const kind = inferGeneratedKind(request.prompt, request.creatorId);
     const position = chooseLocation(request);
+    const usesExternalGeneration = hasExternalGenerationProvider() && directGenerationAvailable;
     const thing: GeneratedThing = {
       id: makeId(kind),
       kind,
@@ -3531,10 +3567,10 @@ function createTellusWorld(
       rotationY: 0,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
       color: kindColor(kind, request.prompt),
-      generationStatus: hasExternalGenerationProvider() ? "queued" : "local",
+      generationStatus: usesExternalGeneration ? "queued" : "local",
     };
     generated.push(thing);
-    const mesh = hasExternalGenerationProvider()
+    const mesh = usesExternalGeneration
       ? createGenerationSwirl(thing)
       : createGeneratedMesh(thing);
     generatedMeshes.set(thing.id, mesh);
@@ -3642,9 +3678,10 @@ function createTellusWorld(
           pendingGenerationControllers.delete(thing.id);
         });
     } else if (
-      runtimeConfig.generationProvider === "instantmesh-gradio" ||
-      runtimeConfig.generationProvider === "pixal3d-gradio" ||
-      runtimeConfig.generationProvider === "anigen-gradio"
+      directGenerationAvailable &&
+      (runtimeConfig.generationProvider === "instantmesh-gradio" ||
+        runtimeConfig.generationProvider === "pixal3d-gradio" ||
+        runtimeConfig.generationProvider === "anigen-gradio")
     ) {
       const providerName = generationProviderLabels[runtimeConfig.generationProvider];
       const generationController = new AbortController();
@@ -3690,14 +3727,14 @@ function createTellusWorld(
           if (!result.modelUrl) {
             throw new Error(`${providerName} completed without a model URL`);
           }
-          thing.modelUrl = result.modelUrl;
+          thing.modelUrl = absoluteTellusApiUrl(result.modelUrl);
           addLog({
             agentId: "world",
             agentName: providerName,
             tool: "generate",
-            text: `${providerName} used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ?? "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
+            text: `${providerName} used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ? absoluteTellusApiUrl(result.sourceImageUrl) : "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ? absoluteTellusApiUrl(result.storedModelUrl) : thing.modelUrl}; loading it into Tellus.`,
           });
-          const model = await loadGeneratedModel(result.modelUrl, thing);
+          const model = await loadGeneratedModel(thing.modelUrl, thing);
           if (destroyed || paused || !thingById(thing.id)) {
             disposeObject(model);
             return;
@@ -3730,6 +3767,18 @@ function createTellusWorld(
           }
           thing.generationStatus = "failed";
           showLocalFallbackMesh();
+          if (isMissingApiRouteError(error)) {
+            directGenerationAvailable = false;
+            thing.generationStatus = "local";
+            addLog({
+              agentId: "world",
+              agentName: "Tellus",
+              tool: "interact",
+              text: "External generation API is unavailable on this deployment; using local meshes.",
+            });
+            publish();
+            return;
+          }
           addLog({
             agentId: "world",
             agentName: providerName,
@@ -4316,7 +4365,13 @@ function createTellusWorld(
   };
 
   const refreshWorldFeedback = (now: number) => {
-    if (paused || worldFeedbackPending || now < nextWorldFeedbackAt || !renderer) {
+    if (
+      paused ||
+      !worldFeedbackAvailable ||
+      worldFeedbackPending ||
+      now < nextWorldFeedbackAt ||
+      !renderer
+    ) {
       return;
     }
     nextWorldFeedbackAt = now + WORLD_FEEDBACK_INTERVAL_MS;
@@ -4360,6 +4415,10 @@ function createTellusWorld(
       })
       .catch((error) => {
         if (destroyed || paused || worldFeedbackIssueLogged) return;
+        if (isMissingApiRouteError(error)) {
+          worldFeedbackAvailable = false;
+          return;
+        }
         worldFeedbackIssueLogged = true;
         addLog({
           agentId: "world",

@@ -1,5 +1,6 @@
 {
   "assetForgeApiBase": "",
+  "apiBase": "https://tellus.flobots.xyz",
   "generationProvider": "instantmesh-gradio",
   "agentModel": "GLM-5.1",
   "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
