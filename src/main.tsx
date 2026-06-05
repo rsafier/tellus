@@ -41,6 +41,11 @@ import {
   viewportLinearDepth,
   viewportSharedTexture,
 } from "three/tsl";
+import {
+  type TellusTerrainState,
+  type WorldPatch,
+  isTellusTerrainState,
+} from "./world-protocol";
 import "./styles.css";
 
 type AgentId = "johnny" | "mira" | "sol" | "atlas";
@@ -297,7 +302,11 @@ let terrainSaveTimer: number | undefined;
 let terrainStateDirty = false;
 let terrainStateLoaded = false;
 let terrainStateRevision = 0;
+let tellusWorldBackendAvailable = false;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
+const TELLUS_WORLD_ID = import.meta.env.VITE_TELLUS_WORLD_ID ?? "main";
+const TELLUS_WORLD_API_BASE =
+  import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "";
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
     import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
@@ -1011,86 +1020,172 @@ function distantTerrainPaintPayload(): Record<string, number[]> {
   );
 }
 
-function tellusStatePayload(): string {
-  return JSON.stringify({
+function tellusState(): TellusTerrainState {
+  return {
     version: 2,
+    revision: terrainStateRevision,
     terrainSculptOffsets: terrainOffsetsPayload(),
     terrainPaint: terrainPaintPayload(),
     distantIslandSculptOffsets: distantTerrainOffsetsPayload(),
     distantIslandPaint: distantTerrainPaintPayload(),
     savedAt: new Date().toISOString(),
+  };
+}
+
+function tellusStatePayload(): string {
+  return JSON.stringify(tellusState());
+}
+
+function tellusWorldHttpUrl(route: "state" | "action"): string {
+  return `${TELLUS_WORLD_API_BASE}/api/world/${encodeURIComponent(TELLUS_WORLD_ID)}/${route}`;
+}
+
+function tellusWorldWebSocketUrl(visitorId: string): string {
+  const httpUrl = new URL(tellusWorldHttpUrl("state"), window.location.href);
+  httpUrl.pathname = httpUrl.pathname.replace(/\/state\/?$/, "/live");
+  httpUrl.searchParams.set("visitorId", visitorId);
+  httpUrl.protocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
+  return httpUrl.toString();
+}
+
+function tellusVisitorId(): string {
+  const storageKey = "tellus.visitorId";
+  const existing = window.localStorage.getItem(storageKey);
+  if (existing) return existing;
+  const visitorId = crypto.randomUUID();
+  window.localStorage.setItem(storageKey, visitorId);
+  return visitorId;
+}
+
+function applyTellusTerrainState(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
+  const paint = (parsed as { terrainPaint?: unknown }).terrainPaint;
+  terrainSculptOffsets.fill(0);
+  terrainPaint.fill(0);
+  if (Array.isArray(offsets)) {
+    for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
+      const value = offsets[i];
+      terrainSculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
+        ? clamp(value, -9, 9)
+        : 0;
+    }
+  }
+  if (Array.isArray(paint)) {
+    for (let i = 0; i < Math.min(paint.length, terrainPaint.length); i++) {
+      const value = paint[i];
+      terrainPaint[i] =
+        typeof value === "number" && Number.isFinite(value)
+          ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+          : 0;
+    }
+  }
+  const distantOffsets = (parsed as {
+    distantIslandSculptOffsets?: unknown;
+  }).distantIslandSculptOffsets;
+  const distantPaint = (parsed as {
+    distantIslandPaint?: unknown;
+  }).distantIslandPaint;
+  for (const spec of distantIslandSpecs) {
+    spec.sculptOffsets.fill(0);
+    spec.paint.fill(0);
+    if (distantOffsets && typeof distantOffsets === "object") {
+      const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
+      if (Array.isArray(values)) {
+        for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
+          const value = values[i];
+          spec.sculptOffsets[i] =
+            typeof value === "number" && Number.isFinite(value)
+              ? clamp(value, -9, 9)
+              : 0;
+        }
+      }
+    }
+    if (distantPaint && typeof distantPaint === "object") {
+      const values = (distantPaint as Record<string, unknown>)[String(spec.seed)];
+      if (Array.isArray(values)) {
+        for (let i = 0; i < Math.min(values.length, spec.paint.length); i++) {
+          const value = values[i];
+          spec.paint[i] =
+            typeof value === "number" && Number.isFinite(value)
+              ? clamp(Math.round(value), 0, terrainPaintKinds.length)
+              : 0;
+        }
+      }
+    }
+  }
+  const revision = (parsed as { revision?: unknown }).revision;
+  terrainStateRevision =
+    typeof revision === "number" && Number.isFinite(revision)
+      ? Math.max(terrainStateRevision, revision)
+      : terrainStateRevision;
+  return true;
+}
+
+function terrainFromWorldPatch(parsed: unknown): TellusTerrainState | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const patch = parsed as Partial<WorldPatch>;
+  if (
+    (patch.type === "world.snapshot" || patch.type === "terrain.updated") &&
+    isTellusTerrainState(patch.terrain)
+  ) {
+    return patch.terrain;
+  }
+  return null;
+}
+
+async function loadTellusWorldState(): Promise<boolean> {
+  const response = await fetch(tellusWorldHttpUrl("state"), { cache: "no-store" });
+  if (!response.ok) return false;
+  const terrain = terrainFromWorldPatch(await response.json());
+  if (!terrain) return false;
+  applyTellusTerrainState(terrain);
+  return true;
+}
+
+async function saveTellusWorldState(body: string, keepalive = false): Promise<boolean> {
+  if (!tellusWorldBackendAvailable) return false;
+  const response = await fetch(tellusWorldHttpUrl("action"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "terrain.replace",
+      visitorId: tellusVisitorId(),
+      terrain: JSON.parse(body) as TellusTerrainState,
+    }),
+    keepalive,
   });
+  if (!response.ok) {
+    tellusWorldBackendAvailable = false;
+    return false;
+  }
+  return true;
 }
 
 async function loadTellusState(): Promise<void> {
   terrainStateLoaded = false;
   try {
+    try {
+      tellusWorldBackendAvailable = await loadTellusWorldState();
+      if (tellusWorldBackendAvailable) return;
+    } catch (error) {
+      tellusWorldBackendAvailable = false;
+      console.warn("Tellus world backend failed to load", error);
+    }
+
     const response = await fetch("/api/tellus-state", { cache: "no-store" });
     if (!response.ok) {
       terrainStateLoaded = true;
       terrainStateDirty = false;
       return;
     }
-    const parsed = (await response.json()) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!applyTellusTerrainState(await response.json())) {
       terrainStateLoaded = true;
       terrainStateDirty = false;
-      return;
-    }
-    const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
-    const paint = (parsed as { terrainPaint?: unknown }).terrainPaint;
-    terrainSculptOffsets.fill(0);
-    terrainPaint.fill(0);
-    if (Array.isArray(offsets)) {
-      for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
-        const value = offsets[i];
-        terrainSculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
-          ? clamp(value, -9, 9)
-          : 0;
-      }
-    }
-    if (Array.isArray(paint)) {
-      for (let i = 0; i < Math.min(paint.length, terrainPaint.length); i++) {
-        const value = paint[i];
-        terrainPaint[i] =
-          typeof value === "number" && Number.isFinite(value)
-            ? clamp(Math.round(value), 0, terrainPaintKinds.length)
-            : 0;
-      }
-    }
-    const distantOffsets = (parsed as {
-      distantIslandSculptOffsets?: unknown;
-    }).distantIslandSculptOffsets;
-    const distantPaint = (parsed as {
-      distantIslandPaint?: unknown;
-    }).distantIslandPaint;
-    for (const spec of distantIslandSpecs) {
-      spec.sculptOffsets.fill(0);
-      spec.paint.fill(0);
-      if (distantOffsets && typeof distantOffsets === "object") {
-        const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
-        if (Array.isArray(values)) {
-          for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
-            const value = values[i];
-            spec.sculptOffsets[i] =
-              typeof value === "number" && Number.isFinite(value)
-                ? clamp(value, -9, 9)
-                : 0;
-          }
-        }
-      }
-      if (distantPaint && typeof distantPaint === "object") {
-        const values = (distantPaint as Record<string, unknown>)[String(spec.seed)];
-        if (Array.isArray(values)) {
-          for (let i = 0; i < Math.min(values.length, spec.paint.length); i++) {
-            const value = values[i];
-            spec.paint[i] =
-              typeof value === "number" && Number.isFinite(value)
-                ? clamp(Math.round(value), 0, terrainPaintKinds.length)
-                : 0;
-          }
-        }
-      }
     }
   } finally {
     terrainStateLoaded = true;
@@ -1108,11 +1203,16 @@ function saveTellusStateSoon(): void {
   const saveRevision = terrainStateRevision;
   terrainSaveTimer = window.setTimeout(() => {
     terrainSaveTimer = undefined;
-    void fetch("/api/tellus-state", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: tellusStatePayload(),
-    })
+    const body = tellusStatePayload();
+    void saveTellusWorldState(body)
+      .then((savedToWorld) => {
+        if (savedToWorld) return new Response(null, { status: 204 });
+        return fetch("/api/tellus-state", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+      })
       .then((response) => {
         if (!response.ok) {
           throw new Error(`state save returned ${response.status}`);
@@ -1135,18 +1235,22 @@ function saveTellusStateNow(): void {
   }
   const body = tellusStatePayload();
   const saveRevision = terrainStateRevision;
-  if (navigator.sendBeacon?.("/api/tellus-state", new Blob([body], {
-    type: "application/json",
-  }))) {
-    terrainStateDirty = false;
-    return;
-  }
-  void fetch("/api/tellus-state", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body,
-    keepalive: true,
-  })
+  void saveTellusWorldState(body, true)
+    .then((savedToWorld) => {
+      if (savedToWorld) return new Response(null, { status: 204 });
+      if (navigator.sendBeacon?.("/api/tellus-state", new Blob([body], {
+        type: "application/json",
+      }))) {
+        terrainStateDirty = false;
+        return new Response(null, { status: 204 });
+      }
+      return fetch("/api/tellus-state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      });
+    })
     .then((response) => {
       if (!response.ok) {
         throw new Error(`state save returned ${response.status}`);
@@ -2730,6 +2834,9 @@ function createTellusWorld(
     performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
   let worldFeedbackPending = false;
   let worldFeedbackIssueLogged = false;
+  let worldSocket: WebSocket | null = null;
+  let worldSocketReconnectTimer: number | undefined;
+  let worldSocketClosedByDestroy = false;
 
   const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
     generated.some(
@@ -2872,6 +2979,67 @@ function createTellusWorld(
     mesh.geometry.dispose();
     mesh.geometry = createDistantIslandTerrainGeometry(spec);
   };
+
+  const applyRemoteTerrainState = (terrainState: TellusTerrainState) => {
+    if (!applyTellusTerrainState(terrainState)) return;
+    terrainStateDirty = false;
+    refreshTerrainGeometry();
+    for (const spec of distantIslandSpecs) {
+      refreshDistantIslandGeometry(spec);
+    }
+    updatePondSurfacePosition();
+    visitorPosition = groundedPosition(visitorPosition.x, visitorPosition.z, visitorPosition);
+    for (const thing of generated) {
+      if (!isFreeMovingVehicle(thing)) {
+        thing.position = groundedPosition(thing.position.x, thing.position.z, thing.position);
+        updateThingMeshPosition(thing);
+      }
+    }
+    publish();
+  };
+
+  const connectTellusWorldRealtime = () => {
+    if (!tellusWorldBackendAvailable || worldSocket || destroyed) return;
+    const visitorId = tellusVisitorId();
+    const socket = new WebSocket(tellusWorldWebSocketUrl(visitorId));
+    worldSocket = socket;
+
+    socket.addEventListener("message", (event) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(event.data)) as unknown;
+      } catch {
+        return;
+      }
+      const terrainState = terrainFromWorldPatch(parsed);
+      if (terrainState) {
+        applyRemoteTerrainState(terrainState);
+      }
+    });
+
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({
+        type: "presence.update",
+        visitorId,
+        position: visitorPosition,
+      }));
+    });
+
+    socket.addEventListener("close", () => {
+      if (worldSocket === socket) worldSocket = null;
+      if (worldSocketClosedByDestroy || destroyed || !tellusWorldBackendAvailable) return;
+      worldSocketReconnectTimer = window.setTimeout(() => {
+        worldSocketReconnectTimer = undefined;
+        connectTellusWorldRealtime();
+      }, 2500);
+    });
+
+    socket.addEventListener("error", () => {
+      socket.close();
+    });
+  };
+
+  connectTellusWorldRealtime();
 
   const sculptTerrainAt = (
     mode: TerrainEditMode,
@@ -4318,6 +4486,11 @@ function createTellusWorld(
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       container.removeEventListener("wheel", handleWheel);
+      worldSocketClosedByDestroy = true;
+      if (worldSocketReconnectTimer !== undefined) {
+        window.clearTimeout(worldSocketReconnectTimer);
+      }
+      worldSocket?.close();
       resizeObserver?.disconnect();
       renderer?.dispose();
       if (renderer?.domElement.parentElement === container) {
