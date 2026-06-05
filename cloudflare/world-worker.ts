@@ -14,6 +14,13 @@ interface Env {
   TELLUS_GENERATION_QUEUE?: Queue<QueuedGenerationJob>;
 }
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
 const defaultTerrainState = (): TellusTerrainState => ({
   version: 2,
   revision: 0,
@@ -29,6 +36,17 @@ function jsonResponse(value: unknown, init?: ResponseInit): Response {
     ...init,
     headers: {
       "Cache-Control": "no-store",
+      ...corsHeaders,
+      ...init?.headers,
+    },
+  });
+}
+
+function emptyCorsResponse(init?: ResponseInit): Response {
+  return new Response(null, {
+    ...init,
+    headers: {
+      ...corsHeaders,
       ...init?.headers,
     },
   });
@@ -46,9 +64,12 @@ function worldIdFromPath(pathname: string): { worldId: string; route: string } |
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "OPTIONS") {
+      return emptyCorsResponse({ status: 204 });
+    }
     const target = worldIdFromPath(url.pathname);
     if (!target) {
-      return new Response("Not Found", { status: 404 });
+      return emptyCorsResponse({ status: 404 });
     }
 
     const id = env.TELLUS_WORLD.idFromName(target.worldId);
@@ -68,6 +89,10 @@ export class TellusWorld extends DurableObject<Env> {
     const target = worldIdFromPath(url.pathname);
     if (target) this.worldId = target.worldId;
 
+    if (request.method === "OPTIONS") {
+      return emptyCorsResponse({ status: 204 });
+    }
+
     if (request.headers.get("Upgrade") === "websocket") {
       return this.acceptWebSocket(request);
     }
@@ -84,7 +109,7 @@ export class TellusWorld extends DurableObject<Env> {
       return jsonResponse(await this.applyAction(body));
     }
 
-    return new Response("Method Not Allowed", { status: 405 });
+    return emptyCorsResponse({ status: 405 });
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {

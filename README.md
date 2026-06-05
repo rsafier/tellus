@@ -52,7 +52,7 @@ If the Worker is mounted under the same hostname as the site, leave
 of these:
 
 ```text
-VITE_TELLUS_WORLD_API_BASE=https://tellus-world.your-subdomain.workers.dev
+VITE_TELLUS_WORLD_API_BASE=https://tellus-world.agentstarter.workers.dev
 VITE_TELLUS_WORLD_ID=main
 ```
 
@@ -60,7 +60,7 @@ or runtime config:
 
 ```json
 {
-  "worldApiBase": "https://tellus-world.your-subdomain.workers.dev",
+  "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
   "worldId": "main"
 }
 ```
@@ -199,7 +199,7 @@ committed config:
 ```json
 {
   "assetForgeApiBase": "https://your-asset-forge.example.com",
-  "worldApiBase": "https://tellus-world.your-subdomain.workers.dev",
+  "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
   "worldId": "main",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "enabledAgents": ["johnny"],
