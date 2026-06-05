@@ -43,9 +43,11 @@ import {
 } from "three/tsl";
 import {
   type TellusTerrainState,
+  type WorldGeneratedThing,
   type WorldPresence,
   type WorldPatch,
   isTellusTerrainState,
+  isWorldGeneratedThing,
 } from "./world-protocol";
 import "./styles.css";
 
@@ -1184,6 +1186,20 @@ function presenceFromWorldPatch(parsed: unknown): WorldPresence[] | null {
         typeof presence.connectedAt === "string" &&
         typeof presence.lastSeenAt === "string",
     );
+  }
+  return null;
+}
+
+function generatedFromWorldPatch(parsed: unknown): WorldGeneratedThing[] | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const patch = parsed as Partial<WorldPatch>;
+  if (patch.type === "world.snapshot" && Array.isArray(patch.generated)) {
+    return patch.generated.filter(isWorldGeneratedThing);
+  }
+  if (patch.type === "generated.updated" && isWorldGeneratedThing(patch.thing)) {
+    return [patch.thing];
   }
   return null;
 }
@@ -3165,6 +3181,19 @@ function createTellusWorld(
       if (presence) {
         applyRemotePresence(presence);
       }
+      const remoteThings = generatedFromWorldPatch(parsed);
+      if (remoteThings) {
+        applyRemoteGeneratedThings(remoteThings);
+      }
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        (parsed as Partial<WorldPatch>).type === "generated.deleted" &&
+        typeof (parsed as { id?: unknown }).id === "string"
+      ) {
+        applyRemoteGeneratedDelete((parsed as { id: string }).id);
+      }
     });
 
     socket.addEventListener("open", () => {
@@ -3184,8 +3213,6 @@ function createTellusWorld(
       socket.close();
     });
   };
-
-  connectTellusWorldRealtime();
 
   const sculptTerrainAt = (
     mode: TerrainEditMode,
@@ -3336,6 +3363,136 @@ function createTellusWorld(
     placeObjectAboveGround(mesh, thing.position, 0.04);
   };
 
+  const worldGeneratedThing = (thing: GeneratedThing): WorldGeneratedThing => ({
+    id: thing.id,
+    kind: thing.kind,
+    prompt: thing.prompt,
+    creatorId: thing.creatorId,
+    position: thing.position,
+    rotationY: thing.rotationY,
+    scale: thing.scale,
+    color: thing.color,
+    modelUrl: thing.modelUrl,
+    pipelineId: thing.pipelineId,
+    generationStatus: thing.generationStatus,
+    updatedAt: new Date().toISOString(),
+  });
+
+  const publishGeneratedThing = (thing: GeneratedThing) => {
+    if (!tellusWorldBackendAvailable) return;
+    const action = {
+      type: "generated.upsert",
+      visitorId,
+      thing: worldGeneratedThing(thing),
+    };
+    if (worldSocket?.readyState === WebSocket.OPEN) {
+      worldSocket.send(JSON.stringify(action));
+      return;
+    }
+    void fetch(tellusWorldHttpUrl("action"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action),
+    }).catch((error) => {
+      console.warn("Tellus generated sync failed", error);
+    });
+  };
+
+  const loadRemoteGeneratedModel = (thing: GeneratedThing) => {
+    if (!thing.modelUrl || thing.generationStatus !== "ready") return;
+    const currentMesh = generatedMeshes.get(thing.id);
+    if (currentMesh?.userData.loadedModelUrl === thing.modelUrl) {
+      return;
+    }
+    void loadGeneratedModel(thing.modelUrl, thing)
+      .then((model) => {
+        if (destroyed || !thingById(thing.id)) {
+          disposeObject(model);
+          return;
+        }
+        const oldMesh = generatedMeshes.get(thing.id);
+        if (oldMesh) {
+          stopGeneratedAnimation(thing.id);
+          scene.remove(oldMesh);
+          disposeObject(oldMesh);
+        }
+        model.userData.loadedModelUrl = thing.modelUrl;
+        generatedMeshes.set(thing.id, model);
+        startGeneratedAnimation(thing.id, model);
+        scene.add(model);
+        publish();
+      })
+      .catch((error) => {
+        console.warn("Remote generated model load failed", error);
+      });
+  };
+
+  const applyRemoteGeneratedThing = (remote: WorldGeneratedThing) => {
+    const existing = thingById(remote.id);
+    if (existing) {
+      existing.kind = remote.kind as GeneratedKind;
+      existing.prompt = remote.prompt;
+      existing.creatorId = remote.creatorId as AgentId | "visitor";
+      existing.position = { ...remote.position };
+      existing.rotationY = remote.rotationY;
+      existing.scale = remote.scale;
+      existing.color = remote.color;
+      existing.modelUrl = remote.modelUrl;
+      existing.pipelineId = remote.pipelineId;
+      existing.generationStatus = remote.generationStatus;
+      updateThingMeshPosition(existing);
+      loadRemoteGeneratedModel(existing);
+      return;
+    }
+    const thing: GeneratedThing = {
+      id: remote.id,
+      kind: remote.kind as GeneratedKind,
+      prompt: remote.prompt,
+      creatorId: remote.creatorId as AgentId | "visitor",
+      position: { ...remote.position },
+      rotationY: remote.rotationY,
+      scale: remote.scale,
+      color: remote.color,
+      modelUrl: remote.modelUrl,
+      pipelineId: remote.pipelineId,
+      generationStatus: remote.generationStatus,
+    };
+    generated.push(thing);
+    const mesh =
+      thing.modelUrl && thing.generationStatus === "ready"
+        ? createGenerationSwirl(thing)
+        : createGeneratedMesh(thing);
+    generatedMeshes.set(thing.id, mesh);
+    scene.add(mesh);
+    updateThingMeshPosition(thing);
+    loadRemoteGeneratedModel(thing);
+  };
+
+  const applyRemoteGeneratedThings = (remoteThings: WorldGeneratedThing[]) => {
+    for (const remote of remoteThings) {
+      applyRemoteGeneratedThing(remote);
+    }
+    publish();
+  };
+
+  const applyRemoteGeneratedDelete = (id: string) => {
+    const index = generated.findIndex((thing) => thing.id === id);
+    if (index === -1) return;
+    generated.splice(index, 1);
+    const mesh = generatedMeshes.get(id);
+    if (mesh) {
+      stopGeneratedAnimation(id);
+      scene.remove(mesh);
+      disposeObject(mesh);
+      generatedMeshes.delete(id);
+    }
+    if (selectedThingId === id) selectedThingId = undefined;
+    if (sailingThingId === id) sailingThingId = undefined;
+    publish();
+  };
+
+  connectTellusWorldRealtime();
+
   const selectGenerated = (id?: string) => {
     selectedThingId = id && thingById(id) ? id : undefined;
     publish();
@@ -3362,6 +3519,7 @@ function createTellusWorld(
       visitorPosition = { ...position };
     }
     updateThingMeshPosition(thing);
+    publishGeneratedThing(thing);
     publish();
   };
 
@@ -3371,6 +3529,7 @@ function createTellusWorld(
     thing.rotationY += radians;
     const mesh = generatedMeshes.get(id);
     if (mesh) mesh.rotation.y = thing.rotationY;
+    publishGeneratedThing(thing);
     publish();
   };
 
@@ -3383,6 +3542,7 @@ function createTellusWorld(
       mesh.scale.multiplyScalar(newTargetHeight / oldTargetHeight);
       updateThingMeshPosition(thing);
     }
+    publishGeneratedThing(thing);
     publish();
   };
 
@@ -3427,6 +3587,18 @@ function createTellusWorld(
       tool: "interact",
       text: `deleted ${thing.kind}: ${thing.prompt}`,
     });
+    if (tellusWorldBackendAvailable) {
+      const action = { type: "generated.delete", visitorId, id };
+      if (worldSocket?.readyState === WebSocket.OPEN) {
+        worldSocket.send(JSON.stringify(action));
+      } else {
+        void fetch(tellusWorldHttpUrl("action"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(action),
+        });
+      }
+    }
     publish();
   };
 
@@ -3454,6 +3626,7 @@ function createTellusWorld(
               thing.position,
             );
     updateThingMeshPosition(thing);
+    publishGeneratedThing(thing);
     publish();
   };
 
@@ -3472,6 +3645,7 @@ function createTellusWorld(
     if (boarded) {
       visitorPosition = { ...boarded.position };
       updateThingMeshPosition(boarded);
+      publishGeneratedThing(boarded);
     }
     addLog({
       agentId: "visitor",
@@ -3583,6 +3757,7 @@ function createTellusWorld(
       tool: "generate",
       text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
     });
+    publishGeneratedThing(thing);
 
     const showLocalFallbackMesh = () => {
       const oldMesh = generatedMeshes.get(thing.id);
@@ -3613,6 +3788,7 @@ function createTellusWorld(
           if (destroyed || paused || !thingById(thing.id)) return;
           thing.pipelineId = pipeline.pipelineId;
           thing.generationStatus = "generating";
+          publishGeneratedThing(thing);
           addLog({
             agentId: "world",
             agentName: "Pixel3D",
@@ -3637,12 +3813,14 @@ function createTellusWorld(
             return;
           }
           thing.generationStatus = "ready";
+          publishGeneratedThing(thing);
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
             stopGeneratedAnimation(thing.id);
             scene.remove(oldMesh);
             disposeObject(oldMesh);
           }
+          model.userData.loadedModelUrl = modelUrl;
           generatedMeshes.set(thing.id, model);
           startGeneratedAnimation(thing.id, model);
           scene.add(model);
@@ -3659,11 +3837,13 @@ function createTellusWorld(
           if (paused || generationController.signal.aborted) {
             thing.generationStatus = "local";
             showLocalFallbackMesh();
+            publishGeneratedThing(thing);
             publish();
             return;
           }
           thing.generationStatus = "failed";
           showLocalFallbackMesh();
+          publishGeneratedThing(thing);
           addLog({
             agentId: "world",
             agentName: "Pixel3D",
@@ -3698,6 +3878,7 @@ function createTellusWorld(
           thing.pipelineId = initialResult.jobId;
           thing.generationStatus =
             initialResult.status === "queued" ? "queued" : "generating";
+          publishGeneratedThing(thing);
           addLog({
             agentId: "world",
             agentName: providerName,
@@ -3728,6 +3909,7 @@ function createTellusWorld(
             throw new Error(`${providerName} completed without a model URL`);
           }
           thing.modelUrl = absoluteTellusApiUrl(result.modelUrl);
+          thing.generationStatus = "ready";
           addLog({
             agentId: "world",
             agentName: providerName,
@@ -3739,13 +3921,14 @@ function createTellusWorld(
             disposeObject(model);
             return;
           }
-          thing.generationStatus = "ready";
+          publishGeneratedThing(thing);
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
             stopGeneratedAnimation(thing.id);
             scene.remove(oldMesh);
             disposeObject(oldMesh);
           }
+          model.userData.loadedModelUrl = thing.modelUrl;
           generatedMeshes.set(thing.id, model);
           startGeneratedAnimation(thing.id, model);
           scene.add(model);
@@ -3762,11 +3945,13 @@ function createTellusWorld(
           if (paused || generationController.signal.aborted) {
             thing.generationStatus = "local";
             showLocalFallbackMesh();
+            publishGeneratedThing(thing);
             publish();
             return;
           }
           thing.generationStatus = "failed";
           showLocalFallbackMesh();
+          publishGeneratedThing(thing);
           if (isMissingApiRouteError(error)) {
             directGenerationAvailable = false;
             thing.generationStatus = "local";
@@ -4142,6 +4327,7 @@ function createTellusWorld(
           mesh.rotation.y = boat.rotationY;
         }
       }
+      publishGeneratedThing(boat);
       sendPresenceUpdate();
       publish();
       return;

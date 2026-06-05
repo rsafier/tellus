@@ -32,6 +32,21 @@ export interface GenerationJobRequest {
   scale?: number;
 }
 
+export interface WorldGeneratedThing {
+  id: string;
+  kind: string;
+  prompt: string;
+  creatorId: string;
+  position: Vec3;
+  rotationY: number;
+  scale: number;
+  color: number;
+  modelUrl?: string;
+  pipelineId?: string;
+  generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
+  updatedAt: string;
+}
+
 export type WorldAction =
   | {
       type: "presence.update";
@@ -54,6 +69,16 @@ export type WorldAction =
       type: "generation.request";
       visitorId: string;
       request: GenerationJobRequest;
+    }
+  | {
+      type: "generated.upsert";
+      visitorId: string;
+      thing: WorldGeneratedThing;
+    }
+  | {
+      type: "generated.delete";
+      visitorId: string;
+      id: string;
     };
 
 export type WorldPatch =
@@ -62,6 +87,7 @@ export type WorldPatch =
       worldId: string;
       terrain: TellusTerrainState;
       presence: WorldPresence[];
+      generated: WorldGeneratedThing[];
       queuedGenerationJobs: QueuedGenerationJob[];
     }
   | {
@@ -76,6 +102,16 @@ export type WorldPatch =
   | {
       type: "generation.queued";
       job: QueuedGenerationJob;
+    }
+  | {
+      type: "generated.updated";
+      thing: WorldGeneratedThing;
+      actorId: string;
+    }
+  | {
+      type: "generated.deleted";
+      id: string;
+      actorId: string;
     }
   | {
       type: "action.rejected";
@@ -119,6 +155,36 @@ function isNumberArrayRecord(value: unknown): value is Record<string, number[]> 
   return isRecord(value) && Object.values(value).every(isNumberArray);
 }
 
+export function isWorldGeneratedThing(value: unknown): value is WorldGeneratedThing {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.kind !== "string" ||
+    typeof value.prompt !== "string" ||
+    typeof value.creatorId !== "string" ||
+    !isVec3(value.position) ||
+    typeof value.rotationY !== "number" ||
+    !Number.isFinite(value.rotationY) ||
+    typeof value.scale !== "number" ||
+    !Number.isFinite(value.scale) ||
+    typeof value.color !== "number" ||
+    !Number.isFinite(value.color) ||
+    typeof value.updatedAt !== "string"
+  ) {
+    return false;
+  }
+  return (
+    (value.modelUrl === undefined || typeof value.modelUrl === "string") &&
+    (value.pipelineId === undefined || typeof value.pipelineId === "string") &&
+    (value.generationStatus === undefined ||
+      value.generationStatus === "local" ||
+      value.generationStatus === "queued" ||
+      value.generationStatus === "generating" ||
+      value.generationStatus === "ready" ||
+      value.generationStatus === "failed")
+  );
+}
+
 export function isTellusTerrainState(value: unknown): value is TellusTerrainState {
   return (
     isRecord(value) &&
@@ -147,6 +213,12 @@ export function isWorldAction(value: unknown): value is WorldAction {
   }
   if (value.type === "generation.request") {
     return isRecord(value.request) && typeof value.request.prompt === "string";
+  }
+  if (value.type === "generated.upsert") {
+    return isWorldGeneratedThing(value.thing);
+  }
+  if (value.type === "generated.delete") {
+    return typeof value.id === "string";
   }
   return false;
 }

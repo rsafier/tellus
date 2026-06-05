@@ -3,9 +3,11 @@ import {
   type QueuedGenerationJob,
   type TellusTerrainState,
   type WorldAction,
+  type WorldGeneratedThing,
   type WorldPatch,
   type WorldPresence,
   isTellusTerrainState,
+  isWorldGeneratedThing,
   isWorldAction,
 } from "../src/world-protocol";
 
@@ -82,6 +84,7 @@ export class TellusWorld extends DurableObject<Env> {
   private worldId = "main";
   private terrain: TellusTerrainState | null = null;
   private presence = new Map<string, WorldPresence>();
+  private generated = new Map<string, WorldGeneratedThing>();
   private queuedGenerationJobs = new Map<string, QueuedGenerationJob>();
 
   async fetch(request: Request): Promise<Response> {
@@ -163,6 +166,7 @@ export class TellusWorld extends DurableObject<Env> {
       worldId: this.worldId,
       terrain: this.terrain ?? defaultTerrainState(),
       presence: [...this.presence.values()],
+      generated: [...this.generated.values()],
       queuedGenerationJobs: [...this.queuedGenerationJobs.values()],
     };
   }
@@ -213,6 +217,22 @@ export class TellusWorld extends DurableObject<Env> {
       return { type: "generation.queued", job };
     }
 
+    if (action.type === "generated.upsert") {
+      const thing = {
+        ...action.thing,
+        updatedAt: now,
+      };
+      this.generated.set(thing.id, thing);
+      await this.ctx.storage.put("generated", [...this.generated.values()]);
+      return { type: "generated.updated", thing, actorId: action.visitorId };
+    }
+
+    if (action.type === "generated.delete") {
+      this.generated.delete(action.id);
+      await this.ctx.storage.put("generated", [...this.generated.values()]);
+      return { type: "generated.deleted", id: action.id, actorId: action.visitorId };
+    }
+
     return {
       type: "action.rejected",
       actionType: action.type,
@@ -235,6 +255,14 @@ export class TellusWorld extends DurableObject<Env> {
       const jobs = await this.ctx.storage.get<QueuedGenerationJob[]>("queuedGenerationJobs");
       if (Array.isArray(jobs)) {
         this.queuedGenerationJobs = new Map(jobs.map((item) => [item.id, item]));
+      }
+    }
+    if (this.generated.size === 0) {
+      const generated = await this.ctx.storage.get<WorldGeneratedThing[]>("generated");
+      if (Array.isArray(generated)) {
+        this.generated = new Map(
+          generated.filter(isWorldGeneratedThing).map((item) => [item.id, item]),
+        );
       }
     }
   }
