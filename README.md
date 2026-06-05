@@ -60,6 +60,8 @@ For direct InstantMesh:
 INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
 INSTANTMESH_SAMPLE_STEPS=30
 TELLUS_GENERATED_ASSET_DIR=Z:\3d\assets\tellus
+TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111
+TELLUS_TEXT_TO_IMAGE_BASE_URL=http://192.168.1.177:7860
 ```
 
 For deployed builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL that the
@@ -67,15 +69,25 @@ deployed server can reach. LAN addresses work for same-network hosts such as a
 home Coolify server; off-network hosts such as Vercel need a public or tunneled
 URL.
 
-InstantMesh is image-to-3D, while Tellus agents speak in text prompts. The
-adapter creates a simple concept image from the prompt, sends it to InstantMesh,
-persists the returned GLB, and returns a stable `/generated-assets/...` URL that
-the WebGPU scene can load. Generated files and `manifest.json` are written to
-`TELLUS_GENERATED_ASSET_DIR`, or `/root/tellus-generated-assets` when that env
-var is unset. Point `TELLUS_GENERATED_ASSET_DIR` at `Z:\3d\assets\tellus` on a
-Windows host, or mount that drive as `/mnt/z/3d/assets/tellus` on a Linux host or
-container. Tellus also translates Windows drive syntax such as
-`Z:\3d\assets\tellus` to `/mnt/z/3d/assets/tellus` when it is running on Linux.
+InstantMesh is image-to-3D, while Tellus agents speak in text prompts. Tellus
+therefore runs a middle step:
+
+```text
+text prompt -> concept image -> InstantMesh -> persisted GLB
+```
+
+Set `TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111` with
+`TELLUS_TEXT_TO_IMAGE_BASE_URL`, or set `TELLUS_TEXT_TO_IMAGE_PROVIDER=openai`
+with `OPENAI_API_KEY`. If the provider is unset, Tellus auto-detects those env
+vars. If no text-to-image service is configured, Tellus falls back to a simple
+procedural BMP sketch. The source concept image, returned GLB, and
+`manifest.json` are written to `TELLUS_GENERATED_ASSET_DIR`, or
+`/root/tellus-generated-assets` when that env var is unset.
+
+Point `TELLUS_GENERATED_ASSET_DIR` at `Z:\3d\assets\tellus` on a Windows host,
+or mount that drive as `/mnt/z/3d/assets/tellus` on a Linux host or container.
+Tellus also translates Windows drive syntax such as `Z:\3d\assets\tellus` to
+`/mnt/z/3d/assets/tellus` when it is running on Linux.
 
 For Asset Forge / Pixel3D, configure the browser-visible API base URL:
 

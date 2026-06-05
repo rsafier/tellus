@@ -4,7 +4,12 @@ import { extname, join, normalize, resolve } from "node:path";
 const contentTypes: Record<string, string> = {
   ".glb": "model/gltf-binary",
   ".gltf": "model/gltf+json",
+  ".bmp": "image/bmp",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".webp": "image/webp",
 };
 
 export function generatedAssetRoot(): string {

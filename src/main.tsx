@@ -164,6 +164,9 @@ interface DirectGenerationResponse {
   rawModelUrl?: string;
   storedModelUrl?: string;
   storedModelPath?: string;
+  sourceImageUrl?: string;
+  sourceImagePath?: string;
+  textImageProvider?: string;
   manifestUrl?: string;
 }
 
@@ -1764,7 +1767,7 @@ function createTellusWorld(
             agentId: "world",
             agentName: "InstantMesh",
             tool: "generate",
-            text: `InstantMesh saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
+            text: `InstantMesh used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ?? "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
           });
           const model = await loadGeneratedModel(result.modelUrl, thing);
           if (destroyed || paused) {

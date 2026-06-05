@@ -20,6 +20,9 @@ interface Generate3DResponse {
   rawModelUrl: string;
   storedModelUrl: string;
   storedModelPath: string;
+  sourceImageUrl: string;
+  sourceImagePath?: string;
+  textImageProvider: string;
   manifestUrl: string;
 }
 
@@ -44,9 +47,36 @@ interface GeneratedAssetManifestEntry {
   rawModelUrl: string;
   modelUrl: string;
   storedModelPath: string;
+  sourceImageUrl: string;
+  sourceImagePath?: string;
+  textImageProvider: string;
+  imagePrompt: string;
   createdAt: string;
   sampleSteps: number;
   seed: number;
+}
+
+interface TextImageResult {
+  imageUrl: string;
+  provider: "request" | "openai" | "automatic1111" | "procedural";
+  imagePrompt: string;
+  storedImageUrl?: string;
+  storedImagePath?: string;
+}
+
+interface OpenAIImageResponse {
+  data?: Array<{
+    b64_json?: string;
+    url?: string;
+  }>;
+  error?: {
+    message?: string;
+  };
+}
+
+interface Automatic1111ImageResponse {
+  images?: string[];
+  error?: string;
 }
 
 function conceptImageDataUrl(prompt: string, kind: string): string {
@@ -222,6 +252,34 @@ function slugify(value: string): string {
     .slice(0, 72);
 }
 
+function generatedFilenameBase(params: {
+  createdAt: string;
+  kind: string;
+  prompt: string;
+  id: string;
+}): string {
+  const timestamp = params.createdAt.replace(/[:.]/g, "-");
+  return `${timestamp}-${slugify(params.kind)}-${slugify(params.prompt) || params.id}`;
+}
+
+function mimeExtension(mime: string): string {
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("bmp")) return "bmp";
+  return "png";
+}
+
+function dataUrlBytes(dataUrl: string): { bytes: Buffer; mime: string } | null {
+  const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(dataUrl);
+  if (!match) return null;
+  const [, mime, encoding, body] = match;
+  const bytes =
+    encoding === ";base64"
+      ? Buffer.from(body, "base64")
+      : Buffer.from(decodeURIComponent(body), "utf8");
+  return { bytes, mime };
+}
+
 async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -229,6 +287,192 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
     throw new Error(cleanUpstreamError(response.status, body));
   }
   return response.arrayBuffer();
+}
+
+async function fetchBytes(url: string): Promise<{ bytes: Buffer; mime: string }> {
+  const dataUrl = dataUrlBytes(url);
+  if (dataUrl) return dataUrl;
+  const response = await fetch(url);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(cleanUpstreamError(response.status, body));
+  }
+  return {
+    bytes: Buffer.from(await response.arrayBuffer()),
+    mime: response.headers.get("content-type") ?? "image/png",
+  };
+}
+
+function imageGenerationPrompt(prompt: string, kind: string): string {
+  return [
+    prompt,
+    "",
+    `Create one ${kind} asset concept image for a stylized 3D game world.`,
+    "Show exactly one centered subject, full body or full object, isolated on a plain white background.",
+    "Use clear readable silhouette, soft studio lighting, no text, no labels, no UI, no crop, no background scene.",
+    "Low-poly friendly proportions, game-ready asset concept art, front three-quarter view.",
+  ].join(" ");
+}
+
+async function generateOpenAIConceptImage(
+  prompt: string,
+  kind: string,
+): Promise<TextImageResult> {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
+  const baseUrl = (
+    process.env.OPENAI_BASE_URL?.trim() ?? "https://api.openai.com/v1"
+  ).replace(/\/+$/, "");
+  const imagePrompt = imageGenerationPrompt(prompt, kind);
+  const response = await fetch(`${baseUrl}/images/generations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: process.env.TELLUS_TEXT_TO_IMAGE_MODEL?.trim() || "gpt-image-1",
+      prompt: imagePrompt,
+      size: process.env.TELLUS_TEXT_TO_IMAGE_SIZE?.trim() || "1024x1024",
+      n: 1,
+    }),
+  });
+  const body = (await response.json()) as OpenAIImageResponse;
+  if (!response.ok || body.error) {
+    throw new Error(
+      body.error?.message ?? `OpenAI image request failed with HTTP ${response.status}`,
+    );
+  }
+  const image = body.data?.[0];
+  if (image?.b64_json) {
+    return {
+      imageUrl: `data:image/png;base64,${image.b64_json}`,
+      provider: "openai",
+      imagePrompt,
+    };
+  }
+  if (image?.url) {
+    return { imageUrl: image.url, provider: "openai", imagePrompt };
+  }
+  throw new Error("OpenAI image request returned no image");
+}
+
+async function generateAutomatic1111ConceptImage(
+  prompt: string,
+  kind: string,
+): Promise<TextImageResult> {
+  const baseUrl = (
+    process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
+    process.env.AUTOMATIC1111_BASE_URL?.trim() ||
+    ""
+  ).replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("TELLUS_TEXT_TO_IMAGE_BASE_URL is not configured");
+  }
+  const imagePrompt = imageGenerationPrompt(prompt, kind);
+  const response = await fetch(`${baseUrl}/sdapi/v1/txt2img`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: imagePrompt,
+      negative_prompt:
+        process.env.TELLUS_TEXT_TO_IMAGE_NEGATIVE_PROMPT?.trim() ||
+        "text, watermark, logo, cropped, blurry, background clutter, multiple objects",
+      steps: Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 28),
+      width: Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024),
+      height: Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024),
+      cfg_scale: Number(process.env.TELLUS_TEXT_TO_IMAGE_CFG_SCALE || 7),
+      sampler_name: process.env.TELLUS_TEXT_TO_IMAGE_SAMPLER || "DPM++ 2M Karras",
+    }),
+  });
+  const body = (await response.json()) as Automatic1111ImageResponse;
+  if (!response.ok || body.error) {
+    throw new Error(
+      body.error ?? `Automatic1111 image request failed with HTTP ${response.status}`,
+    );
+  }
+  const image = body.images?.[0];
+  if (!image) throw new Error("Automatic1111 returned no image");
+  return {
+    imageUrl: image.startsWith("data:")
+      ? image
+      : `data:image/png;base64,${image}`,
+    provider: "automatic1111",
+    imagePrompt,
+  };
+}
+
+async function createTextImage(
+  prompt: string,
+  kind: string,
+  requestedImageUrl?: string,
+): Promise<TextImageResult> {
+  if (requestedImageUrl) {
+    return {
+      imageUrl: requestedImageUrl,
+      provider: "request",
+      imagePrompt: "provided imageUrl",
+    };
+  }
+
+  const provider = (
+    process.env.TELLUS_TEXT_TO_IMAGE_PROVIDER?.trim().toLowerCase() || "auto"
+  ) as "auto" | "openai" | "automatic1111" | "procedural" | "none";
+
+  const attempts: Array<() => Promise<TextImageResult>> = [];
+  if (provider === "openai") attempts.push(() => generateOpenAIConceptImage(prompt, kind));
+  if (provider === "automatic1111") {
+    attempts.push(() => generateAutomatic1111ConceptImage(prompt, kind));
+  }
+  if (provider === "auto") {
+    if (
+      process.env.TELLUS_TEXT_TO_IMAGE_BASE_URL?.trim() ||
+      process.env.AUTOMATIC1111_BASE_URL?.trim()
+    ) {
+      attempts.push(() => generateAutomatic1111ConceptImage(prompt, kind));
+    }
+    if (process.env.OPENAI_API_KEY?.trim()) {
+      attempts.push(() => generateOpenAIConceptImage(prompt, kind));
+    }
+  }
+
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch {
+      // Fall back to the procedural safety net below.
+    }
+  }
+
+  return {
+    imageUrl: conceptImageDataUrl(prompt, kind),
+    provider: "procedural",
+    imagePrompt: imageGenerationPrompt(prompt, kind),
+  };
+}
+
+async function persistSourceImage(params: {
+  id: string;
+  prompt: string;
+  kind: string;
+  createdAt: string;
+  image: TextImageResult;
+}): Promise<TextImageResult> {
+  const root = generatedAssetRoot();
+  await mkdir(root, { recursive: true });
+  const fetched = await fetchBytes(params.image.imageUrl);
+  const filename = `${generatedFilenameBase(params)}-source.${mimeExtension(
+    fetched.mime,
+  )}`;
+  const finalPath = join(root, filename);
+  const tempPath = `${finalPath}.tmp`;
+  await writeFile(tempPath, fetched.bytes);
+  await rename(tempPath, finalPath);
+  return {
+    ...params.image,
+    storedImagePath: finalPath,
+    storedImageUrl: `/generated-assets/${encodeURIComponent(filename)}`,
+  };
 }
 
 async function appendManifest(entry: GeneratedAssetManifestEntry): Promise<void> {
@@ -258,17 +502,15 @@ async function persistGeneratedModel(params: {
   prompt: string;
   kind: string;
   rawModelUrl: string;
+  sourceImage: TextImageResult;
+  createdAt: string;
   sampleSteps: number;
   seed: number;
 }): Promise<GeneratedAssetManifestEntry> {
   const root = generatedAssetRoot();
   await mkdir(root, { recursive: true });
 
-  const createdAt = new Date().toISOString();
-  const timestamp = createdAt.replace(/[:.]/g, "-");
-  const filename = `${timestamp}-${slugify(params.kind)}-${slugify(
-    params.prompt,
-  ) || params.id}.glb`;
+  const filename = `${generatedFilenameBase(params)}.glb`;
   const finalPath = join(root, filename);
   const tempPath = `${finalPath}.tmp`;
   const modelBytes = await fetchArrayBuffer(params.rawModelUrl);
@@ -283,7 +525,11 @@ async function persistGeneratedModel(params: {
     rawModelUrl: params.rawModelUrl,
     modelUrl: `/generated-assets/${encodeURIComponent(filename)}`,
     storedModelPath: finalPath,
-    createdAt,
+    sourceImageUrl: params.sourceImage.storedImageUrl ?? params.sourceImage.imageUrl,
+    sourceImagePath: params.sourceImage.storedImagePath,
+    textImageProvider: params.sourceImage.provider,
+    imagePrompt: params.sourceImage.imagePrompt,
+    createdAt: params.createdAt,
     sampleSteps: params.sampleSteps,
     seed: params.seed,
   };
@@ -327,14 +573,33 @@ export async function generate3DHandler(request: Request): Promise<Response> {
 
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
   const kind = payload.kind?.trim() || "object";
-  const imageUrl = payload.imageUrl?.trim() || conceptImageDataUrl(prompt, kind);
+  const generationId = payload.id || `instantmesh-${Date.now()}`;
+  const createdAt = new Date().toISOString();
+  let textImage = await createTextImage(prompt, kind, payload.imageUrl?.trim());
+  try {
+    textImage = await persistSourceImage({
+      id: generationId,
+      prompt,
+      kind,
+      createdAt,
+      image: textImage,
+    });
+  } catch {
+    // The GLB is the critical artifact. Keep going if image persistence fails.
+  }
+  const imageUrl = textImage.storedImageUrl ?? textImage.imageUrl;
   const sampleSteps = payload.sampleSteps ?? Number(process.env.INSTANTMESH_SAMPLE_STEPS || 30);
   const seed = payload.seed ?? Date.now() % 1_000_000;
   const response = await fetch(`${baseUrl}/run/predict`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      data: [imageUrl, payload.removeBackground ?? false, sampleSteps, seed],
+      data: [
+        imageUrl,
+        payload.removeBackground ?? textImage.provider !== "request",
+        sampleSteps,
+        seed,
+      ],
       fn_index: 1,
     }),
   });
@@ -366,10 +631,12 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   let stored: GeneratedAssetManifestEntry;
   try {
     stored = await persistGeneratedModel({
-      id: payload.id || `instantmesh-${Date.now()}`,
+      id: generationId,
       prompt,
       kind,
       rawModelUrl,
+      sourceImage: textImage,
+      createdAt,
       sampleSteps,
       seed,
     });
@@ -391,6 +658,9 @@ export async function generate3DHandler(request: Request): Promise<Response> {
     rawModelUrl,
     storedModelUrl: stored.modelUrl,
     storedModelPath: stored.storedModelPath,
+    sourceImageUrl: stored.sourceImageUrl,
+    sourceImagePath: stored.sourceImagePath,
+    textImageProvider: stored.textImageProvider,
     manifestUrl: "/generated-assets/manifest.json",
   };
   return Response.json(result);
