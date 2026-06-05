@@ -3335,10 +3335,10 @@ function createTellusWorld(
     const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
     const movement = new THREE.Vector3();
-    if (keys.has("w")) movement.add(forward);
-    if (keys.has("s")) movement.sub(forward);
-    if (keys.has("d")) movement.add(right);
-    if (keys.has("a")) movement.sub(right);
+    if (keys.has("w") || keys.has("arrowup")) movement.add(forward);
+    if (keys.has("s") || keys.has("arrowdown")) movement.sub(forward);
+    if (keys.has("a") || keys.has("arrowright")) movement.add(right);
+    if (keys.has("d") || keys.has("arrowleft")) movement.sub(right);
     if (movement.lengthSq() === 0) return;
     movement.normalize().multiplyScalar(PLAYER_SPEED * delta);
     if (sailingThingId) {
@@ -3532,8 +3532,10 @@ function createTellusWorld(
     }
   };
 
-  const handleKeyDown = (event: KeyboardEvent) =>
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key.startsWith("Arrow")) event.preventDefault();
     keys.add(event.key.toLowerCase());
+  };
   const handleKeyUp = (event: KeyboardEvent) =>
     keys.delete(event.key.toLowerCase());
   const handlePointerDown = (event: PointerEvent) => {
@@ -3838,7 +3840,7 @@ function App(): React.ReactElement {
           <small>AI terrarium</small>
         </div>
         <div className="world-help">
-          <span>WASD</span>
+          <span>WASD / arrows</span>
           <span>drag to look</span>
           <span>scroll to zoom</span>
           {snapshot.sailingThingId && <span>piloting</span>}
