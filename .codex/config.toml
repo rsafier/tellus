@@ -1,0 +1,8 @@
+[mcp_servers.zai_vision]
+command = "bash"
+args = [
+  "-lc",
+  "set -a; . /root/tellus/.env.local; set +a; export Z_AI_API_KEY=\"${ZAI_API_KEY:-$Z_AI_API_KEY}\" Z_AI_MODE=ZAI; exec npx -y @z_ai/mcp-server",
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 120

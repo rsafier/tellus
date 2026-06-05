@@ -186,6 +186,11 @@ interface ChatCompletionResponse {
   }>;
 }
 
+interface WorldFeedbackResponse {
+  summary?: string;
+  error?: string;
+}
+
 interface AssetForgePipelineStart {
   pipelineId: string;
   status: string;
@@ -260,6 +265,8 @@ const POND_RADIUS = 7.4;
 const TERRAIN_VERTEX_COUNT = TERRAIN_SEGMENTS + 1;
 const TERRAIN_SCULPT_RADIUS = 6.2;
 const TERRAIN_SCULPT_STEP = 0.72;
+const WORLD_FEEDBACK_INTERVAL_MS = 75_000;
+const WORLD_FEEDBACK_START_DELAY_MS = 14_000;
 const terrainSculptOffsets = new Float32Array(
   TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
 );
@@ -1102,6 +1109,40 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
     throw new Error(`${response.status}${message ? ` ${message}` : ""}`);
   }
   return (await response.json()) as T;
+}
+
+function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
+  const maxSide = 768;
+  const sourceWidth = Math.max(1, canvas.width);
+  const sourceHeight = Math.max(1, canvas.height);
+  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.floor(sourceWidth * scale));
+  const height = Math.max(1, Math.floor(sourceHeight * scale));
+  const output = document.createElement("canvas");
+  output.width = width;
+  output.height = height;
+  const context = output.getContext("2d");
+  if (!context) throw new Error("Could not create image capture context");
+  context.drawImage(canvas, 0, 0, width, height);
+  return output.toDataURL("image/jpeg", 0.72);
+}
+
+async function requestWorldFeedback(canvas: HTMLCanvasElement): Promise<string> {
+  const imageDataUrl = captureCanvasDataUrl(canvas);
+  const response = await fetch("/api/world-feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      imageDataUrl,
+      prompt:
+        "Describe the visible Tellus world in 4-6 concise bullet points for an autonomous in-world agent. Focus on visible terrain, water, generated objects, agent/avatar positions, spatial relationships, and anything that looks unfinished or surprising.",
+    }),
+  });
+  const payload = await readJsonResponse<WorldFeedbackResponse>(response);
+  if (!payload.summary?.trim()) {
+    throw new Error(payload.error || "World feedback returned no summary");
+  }
+  return payload.summary.trim().slice(0, 1600);
 }
 
 function extractErrorMessage(body: string): string {
@@ -2337,6 +2378,7 @@ function describeAgentPerception(
   agent: TellusAgent,
   generated: GeneratedThing[],
   logs: TellusLog[],
+  visualFeedback: string,
 ): string {
   const groundHeight = terrainHeight(agent.position.x, agent.position.z);
   const localTerrain = terrainKind(agent.position.x, agent.position.z, groundHeight);
@@ -2390,6 +2432,7 @@ function describeAgentPerception(
     `Your last generated asset: ${lastOwnAsset ? `${lastOwnAsset.kind} "${lastOwnAsset.prompt}" (${lastOwnAsset.generationStatus ?? "local"})` : "none yet"}`,
     `Pending asset generation:\n${pending || "none"}`,
     `Recent visible world changes:\n${recentChanges || "none"}`,
+    `Visual world feedback from the current camera:\n${visualFeedback || "not captured yet"}`,
   ].join("\n\n");
 }
 
@@ -2401,6 +2444,7 @@ async function askAgentForDecision(
   agent: TellusAgent,
   generated: GeneratedThing[],
   logs: TellusLog[],
+  visualFeedback: string,
 ): Promise<AgentDecision> {
   const fallbackPrompt = chooseAgentPrompt(agent, generated);
   const recentObjects = generated
@@ -2415,7 +2459,7 @@ async function askAgentForDecision(
     .slice(-8)
     .map((log) => `${log.agentName}: ${log.text}`)
     .join("\n");
-  const perception = describeAgentPerception(agent, generated, logs);
+  const perception = describeAgentPerception(agent, generated, logs, visualFeedback);
 
   const response = await fetch("/api/chat", {
     method: "POST",
@@ -2461,8 +2505,9 @@ async function askAgentForReply(
   message: string,
   generated: GeneratedThing[],
   logs: TellusLog[],
+  visualFeedback: string,
 ): Promise<string> {
-  const perception = describeAgentPerception(agent, generated, logs);
+  const perception = describeAgentPerception(agent, generated, logs, visualFeedback);
   const recentObjects = generated
     .slice(-10)
     .map((thing) => `${thing.kind}: ${thing.prompt}`)
@@ -2532,6 +2577,11 @@ function createTellusWorld(
   const keys = new Set<string>();
   let selectedThingId: string | undefined;
   let sailingThingId: string | undefined;
+  let visualFeedback = "";
+  let nextWorldFeedbackAt =
+    performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
+  let worldFeedbackPending = false;
+  let worldFeedbackIssueLogged = false;
 
   const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
     generated.some(
@@ -3271,7 +3321,7 @@ function createTellusWorld(
       text: `asks ${agent.name}: ${trimmed}`,
     });
 
-    void askAgentForReply(agent, trimmed, generated, logs)
+    void askAgentForReply(agent, trimmed, generated, logs, visualFeedback)
       .then((reply) => {
         if (destroyed || paused) return;
         addLog({
@@ -3341,6 +3391,7 @@ function createTellusWorld(
     }
     if (!paused) {
       const now = performance.now();
+      nextWorldFeedbackAt = now + 4_000;
       for (const agent of agents) {
         agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
         agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
@@ -3363,7 +3414,12 @@ function createTellusWorld(
     pendingAgentDecisions.add(agent.id);
     try {
       if (paused) return;
-      const decision = await askAgentForDecision(agent, generated, logs);
+      const decision = await askAgentForDecision(
+        agent,
+        generated,
+        logs,
+        visualFeedback,
+      );
       if (destroyed || paused) return;
       if (decision.speech) {
         addLog({
@@ -3607,6 +3663,41 @@ function createTellusWorld(
     camera.lookAt(target);
   };
 
+  const refreshWorldFeedback = (now: number) => {
+    if (paused || worldFeedbackPending || now < nextWorldFeedbackAt || !renderer) {
+      return;
+    }
+    nextWorldFeedbackAt = now + WORLD_FEEDBACK_INTERVAL_MS;
+    worldFeedbackPending = true;
+    void requestWorldFeedback(renderer.domElement)
+      .then((summary) => {
+        if (destroyed || paused) return;
+        visualFeedback = summary;
+        worldFeedbackIssueLogged = false;
+        addLog({
+          agentId: "world",
+          agentName: "Z.ai Vision",
+          tool: "interact",
+          text: `World feedback updated: ${sanitizeLogText(summary).slice(0, 180)}`,
+        });
+      })
+      .catch((error) => {
+        if (destroyed || paused || worldFeedbackIssueLogged) return;
+        worldFeedbackIssueLogged = true;
+        addLog({
+          agentId: "world",
+          agentName: "Z.ai Vision",
+          tool: "interact",
+          text: `World feedback unavailable: ${
+            error instanceof Error ? error.message : "unknown vision error"
+          }`,
+        });
+      })
+      .finally(() => {
+        worldFeedbackPending = false;
+      });
+  };
+
   const animate = async () => {
     if (destroyed || !renderer) return;
     const now = performance.now();
@@ -3619,6 +3710,7 @@ function createTellusWorld(
     updateCamera();
     try {
       renderer.render(scene, camera);
+      refreshWorldFeedback(now);
     } catch (error) {
       if (!renderIssueLogged) {
         renderIssueLogged = true;
