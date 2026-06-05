@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { NodeIO } from "@gltf-transform/core";
+import { dedup, prune, resample, weld } from "@gltf-transform/functions";
 import { generatedAssetRoot } from "./generated-assets";
 
 interface Generate3DRequest {
@@ -72,6 +74,10 @@ interface GeneratedAssetManifestEntry {
   createdAt: string;
   sampleSteps: number;
   seed: number;
+  rawModelSizeBytes?: number;
+  storedModelSizeBytes?: number;
+  optimized?: boolean;
+  optimization?: string;
 }
 
 interface TextImageResult {
@@ -299,6 +305,21 @@ function resolveGradioFileUrl(baseUrl: string, candidate: string): string {
     return new URL(candidate, `${baseUrl}/`).toString();
   }
   return new URL(`/file=${candidate}`, `${baseUrl}/`).toString();
+}
+
+function basename(value: string): string {
+  return value.split(/[\\/]/).pop() ?? "";
+}
+
+function numberEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function boolEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) return fallback;
+  return !["0", "false", "no", "off"].includes(value);
 }
 
 function slugify(value: string): string {
@@ -839,8 +860,9 @@ async function persistGeneratedModel(params: {
   const filename = `${generatedFilenameBase(params)}.glb`;
   const finalPath = join(root, filename);
   const tempPath = `${finalPath}.tmp`;
-  const modelBytes = await fetchArrayBuffer(params.rawModelUrl);
-  await writeFile(tempPath, Buffer.from(modelBytes));
+  const rawModelBytes = Buffer.from(await fetchArrayBuffer(params.rawModelUrl));
+  const optimized = await optimizeGeneratedGlb(rawModelBytes);
+  await writeFile(tempPath, optimized.bytes);
   await rename(tempPath, finalPath);
 
   const entry: GeneratedAssetManifestEntry = {
@@ -858,9 +880,48 @@ async function persistGeneratedModel(params: {
     createdAt: params.createdAt,
     sampleSteps: params.sampleSteps,
     seed: params.seed,
+    rawModelSizeBytes: rawModelBytes.byteLength,
+    storedModelSizeBytes: optimized.bytes.byteLength,
+    optimized: optimized.optimized,
+    optimization: optimized.message,
   };
   await appendManifest(entry);
   return entry;
+}
+
+async function optimizeGeneratedGlb(
+  input: Buffer,
+): Promise<{ bytes: Buffer; optimized: boolean; message: string }> {
+  if (!boolEnv("TELLUS_OPTIMIZE_GLB", true)) {
+    return { bytes: input, optimized: false, message: "disabled" };
+  }
+  try {
+    const io = new NodeIO();
+    const document = await io.readBinary(new Uint8Array(input));
+    await document.transform(resample(), prune(), dedup(), weld());
+    const output = Buffer.from(await io.writeBinary(document));
+    if (output.byteLength >= input.byteLength) {
+      return {
+        bytes: input,
+        optimized: false,
+        message: `kept original; optimized candidate was ${output.byteLength} bytes`,
+      };
+    }
+    return {
+      bytes: output,
+      optimized: true,
+      message: `gltf-transform reduced ${input.byteLength} to ${output.byteLength} bytes`,
+    };
+  } catch (error) {
+    return {
+      bytes: input,
+      optimized: false,
+      message:
+        error instanceof Error
+          ? `optimization skipped: ${error.message}`
+          : "optimization skipped",
+    };
+  }
 }
 
 function cleanUpstreamError(status: number, body: string): string {
@@ -966,39 +1027,107 @@ async function waitForGradioCallResult(
   throw new Error(`Pixal3D ${apiName} timed out`);
 }
 
+async function callGradioV2(
+  baseUrl: string,
+  apiName: string,
+  payload: Record<string, unknown>,
+): Promise<unknown> {
+  const response = await fetch(`${baseUrl}/gradio_api/call/v2/${apiName}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  let body: GradioCallResponse = {};
+  try {
+    body = JSON.parse(text) as GradioCallResponse;
+  } catch {
+    if (!response.ok) {
+      throw new Error(cleanUpstreamError(response.status, text));
+    }
+  }
+  if (!response.ok || body.error || !body.event_id) {
+    throw new Error(
+      body.error ?? `Pixal3D ${apiName} request failed with HTTP ${response.status}`,
+    );
+  }
+  return waitForGradioCallResult(baseUrl, apiName, body.event_id);
+}
+
+function firstFileLike(value: unknown): FileLikeResult | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const file = firstFileLike(item);
+      if (file) return file;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as FileLikeResult;
+  if (typeof candidate.path === "string" || typeof candidate.url === "string") {
+    return candidate;
+  }
+  for (const item of Object.values(value)) {
+    const file = firstFileLike(item);
+    if (file) return file;
+  }
+  return null;
+}
+
 async function generatePixal3DModel(
   baseUrl: string,
   image: TextImageResult,
   seed: number,
 ): Promise<string> {
   const uploadedImage = await uploadImageToGradio(baseUrl, image);
-  const response = await fetch(`${baseUrl}/gradio_api/call/generate_glb`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      data: [
-        uploadedImage,
-        0,
-        Number(process.env.PIXAL3D_MESH_RESOLUTION || 512),
-        Number(process.env.PIXAL3D_TARGET_FACES || 50000),
-        Number(process.env.PIXAL3D_TEXTURE_SIZE || 1024),
-        Number(process.env.PIXAL3D_GEOMETRY_STEPS || 12),
-        Number(process.env.PIXAL3D_TEXTURE_STEPS || 12),
-        Number(process.env.PIXAL3D_REFINE_STEPS || 12),
-        seed,
-        process.env.PIXAL3D_SEED_MODE || "deg",
-        "",
-      ],
-    }),
+  const sessionId = `tellus-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const resolution = numberEnv("PIXAL3D_RESOLUTION", 1536);
+  const steps = numberEnv("PIXAL3D_SAMPLING_STEPS", 12);
+  const preprocessed = boolEnv("PIXAL3D_PREPROCESS_IMAGE", true)
+    ? firstFileLike(
+        await callGradioV2(baseUrl, "preprocess", { image: uploadedImage }),
+      )
+    : null;
+  const generation = await callGradioV2(baseUrl, "generate_3d", {
+    image: uploadedImage,
+    seed,
+    resolution,
+    preprocessed_image: preprocessed,
+    preprocessed_name: preprocessed?.path ? basename(preprocessed.path) : "",
+    ss_guidance_strength: numberEnv("PIXAL3D_SS_GUIDANCE_STRENGTH", 7.5),
+    ss_guidance_rescale: numberEnv("PIXAL3D_SS_GUIDANCE_RESCALE", 0.7),
+    ss_sampling_steps: numberEnv("PIXAL3D_SS_SAMPLING_STEPS", steps),
+    ss_rescale_t: numberEnv("PIXAL3D_SS_RESCALE_T", 5),
+    shape_slat_guidance_strength: numberEnv(
+      "PIXAL3D_SHAPE_GUIDANCE_STRENGTH",
+      7.5,
+    ),
+    shape_slat_guidance_rescale: numberEnv("PIXAL3D_SHAPE_GUIDANCE_RESCALE", 0.5),
+    shape_slat_sampling_steps: numberEnv("PIXAL3D_SHAPE_SAMPLING_STEPS", steps),
+    shape_slat_rescale_t: numberEnv("PIXAL3D_SHAPE_RESCALE_T", 3),
+    tex_slat_guidance_strength: numberEnv("PIXAL3D_TEXTURE_GUIDANCE_STRENGTH", 1),
+    tex_slat_guidance_rescale: numberEnv("PIXAL3D_TEXTURE_GUIDANCE_RESCALE", 0),
+    tex_slat_sampling_steps: numberEnv("PIXAL3D_TEXTURE_SAMPLING_STEPS", steps),
+    tex_slat_rescale_t: numberEnv("PIXAL3D_TEXTURE_RESCALE_T", 3),
+    preview_resolution: numberEnv("PIXAL3D_PREVIEW_RESOLUTION", 1024),
+    preview_frames: numberEnv("PIXAL3D_PREVIEW_FRAMES", 8),
+    manual_fov: numberEnv("PIXAL3D_MANUAL_FOV", -1),
+    fov_unit: process.env.PIXAL3D_FOV_UNIT || "deg",
+    session_id: sessionId,
   });
-  const body = (await response.json()) as GradioCallResponse;
-  if (!response.ok || body.error || !body.event_id) {
-    throw new Error(
-      body.error ?? `Pixal3D request failed with HTTP ${response.status}`,
-    );
+  const statePath = collectCandidates(generation).find((value) =>
+    /state/i.test(value),
+  );
+  if (!statePath) {
+    throw new Error("Pixal3D generated no extractable state");
   }
-  const result = await waitForGradioCallResult(baseUrl, "generate_glb", body.event_id);
-  const candidate = collectCandidates(result).find((value) =>
+  const extracted = await callGradioV2(baseUrl, "extract_glb", {
+    state_path: statePath,
+    decimation_target: numberEnv("PIXAL3D_DECIMATION_TARGET", 1_000_000),
+    texture_size: numberEnv("PIXAL3D_TEXTURE_SIZE", 4096),
+    session_id: sessionId,
+  });
+  const candidate = collectCandidates(extracted).find((value) =>
     /\.(glb|gltf)(\?|$)/i.test(value),
   );
   if (!candidate) {
