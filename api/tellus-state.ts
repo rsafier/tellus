@@ -24,7 +24,7 @@ export async function tellusStateHandler(request: Request): Promise<Response> {
     }
   }
 
-  if (request.method === "PUT") {
+  if (request.method === "PUT" || request.method === "POST") {
     const body = await request.text();
     JSON.parse(body);
     const finalPath = await statePath();

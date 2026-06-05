@@ -2,6 +2,7 @@ import chatHandler from "./api/chat";
 import generate3DHandler from "./api/generate-3d";
 import generatedAssetsHandler from "./api/generated-assets";
 import gradioFileHandler from "./api/gradio-file";
+import tellusStateHandler from "./api/tellus-state";
 
 const distRoot = new URL("./dist/", import.meta.url);
 
@@ -70,6 +71,9 @@ Bun.serve({
     }
     if (url.pathname.startsWith("/api/gradio-file")) {
       return gradioFileHandler(request);
+    }
+    if (url.pathname.startsWith("/api/tellus-state")) {
+      return tellusStateHandler(request);
     }
     if (url.pathname.startsWith("/generated-assets/")) {
       return generatedAssetsHandler(request);
