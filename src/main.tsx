@@ -196,7 +196,8 @@ interface AssetForgePipelineStatus {
 
 interface DirectGenerationResponse {
   jobId: string;
-  modelUrl: string;
+  status?: "queued" | "generating" | "completed" | "failed";
+  modelUrl?: string;
   provider: string;
   rawModelUrl?: string;
   storedModelUrl?: string;
@@ -205,6 +206,7 @@ interface DirectGenerationResponse {
   sourceImagePath?: string;
   textImageProvider?: string;
   manifestUrl?: string;
+  error?: string;
 }
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
@@ -882,6 +884,29 @@ async function startDirectInstantMeshGeneration(
     }),
   });
   return readJsonResponse<DirectGenerationResponse>(response);
+}
+
+async function waitForDirectGeneration(
+  initial: DirectGenerationResponse,
+  signal?: AbortSignal,
+): Promise<DirectGenerationResponse> {
+  if (initial.modelUrl && initial.status !== "failed") return initial;
+  const deadline = Date.now() + 22 * 60 * 1000;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    await new Promise((resolve) => window.setTimeout(resolve, 4000));
+    signal?.throwIfAborted();
+    const response = await fetch(
+      `/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`,
+      { signal },
+    );
+    const status = await readJsonResponse<DirectGenerationResponse>(response);
+    if (status.status === "failed") {
+      throw new Error(status.error ?? `Generation job ${initial.jobId} failed`);
+    }
+    if (status.modelUrl) return status;
+  }
+  throw new Error(`Generation job ${initial.jobId} timed out`);
 }
 
 function createTerrainGeometry(): THREE.BufferGeometry {
@@ -2549,9 +2574,24 @@ function createTellusWorld(
         text: `Sending ${thing.kind} to ${providerName}: "${thing.prompt}"`,
       });
       void startDirectInstantMeshGeneration(thing, generationController.signal)
-        .then(async (result) => {
+        .then(async (initialResult) => {
           if (destroyed || paused || !thingById(thing.id)) return;
-          thing.pipelineId = result.jobId;
+          thing.pipelineId = initialResult.jobId;
+          thing.generationStatus = "generating";
+          addLog({
+            agentId: "world",
+            agentName: providerName,
+            tool: "generate",
+            text: `Queued ${thing.kind} model for "${thing.prompt}" (${initialResult.jobId})`,
+          });
+          const result = await waitForDirectGeneration(
+            initialResult,
+            generationController.signal,
+          );
+          if (destroyed || paused || !thingById(thing.id)) return;
+          if (!result.modelUrl) {
+            throw new Error(`${providerName} completed without a model URL`);
+          }
           thing.modelUrl = result.modelUrl;
           addLog({
             agentId: "world",

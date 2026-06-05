@@ -17,15 +17,26 @@ type Generation3DProvider = "instantmesh-gradio" | "pixal3d-gradio";
 
 interface Generate3DResponse {
   jobId: string;
-  modelUrl: string;
+  status?: "queued" | "generating" | "completed" | "failed";
+  modelUrl?: string;
   provider: Generation3DProvider;
-  rawModelUrl: string;
-  storedModelUrl: string;
-  storedModelPath: string;
-  sourceImageUrl: string;
+  rawModelUrl?: string;
+  storedModelUrl?: string;
+  storedModelPath?: string;
+  sourceImageUrl?: string;
   sourceImagePath?: string;
   textImageProvider: string;
   manifestUrl: string;
+  error?: string;
+}
+
+interface GenerationJob {
+  id: string;
+  provider: Generation3DProvider;
+  status: "queued" | "generating" | "completed" | "failed";
+  result?: Generate3DResponse;
+  error?: string;
+  createdAt: number;
 }
 
 interface LegacyPredictResponse {
@@ -122,6 +133,8 @@ interface ComfyHistoryResponse {
     completed?: boolean;
   };
 }
+
+const generationJobs = new Map<string, GenerationJob>();
 
 function conceptImageDataUrl(prompt: string, kind: string): string {
   const width = 256;
@@ -1000,7 +1013,166 @@ async function readRequestJson(request: Request): Promise<Generate3DRequest> {
   return parsed as Generate3DRequest;
 }
 
+async function executeGeneration(params: {
+  payload: Generate3DRequest;
+  provider: Generation3DProvider;
+  baseUrl: string;
+  generationId: string;
+}): Promise<Generate3DResponse> {
+  const { payload, provider, baseUrl, generationId } = params;
+  const prompt = payload.prompt?.trim() || "tiny Tellus world object";
+  const kind = payload.kind?.trim() || "object";
+  const createdAt = new Date().toISOString();
+  let textImage = await createTextImage(prompt, kind, payload.imageUrl?.trim());
+  try {
+    textImage = await persistSourceImage({
+      id: generationId,
+      prompt,
+      kind,
+      createdAt,
+      image: textImage,
+    });
+  } catch {
+    // The GLB is the critical artifact. Keep going if image persistence fails.
+  }
+  const imageUrl = textImage.imageUrl;
+  const sampleSteps =
+    payload.sampleSteps ?? Number(process.env.INSTANTMESH_SAMPLE_STEPS || 30);
+  const seed = payload.seed ?? Date.now() % 1_000_000;
+  if (provider === "pixal3d-gradio") {
+    const rawModelUrl = await generatePixal3DModel(baseUrl, textImage, seed);
+    const stored = await persistGeneratedModel({
+      id: generationId,
+      prompt,
+      kind,
+      rawModelUrl,
+      sourceImage: textImage,
+      createdAt,
+      sampleSteps,
+      seed,
+      provider,
+    });
+    return {
+      jobId: stored.id,
+      status: "completed",
+      modelUrl: stored.modelUrl,
+      provider,
+      rawModelUrl,
+      storedModelUrl: stored.modelUrl,
+      storedModelPath: stored.storedModelPath,
+      sourceImageUrl: stored.sourceImageUrl,
+      sourceImagePath: stored.sourceImagePath,
+      textImageProvider: stored.textImageProvider,
+      manifestUrl: "/generated-assets/manifest.json",
+    };
+  }
+
+  const response = await fetch(`${baseUrl}/run/predict`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      data: [
+        imageUrl,
+        payload.removeBackground ?? textImage.provider !== "request",
+        sampleSteps,
+        seed,
+      ],
+      fn_index: 1,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(cleanUpstreamError(response.status, body));
+  }
+
+  const body = (await response.json()) as LegacyPredictResponse;
+  if (body.error) throw new Error(body.error);
+
+  const candidate = collectCandidates(body.data?.[4]).find((value) =>
+    /\.(glb|gltf)(\?|$)/i.test(value),
+  );
+  if (!candidate) {
+    throw new Error("InstantMesh completed without a GLB output");
+  }
+
+  const rawModelUrl = resolveGradioFileUrl(baseUrl, candidate);
+  const stored = await persistGeneratedModel({
+    id: generationId,
+    prompt,
+    kind,
+    rawModelUrl,
+    sourceImage: textImage,
+    createdAt,
+    sampleSteps,
+    seed,
+    provider,
+  });
+  return {
+    jobId: stored.id,
+    status: "completed",
+    modelUrl: stored.modelUrl,
+    provider,
+    rawModelUrl,
+    storedModelUrl: stored.modelUrl,
+    storedModelPath: stored.storedModelPath,
+    sourceImageUrl: stored.sourceImageUrl,
+    sourceImagePath: stored.sourceImagePath,
+    textImageProvider: stored.textImageProvider,
+    manifestUrl: "/generated-assets/manifest.json",
+  };
+}
+
+function startGenerationJob(params: {
+  payload: Generate3DRequest;
+  provider: Generation3DProvider;
+  baseUrl: string;
+  generationId: string;
+}): GenerationJob {
+  const existing = generationJobs.get(params.generationId);
+  if (existing) return existing;
+  const job: GenerationJob = {
+    id: params.generationId,
+    provider: params.provider,
+    status: "queued",
+    createdAt: Date.now(),
+  };
+  generationJobs.set(job.id, job);
+  void executeGeneration(params)
+    .then((result) => {
+      job.status = "completed";
+      job.result = result;
+    })
+    .catch((error) => {
+      job.status = "failed";
+      job.error =
+        error instanceof Error ? error.message : "Pixal3D generation failed";
+    });
+  job.status = "generating";
+  return job;
+}
+
 export async function generate3DHandler(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (request.method === "GET") {
+    const jobId = url.searchParams.get("jobId") || "";
+    const job = generationJobs.get(jobId);
+    if (!job) {
+      return Response.json({ error: "Generation job not found" }, { status: 404 });
+    }
+    if (job.status === "completed" && job.result) {
+      return Response.json(job.result);
+    }
+    return Response.json({
+      jobId: job.id,
+      status: job.status,
+      provider: job.provider,
+      textImageProvider: "pending",
+      manifestUrl: "/generated-assets/manifest.json",
+      error: job.error,
+    } satisfies Generate3DResponse);
+  }
+
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
@@ -1029,153 +1201,36 @@ export async function generate3DHandler(request: Request): Promise<Response> {
     );
   }
 
-  const prompt = payload.prompt?.trim() || "tiny Tellus world object";
-  const kind = payload.kind?.trim() || "object";
   const generationId = payload.id || `${provider}-${Date.now()}`;
-  const createdAt = new Date().toISOString();
-  let textImage = await createTextImage(prompt, kind, payload.imageUrl?.trim());
-  try {
-    textImage = await persistSourceImage({
-      id: generationId,
-      prompt,
-      kind,
-      createdAt,
-      image: textImage,
-    });
-  } catch {
-    // The GLB is the critical artifact. Keep going if image persistence fails.
-  }
-  const imageUrl = textImage.imageUrl;
-  const sampleSteps = payload.sampleSteps ?? Number(process.env.INSTANTMESH_SAMPLE_STEPS || 30);
-  const seed = payload.seed ?? Date.now() % 1_000_000;
   if (provider === "pixal3d-gradio") {
-    let rawModelUrl: string;
-    try {
-      rawModelUrl = await generatePixal3DModel(baseUrl, textImage, seed);
-    } catch (error) {
-      return Response.json(
-        {
-          error:
-            error instanceof Error
-              ? `Pixal3D request failed: ${error.message}`
-              : "Pixal3D request failed",
-        },
-        { status: 502 },
-      );
-    }
-    let stored: GeneratedAssetManifestEntry;
-    try {
-      stored = await persistGeneratedModel({
-        id: generationId,
-        prompt,
-        kind,
-        rawModelUrl,
-        sourceImage: textImage,
-        createdAt,
-        sampleSteps,
-        seed,
+    const job = startGenerationJob({ payload, provider, baseUrl, generationId });
+    return Response.json(
+      {
+        jobId: job.id,
+        status: job.status,
         provider,
-      });
-    } catch (error) {
-      return Response.json(
-        {
-          error: `Pixal3D returned a GLB, but Tellus could not persist it: ${
-            error instanceof Error ? error.message : "unknown storage error"
-          }`,
-          rawModelUrl,
-        },
-        { status: 502 },
-      );
-    }
-    return Response.json({
-      jobId: stored.id,
-      modelUrl: stored.modelUrl,
-      provider,
-      rawModelUrl,
-      storedModelUrl: stored.modelUrl,
-      storedModelPath: stored.storedModelPath,
-      sourceImageUrl: stored.sourceImageUrl,
-      sourceImagePath: stored.sourceImagePath,
-      textImageProvider: stored.textImageProvider,
-      manifestUrl: "/generated-assets/manifest.json",
-    } satisfies Generate3DResponse);
-  }
-
-  const response = await fetch(`${baseUrl}/run/predict`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      data: [
-        imageUrl,
-        payload.removeBackground ?? textImage.provider !== "request",
-        sampleSteps,
-        seed,
-      ],
-      fn_index: 1,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    return Response.json(
-      { error: cleanUpstreamError(response.status, body) },
-      { status: 502 },
+        textImageProvider: "pending",
+        manifestUrl: "/generated-assets/manifest.json",
+      } satisfies Generate3DResponse,
+      { status: 202 },
     );
   }
 
-  const body = (await response.json()) as LegacyPredictResponse;
-  if (body.error) {
-    return Response.json({ error: body.error }, { status: 502 });
-  }
-
-  const candidate = collectCandidates(body.data?.[4]).find((value) =>
-    /\.(glb|gltf)(\?|$)/i.test(value),
-  );
-  if (!candidate) {
-    return Response.json(
-      { error: "InstantMesh completed without a GLB output", data: body.data },
-      { status: 502 },
-    );
-  }
-
-  const rawModelUrl = resolveGradioFileUrl(baseUrl, candidate);
-  let stored: GeneratedAssetManifestEntry;
   try {
-    stored = await persistGeneratedModel({
-      id: generationId,
-      prompt,
-      kind,
-      rawModelUrl,
-      sourceImage: textImage,
-      createdAt,
-      sampleSteps,
-      seed,
-      provider,
-    });
+    return Response.json(
+      await executeGeneration({ payload, provider, baseUrl, generationId }),
+    );
   } catch (error) {
     return Response.json(
       {
-        error: `InstantMesh returned a GLB, but Tellus could not persist it: ${
-          error instanceof Error ? error.message : "unknown storage error"
-        }`,
-        rawModelUrl,
+        error:
+          error instanceof Error
+            ? error.message
+            : "InstantMesh generation failed",
       },
       { status: 502 },
     );
   }
-  const result: Generate3DResponse = {
-    jobId: stored.id,
-    modelUrl: stored.modelUrl,
-    provider,
-    rawModelUrl,
-    storedModelUrl: stored.modelUrl,
-    storedModelPath: stored.storedModelPath,
-    sourceImageUrl: stored.sourceImageUrl,
-    sourceImagePath: stored.sourceImagePath,
-    textImageProvider: stored.textImageProvider,
-    manifestUrl: "/generated-assets/manifest.json",
-  };
-  return Response.json(result);
 }
 
 export default generate3DHandler;
