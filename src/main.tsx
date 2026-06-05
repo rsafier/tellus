@@ -1022,34 +1022,31 @@ function createSkyDome(): THREE.Mesh {
 }
 
 function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
-  const t = time.mul(0.72);
+  const t = time.mul(0.62);
   const waterUV = positionWorld.xzy;
-  const broadFlow = mx_worley_noise_float(waterUV.mul(0.55).add(t.mul(0.16)));
-  const surfaceFlow = mx_worley_noise_float(
-    waterUV.mul(3.9).add(broadFlow.mul(0.42)).add(t),
+  const broadFlow = mx_worley_noise_float(waterUV.mul(0.36).add(t.mul(0.52)));
+  const waveCells = mx_worley_noise_float(
+    waterUV.mul(1.35).add(broadFlow.mul(0.38)).add(t),
   );
-  const fineRipples = mx_worley_noise_float(
-    waterUV.mul(10.5).add(surfaceFlow.mul(0.35)).add(t.mul(1.7)),
-  );
-  const surfaceIntensity = surfaceFlow.mul(fineRipples).mul(1.65);
-  const waterColor = surfaceIntensity.mix(color(0x0c7199), color(0xc7fbff));
+  const surfaceIntensity = waveCells.mul(broadFlow).mul(1.18);
+  const waterColor = surfaceIntensity.mix(color(0x0476b7), color(0x7bd7f5));
   const illuminatedColor = waterColor.add(
-    color(0x8ff6ff).mul(surfaceIntensity.mul(0.28)),
+    color(0xb7f6ff).mul(surfaceIntensity.mul(0.12)),
   );
 
   const depth = linearDepth();
   const depthWater = viewportLinearDepth.sub(depth);
-  const depthEffect = depthWater.remapClamp(-0.002, 0.065);
+  const depthEffect = depthWater.remapClamp(-0.002, 0.045);
   const refractionUV = screenUV.add(
     vec2(
-      broadFlow.sub(0.5).mul(0.018),
-      surfaceIntensity.sub(0.5).mul(0.074),
+      broadFlow.sub(0.5).mul(0.0035),
+      surfaceIntensity.sub(0.5).mul(0.055),
     ),
   );
   const depthTestForRefraction = linearDepth(
     viewportDepthTexture(refractionUV),
   ).sub(depth);
-  const depthRefraction = depthTestForRefraction.remapClamp(0, 0.16);
+  const depthRefraction = depthTestForRefraction.remapClamp(0, 0.1);
   const finalUV = depthTestForRefraction.lessThan(0).select(screenUV, refractionUV);
   const viewportTexture = viewportSharedTexture(finalUV);
 
@@ -1059,7 +1056,7 @@ function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
     viewportSharedTexture(),
     viewportTexture.mul(depthRefraction.mix(1, illuminatedColor)),
   );
-  material.backdropAlphaNode = depthRefraction.oneMinus().mul(0.9);
+  material.backdropAlphaNode = depthRefraction.oneMinus().mul(0.86);
   material.transparent = true;
   material.depthWrite = false;
   material.side = THREE.DoubleSide;
