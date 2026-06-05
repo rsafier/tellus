@@ -62,6 +62,7 @@ interface TellusAgent {
   position: Vec3;
   target: Vec3;
   nextActionAt: number;
+  nextReflectionAt: number;
 }
 
 interface GeneratedThing {
@@ -193,7 +194,8 @@ const SEA_LEVEL = -1.55;
 const TERRAIN_SEGMENTS = 96;
 const AGENT_SPEED = 5.2;
 const PLAYER_SPEED = 13;
-const TOOL_INTERVAL_MS = 3200;
+const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
+const AUTONOMOUS_REFLECTION_OFFSET_MS = AUTONOMOUS_ASSET_INTERVAL_MS / 2;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
@@ -244,6 +246,7 @@ function createAgentSeeds(): TellusAgent[] {
       position: { x: -15, y: 0, z: 11 },
       target: { x: -11, y: 0, z: 9 },
       nextActionAt: 0,
+      nextReflectionAt: 0,
     },
     {
       id: "mira",
@@ -255,6 +258,7 @@ function createAgentSeeds(): TellusAgent[] {
       position: { x: 18, y: 0, z: 6 },
       target: { x: 13, y: 0, z: 4 },
       nextActionAt: 800,
+      nextReflectionAt: 0,
     },
     {
       id: "sol",
@@ -266,6 +270,7 @@ function createAgentSeeds(): TellusAgent[] {
       position: { x: -5, y: 0, z: -21 },
       target: { x: -3, y: 0, z: -17 },
       nextActionAt: 1600,
+      nextReflectionAt: 0,
     },
      {
       id: "atlas",
@@ -277,6 +282,7 @@ function createAgentSeeds(): TellusAgent[] {
       position: { x: -5, y: 0, z: -21 },
       target: { x: -3, y: 0, z: -17 },
       nextActionAt: 2400,
+      nextReflectionAt: 0,
     },
   ];
   const enabled = new Set(runtimeConfig.enabledAgents);
@@ -1023,19 +1029,44 @@ function inferGeneratedKind(
 ): GeneratedKind {
   const lower = prompt.toLowerCase();
   if (
+    lower.includes("creature") ||
+    lower.includes("companion") ||
+    lower.includes("beast") ||
+    lower.includes("critter") ||
+    lower.includes("animal") ||
+    lower.includes("fox") ||
+    lower.includes("bird") ||
+    lower.includes("horse") ||
+    lower.includes("fish") ||
+    lower.includes("reptile")
+  )
+    return "animal";
+  if (
+    lower.includes("hut") ||
+    lower.includes("house") ||
+    lower.includes("workshop") ||
+    lower.includes("building") ||
+    lower.includes("cottage") ||
+    lower.includes("cabin") ||
+    lower.includes("tower") ||
+    lower.includes("lantern") ||
+    lower.includes("bridge") ||
+    lower.includes("dock") ||
+    lower.includes("boat") ||
+    lower.includes("tool") ||
+    lower.includes("vehicle") ||
+    lower.includes("statue") ||
+    lower.includes("object") ||
+    lower.includes("prop")
+  )
+    return "object";
+  if (
     lower.includes("tree") ||
     lower.includes("apple") ||
     lower.includes("forest") ||
     lower.includes("sapling")
   )
     return "tree";
-  if (
-    lower.includes("animal") ||
-    lower.includes("fox") ||
-    lower.includes("bird") ||
-    lower.includes("horse")
-  )
-    return "animal";
   if (
     lower.includes("balloon") ||
     lower.includes("airship") ||
@@ -1484,6 +1515,8 @@ function createTellusWorld(
     ...agent,
     position: { ...agent.position },
     target: { ...agent.target },
+    nextActionAt: performance.now() + AUTONOMOUS_ASSET_INTERVAL_MS,
+    nextReflectionAt: performance.now() + AUTONOMOUS_REFLECTION_OFFSET_MS,
   }));
   const generated: GeneratedThing[] = [];
   const logs: TellusLog[] = [];
@@ -1662,8 +1695,18 @@ function createTellusWorld(
           );
           if (destroyed || paused) return;
           thing.modelUrl = modelUrl;
-          thing.generationStatus = "ready";
+          addLog({
+            agentId: "world",
+            agentName: "Pixel3D",
+            tool: "generate",
+            text: `Pixel3D returned a model URL for ${thing.kind}; loading it into Tellus.`,
+          });
           const model = await loadGeneratedModel(modelUrl, thing);
+          if (destroyed || paused) {
+            disposeObject(model);
+            return;
+          }
+          thing.generationStatus = "ready";
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
             scene.remove(oldMesh);
@@ -1675,7 +1718,7 @@ function createTellusWorld(
             agentId: "world",
             agentName: "Pixel3D",
             tool: "interact",
-            text: `Loaded Pixel3D model for ${thing.kind}: ${thing.prompt}`,
+            text: `Loaded Pixel3D GLB into the scene for ${thing.kind}: ${thing.prompt}`,
           });
           publish();
         })
@@ -1713,18 +1756,18 @@ function createTellusWorld(
           if (destroyed || paused) return;
           thing.pipelineId = result.jobId;
           thing.modelUrl = result.modelUrl;
-          thing.generationStatus = "ready";
           addLog({
             agentId: "world",
             agentName: "InstantMesh",
             tool: "generate",
-            text: `Generated ${thing.kind} model for "${thing.prompt}"`,
+            text: `InstantMesh returned a GLB for ${thing.kind}; loading it into Tellus.`,
           });
           const model = await loadGeneratedModel(result.modelUrl, thing);
           if (destroyed || paused) {
             disposeObject(model);
             return;
           }
+          thing.generationStatus = "ready";
           const oldMesh = generatedMeshes.get(thing.id);
           if (oldMesh) {
             scene.remove(oldMesh);
@@ -1732,6 +1775,12 @@ function createTellusWorld(
           }
           generatedMeshes.set(thing.id, model);
           scene.add(model);
+          addLog({
+            agentId: "world",
+            agentName: "InstantMesh",
+            tool: "interact",
+            text: `Loaded InstantMesh GLB into the scene for ${thing.kind}: ${thing.prompt}`,
+          });
           publish();
         })
         .catch((error) => {
@@ -1861,8 +1910,8 @@ function createTellusWorld(
     if (!paused) {
       const now = performance.now();
       for (const agent of agents) {
-        agent.nextActionAt =
-          now + TOOL_INTERVAL_MS + rand(now + agent.color) * 2200;
+        agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
+        agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
       }
     }
     addLog({
@@ -1882,27 +1931,6 @@ function createTellusWorld(
     pendingAgentDecisions.add(agent.id);
     try {
       if (paused) return;
-      const shouldInteract =
-        generated.length > 3 && rand(performance.now() + agent.color) > 0.68;
-      if (shouldInteract) {
-        if (paused) return;
-        const target =
-          generated[
-            Math.floor(rand(performance.now() + agent.position.x) * generated.length)
-          ];
-        interact({
-          targetId: target.id,
-          actorId: agent.id,
-          intent:
-            agent.id === "johnny"
-              ? "study how this asset changes the world and what should exist near it"
-              : agent.id === "mira"
-                ? "study how it changes the local habitat"
-                : "decide whether it belongs in the mountain pattern",
-        });
-        return;
-      }
-
       const decision = await askAgentForDecision(agent, generated, logs);
       if (destroyed || paused) return;
       if (decision.speech) {
@@ -1945,6 +1973,24 @@ function createTellusWorld(
     } finally {
       pendingAgentDecisions.delete(agent.id);
     }
+  };
+
+  const runAgentReflection = (agent: TellusAgent): void => {
+    if (paused || generated.length === 0) return;
+    const target =
+      generated[
+        Math.floor(rand(performance.now() + agent.position.x) * generated.length)
+      ];
+    interact({
+      targetId: target.id,
+      actorId: agent.id,
+      intent:
+        agent.id === "johnny"
+          ? "study what should live near here next and how this asset changes the world"
+          : agent.id === "mira"
+            ? "study what should live near here next and how this asset changes the local habitat"
+            : "study what should live near here next and whether it belongs in the mountain pattern",
+    });
   };
 
   const resize = () => {
@@ -1997,8 +2043,11 @@ function createTellusWorld(
 
       if (!paused && now >= agent.nextActionAt) {
         void runAgentTurn(agent);
-        agent.nextActionAt =
-          now + TOOL_INTERVAL_MS + 1400 + rand(now + agent.color) * 3600;
+        agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
+        agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
+      } else if (!paused && now >= agent.nextReflectionAt) {
+        runAgentReflection(agent);
+        agent.nextReflectionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
       }
     }
   };

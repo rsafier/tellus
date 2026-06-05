@@ -108,10 +108,11 @@ ZAI_MODEL=GLM-5.1
 ```
 
 When configured, the enabled agent asks `/api/chat` for its next `generate()`
-prompt. If the endpoint is unavailable, it falls back to local scripted
-behavior. By default only Johnny is enabled, and he is configured as a general
-world-forger that can request any visible 3D asset. `/api/tts` is also proxied
-for the Hyades TTS endpoint, ready for a later voice pass.
+prompt about once per minute, with reflective `interact()` moments in between.
+If the endpoint is unavailable, it falls back to local scripted behavior. By
+default only Johnny is enabled, and he is configured as a general world-forger
+that can request any visible 3D asset. `/api/tts` is also proxied for the Hyades
+TTS endpoint, ready for a later voice pass.
 
 Tellus reads `public/tellus-config.json` at runtime. The committed file is
 deploy-safe and intentionally has no local asset paths, so Vercel can build even
