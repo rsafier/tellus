@@ -1,4 +1,7 @@
 import { Buffer } from "node:buffer";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { generatedAssetRoot } from "./generated-assets";
 
 interface Generate3DRequest {
   id?: string;
@@ -15,6 +18,9 @@ interface Generate3DResponse {
   modelUrl: string;
   provider: "instantmesh-gradio";
   rawModelUrl: string;
+  storedModelUrl: string;
+  storedModelPath: string;
+  manifestUrl: string;
 }
 
 interface LegacyPredictResponse {
@@ -29,6 +35,19 @@ type FileLikeResult = {
   data?: string;
   orig_name?: string;
 };
+
+interface GeneratedAssetManifestEntry {
+  id: string;
+  prompt: string;
+  kind: string;
+  provider: "instantmesh-gradio";
+  rawModelUrl: string;
+  modelUrl: string;
+  storedModelPath: string;
+  createdAt: string;
+  sampleSteps: number;
+  seed: number;
+}
 
 function conceptImageDataUrl(prompt: string, kind: string): string {
   const width = 256;
@@ -195,8 +214,81 @@ function resolveGradioFileUrl(baseUrl: string, candidate: string): string {
   return new URL(`/file=${candidate}`, `${baseUrl}/`).toString();
 }
 
-function proxiedModelUrl(rawModelUrl: string): string {
-  return `/api/gradio-file?url=${encodeURIComponent(rawModelUrl)}`;
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+}
+
+async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(cleanUpstreamError(response.status, body));
+  }
+  return response.arrayBuffer();
+}
+
+async function appendManifest(entry: GeneratedAssetManifestEntry): Promise<void> {
+  const manifestPath = join(generatedAssetRoot(), "manifest.json");
+  let existing: GeneratedAssetManifestEntry[] = [];
+  try {
+    const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
+    if (Array.isArray(parsed)) {
+      existing = parsed.filter(
+        (item): item is GeneratedAssetManifestEntry =>
+          typeof item === "object" && item !== null,
+      );
+    }
+  } catch {
+    existing = [];
+  }
+  existing.push(entry);
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(existing, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function persistGeneratedModel(params: {
+  id: string;
+  prompt: string;
+  kind: string;
+  rawModelUrl: string;
+  sampleSteps: number;
+  seed: number;
+}): Promise<GeneratedAssetManifestEntry> {
+  const root = generatedAssetRoot();
+  await mkdir(root, { recursive: true });
+
+  const createdAt = new Date().toISOString();
+  const timestamp = createdAt.replace(/[:.]/g, "-");
+  const filename = `${timestamp}-${slugify(params.kind)}-${slugify(
+    params.prompt,
+  ) || params.id}.glb`;
+  const finalPath = join(root, filename);
+  const tempPath = `${finalPath}.tmp`;
+  const modelBytes = await fetchArrayBuffer(params.rawModelUrl);
+  await writeFile(tempPath, Buffer.from(modelBytes));
+  await rename(tempPath, finalPath);
+
+  const entry: GeneratedAssetManifestEntry = {
+    id: params.id,
+    prompt: params.prompt,
+    kind: params.kind,
+    provider: "instantmesh-gradio",
+    rawModelUrl: params.rawModelUrl,
+    modelUrl: `/generated-assets/${encodeURIComponent(filename)}`,
+    storedModelPath: finalPath,
+    createdAt,
+    sampleSteps: params.sampleSteps,
+    seed: params.seed,
+  };
+  await appendManifest(entry);
+  return entry;
 }
 
 function cleanUpstreamError(status: number, body: string): string {
@@ -271,11 +363,35 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   }
 
   const rawModelUrl = resolveGradioFileUrl(baseUrl, candidate);
+  let stored: GeneratedAssetManifestEntry;
+  try {
+    stored = await persistGeneratedModel({
+      id: payload.id || `instantmesh-${Date.now()}`,
+      prompt,
+      kind,
+      rawModelUrl,
+      sampleSteps,
+      seed,
+    });
+  } catch (error) {
+    return Response.json(
+      {
+        error: `InstantMesh returned a GLB, but Tellus could not persist it: ${
+          error instanceof Error ? error.message : "unknown storage error"
+        }`,
+        rawModelUrl,
+      },
+      { status: 502 },
+    );
+  }
   const result: Generate3DResponse = {
-    jobId: payload.id || `instantmesh-${Date.now()}`,
-    modelUrl: proxiedModelUrl(rawModelUrl),
+    jobId: stored.id,
+    modelUrl: stored.modelUrl,
     provider: "instantmesh-gradio",
     rawModelUrl,
+    storedModelUrl: stored.modelUrl,
+    storedModelPath: stored.storedModelPath,
+    manifestUrl: "/generated-assets/manifest.json",
   };
   return Response.json(result);
 }

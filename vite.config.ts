@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import chatHandler from "./api/chat";
 import generate3DHandler from "./api/generate-3d";
+import generatedAssetsHandler from "./api/generated-assets";
 import gradioFileHandler from "./api/gradio-file";
 
 function normalizeHyadesBaseUrl(baseUrl: string) {
@@ -47,6 +48,7 @@ export default defineConfig(({ mode }) => {
     "HYADES_API_KEY",
     "INSTANTMESH_GRADIO_BASE_URL",
     "INSTANTMESH_SAMPLE_STEPS",
+    "TELLUS_GENERATED_ASSET_DIR",
   ]) {
     if (env[key]) process.env[key] = env[key];
   }
@@ -131,6 +133,20 @@ export default defineConfig(({ mode }) => {
               headers: request.headers as HeadersInit,
             });
             await sendWebResponse(response, await gradioFileHandler(webRequest));
+          });
+          server.middlewares.use(async (request, response, next) => {
+            if (!request.url?.startsWith("/generated-assets/")) {
+              next();
+              return;
+            }
+            const webRequest = new Request(`http://localhost${request.url}`, {
+              method: request.method,
+              headers: request.headers as HeadersInit,
+            });
+            await sendWebResponse(
+              response,
+              await generatedAssetsHandler(webRequest),
+            );
           });
         },
       },

@@ -161,6 +161,10 @@ interface DirectGenerationResponse {
   jobId: string;
   modelUrl: string;
   provider: string;
+  rawModelUrl?: string;
+  storedModelUrl?: string;
+  storedModelPath?: string;
+  manifestUrl?: string;
 }
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
@@ -1760,7 +1764,7 @@ function createTellusWorld(
             agentId: "world",
             agentName: "InstantMesh",
             tool: "generate",
-            text: `InstantMesh returned a GLB for ${thing.kind}; loading it into Tellus.`,
+            text: `InstantMesh saved ${thing.kind} GLB to ${result.storedModelUrl ?? result.modelUrl}; loading it into Tellus.`,
           });
           const model = await loadGeneratedModel(result.modelUrl, thing);
           if (destroyed || paused) {

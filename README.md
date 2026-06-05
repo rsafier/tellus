@@ -59,6 +59,7 @@ For direct InstantMesh:
 ```text
 INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
 INSTANTMESH_SAMPLE_STEPS=30
+TELLUS_GENERATED_ASSET_DIR=/path/to/Tank 3D/Tellus/generated-assets
 ```
 
 For deployed builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL that the
@@ -68,7 +69,11 @@ URL.
 
 InstantMesh is image-to-3D, while Tellus agents speak in text prompts. The
 adapter creates a simple concept image from the prompt, sends it to InstantMesh,
-and returns a proxied GLB URL that the WebGPU scene can load.
+persists the returned GLB, and returns a stable `/generated-assets/...` URL that
+the WebGPU scene can load. Generated files and `manifest.json` are written to
+`TELLUS_GENERATED_ASSET_DIR`, or `/root/tellus-generated-assets` when that env
+var is unset. Point `TELLUS_GENERATED_ASSET_DIR` at the real Tank 3D or Z-drive
+folder on the host that runs Tellus.
 
 For Asset Forge / Pixel3D, configure the browser-visible API base URL:
 
