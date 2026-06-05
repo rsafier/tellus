@@ -133,6 +133,7 @@ interface TellusWorldApi {
   moveGeneratedToWater(id: string): void;
   boardGenerated(id: string): void;
   disembark(): void;
+  sculptTerrain(mode: "raise" | "lower" | "flatten"): void;
   talkToAgent(agentId: AgentId, message: string): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
@@ -229,6 +230,12 @@ const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
 const AUTONOMOUS_REFLECTION_OFFSET_MS = AUTONOMOUS_ASSET_INTERVAL_MS / 2;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
+const TERRAIN_VERTEX_COUNT = TERRAIN_SEGMENTS + 1;
+const TERRAIN_SCULPT_RADIUS = 6.2;
+const TERRAIN_SCULPT_STEP = 0.72;
+const terrainSculptOffsets = new Float32Array(
+  TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
+);
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 const runtimeConfig: TellusRuntimeConfig = {
   assetForgeApiBase:
@@ -327,6 +334,39 @@ function clamp(value: number, min: number, max: number): number {
 function rand(seed: number): number {
   const value = Math.sin(seed * 12.9898) * 43758.5453;
   return value - Math.floor(value);
+}
+
+function terrainGridIndex(xIndex: number, zIndex: number): number {
+  return zIndex * TERRAIN_VERTEX_COUNT + xIndex;
+}
+
+function terrainSculptOffsetAt(x: number, z: number): number {
+  const gx = clamp(
+    ((x / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
+    0,
+    TERRAIN_SEGMENTS,
+  );
+  const gz = clamp(
+    ((z / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
+    0,
+    TERRAIN_SEGMENTS,
+  );
+  const x0 = Math.floor(gx);
+  const z0 = Math.floor(gz);
+  const x1 = Math.min(TERRAIN_SEGMENTS, x0 + 1);
+  const z1 = Math.min(TERRAIN_SEGMENTS, z0 + 1);
+  const tx = gx - x0;
+  const tz = gz - z0;
+  const a = terrainSculptOffsets[terrainGridIndex(x0, z0)];
+  const b = terrainSculptOffsets[terrainGridIndex(x1, z0)];
+  const c = terrainSculptOffsets[terrainGridIndex(x0, z1)];
+  const d = terrainSculptOffsets[terrainGridIndex(x1, z1)];
+  return (
+    a * (1 - tx) * (1 - tz) +
+    b * tx * (1 - tz) +
+    c * (1 - tx) * tz +
+    d * tx * tz
+  );
 }
 
 function distance2D(a: Vec3, b: Vec3): number {
@@ -585,7 +625,7 @@ function movedVehiclePosition(
   return groundedPosition(x, z, fallback);
 }
 
-function terrainHeight(x: number, z: number): number {
+function baseTerrainHeight(x: number, z: number): number {
   const r = Math.hypot(x, z);
   const mountain = Math.max(0, 1 - r / 20);
   const mound = Math.pow(mountain, 2.2) * 21;
@@ -598,6 +638,10 @@ function terrainHeight(x: number, z: number): number {
   const rimDrop = Math.max(0, (r - 30) / 12) * 5.8;
   const pond = Math.exp(-((x - 18) ** 2 + (z + 12) ** 2) / 65) * 2.5;
   return mound + shoulder + southernRise + ridge - rimDrop - pond - 0.65;
+}
+
+function terrainHeight(x: number, z: number): number {
+  return baseTerrainHeight(x, z) + terrainSculptOffsetAt(x, z);
 }
 
 function terrainKind(x: number, z: number, y: number): TerrainKind {
@@ -2006,6 +2050,84 @@ function createTellusWorld(
     return log;
   };
 
+  const updatePondSurfacePosition = () => {
+    const pondSurface = pondWater.getObjectByName("tellus-pond-surface");
+    if (!pondSurface) return;
+    pondSurface.position.y = terrainHeight(POND_CENTER.x, POND_CENTER.z) + 0.55;
+    pondSurface.rotation.z = 0;
+  };
+
+  const refreshTerrainGeometry = () => {
+    const positions = terrain.geometry.getAttribute(
+      "position",
+    ) as THREE.BufferAttribute;
+    const colors = terrain.geometry.getAttribute("color") as THREE.BufferAttribute;
+    for (let zIndex = 0; zIndex <= TERRAIN_SEGMENTS; zIndex++) {
+      const vz = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+      for (let xIndex = 0; xIndex <= TERRAIN_SEGMENTS; xIndex++) {
+        const vx = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+        const radius = Math.hypot(vx, vz);
+        const inside = radius <= WORLD_RADIUS;
+        const edgeScale = inside ? 1 : WORLD_RADIUS / radius;
+        const px = vx * edgeScale;
+        const pz = vz * edgeScale;
+        const py = inside ? terrainHeight(px, pz) : -4.5;
+        const index = terrainGridIndex(xIndex, zIndex);
+        positions.setXYZ(index, px, py, pz);
+        const color = terrainColors[inside ? terrainKind(px, pz, py) : "rock"].clone();
+        const noise = 0.9 + rand(xIndex * 1009 + zIndex * 9176) * 0.18;
+        color.multiplyScalar(noise);
+        colors.setXYZ(index, color.r, color.g, color.b);
+      }
+    }
+    positions.needsUpdate = true;
+    colors.needsUpdate = true;
+    terrain.geometry.computeVertexNormals();
+  };
+
+  const sculptTerrain = (mode: "raise" | "lower" | "flatten") => {
+    const center = visitorPosition;
+    const targetHeight = terrainHeight(center.x, center.z);
+    for (let zIndex = 0; zIndex <= TERRAIN_SEGMENTS; zIndex++) {
+      const z = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+      for (let xIndex = 0; xIndex <= TERRAIN_SEGMENTS; xIndex++) {
+        const x = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+        if (Math.hypot(x, z) > WORLD_RADIUS) continue;
+        const distance = Math.hypot(x - center.x, z - center.z);
+        if (distance > TERRAIN_SCULPT_RADIUS) continue;
+        const falloff =
+          (1 + Math.cos((distance / TERRAIN_SCULPT_RADIUS) * Math.PI)) * 0.5;
+        const index = terrainGridIndex(xIndex, zIndex);
+        if (mode === "flatten") {
+          const currentHeight = baseTerrainHeight(x, z) + terrainSculptOffsets[index];
+          terrainSculptOffsets[index] +=
+            (targetHeight - currentHeight) * falloff * 0.62;
+        } else {
+          const direction = mode === "raise" ? 1 : -1;
+          terrainSculptOffsets[index] +=
+            direction * TERRAIN_SCULPT_STEP * falloff;
+        }
+        terrainSculptOffsets[index] = clamp(terrainSculptOffsets[index], -9, 9);
+      }
+    }
+    refreshTerrainGeometry();
+    updatePondSurfacePosition();
+    visitorPosition = groundedPosition(visitorPosition.x, visitorPosition.z, visitorPosition);
+    for (const thing of generated) {
+      if (!isFreeMovingVehicle(thing)) {
+        thing.position = groundedPosition(thing.position.x, thing.position.z, thing.position);
+        updateThingMeshPosition(thing);
+      }
+    }
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "interact",
+      text: `${mode} terrain near the visitor`,
+    });
+    publish();
+  };
+
   const abortPendingGeneration = () => {
     for (const controller of pendingGenerationControllers.values()) {
       controller.abort();
@@ -2647,15 +2769,6 @@ function createTellusWorld(
     );
     visitor.rotation.y = yaw;
 
-    const pondSurface = pondWater.getObjectByName("tellus-pond-surface");
-    if (pondSurface) {
-      pondSurface.position.y =
-        terrainHeight(POND_CENTER.x, POND_CENTER.z) +
-        0.55 +
-        Math.sin(now * 0.0018) * 0.045;
-      pondSurface.rotation.z = Math.sin(now * 0.0004) * 0.08;
-    }
-
     const ripples = pondWater.getObjectByName("tellus-pond-ripples");
     if (ripples) {
       ripples.children.forEach((child, index) => {
@@ -2929,6 +3042,7 @@ function createTellusWorld(
     moveGeneratedToWater,
     boardGenerated,
     disembark,
+    sculptTerrain,
     talkToAgent,
     setPaused,
     submitVisitorPrompt,
@@ -3115,6 +3229,36 @@ function App(): React.ReactElement {
           <div className="tool-list">
             <code>generate(request)</code>
             <code>interact(target, intent)</code>
+          </div>
+        </section>
+
+        <section className="tool-card">
+          <div className="tool-title">
+            <Mountain size={16} />
+            <span>Terrain</span>
+          </div>
+          <div className="terrain-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("raise")}
+            >
+              <span>Raise</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("lower")}
+            >
+              <span>Lower</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("flatten")}
+            >
+              <span>Flatten</span>
+            </button>
           </div>
         </section>
 
