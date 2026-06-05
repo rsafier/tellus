@@ -1165,10 +1165,46 @@ async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | nul
   return fitModelToHeight(avatar, 2.45);
 }
 
+function assetTargetHeight(thing: GeneratedThing): number {
+  const lower = thing.prompt.toLowerCase();
+  const variation = clamp(thing.scale, 0.75, 1.55);
+  const mode = vehicleMode(thing);
+  if (mode === "air") return clamp(4.8 * variation, 4.2, 6.8);
+  if (mode === "water") return clamp(1.45 * variation, 1.2, 2.4);
+  if (mode === "ground") return clamp(2.05 * variation, 1.7, 2.8);
+  if (thing.kind === "tree") return clamp(4.2 * variation, 3.2, 6.2);
+  if (
+    lower.includes("hut") ||
+    lower.includes("house") ||
+    lower.includes("cottage") ||
+    lower.includes("cabin") ||
+    lower.includes("workshop") ||
+    lower.includes("building")
+  ) {
+    return clamp(3.6 * variation, 3.0, 5.4);
+  }
+  if (lower.includes("tower")) return clamp(5.2 * variation, 4.2, 7.4);
+  if (
+    lower.includes("bridge") ||
+    lower.includes("dock") ||
+    lower.includes("pier") ||
+    lower.includes("path") ||
+    lower.includes("road") ||
+    thing.kind === "path"
+  ) {
+    return clamp(0.42 * variation, 0.24, 0.72);
+  }
+  if (thing.kind === "animal") return clamp(1.55 * variation, 1.0, 2.45);
+  if (thing.kind === "flower") return clamp(0.58 * variation, 0.38, 0.9);
+  if (thing.kind === "stone") return clamp(1.0 * variation, 0.65, 1.8);
+  if (thing.kind === "shrine") return clamp(2.2 * variation, 1.5, 3.4);
+  return clamp(1.35 * variation, 0.8, 2.35);
+}
+
 async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
   const model = await loadGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
-  const fitted = fitModelToHeight(model, clamp(thing.scale * 2.25, 1.2, 4.2));
+  const fitted = fitModelToHeight(model, assetTargetHeight(thing));
   fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind };
   if (isFreeMovingVehicle(thing)) {
     fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
@@ -1623,6 +1659,18 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
     group.position.set(thing.position.x, thing.position.y, thing.position.z);
   } else {
     placeObjectAboveGround(group, thing.position, 0.025);
+  }
+  const targetHeight = assetTargetHeight(thing);
+  const bounds = new THREE.Box3().setFromObject(group);
+  const size = bounds.getSize(new THREE.Vector3());
+  if (size.y > 0) {
+    const scale = clamp(targetHeight / size.y, 0.45, 3.6);
+    group.scale.multiplyScalar(scale);
+    if (isFreeMovingVehicle(thing) || Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS) {
+      group.position.set(thing.position.x, thing.position.y, thing.position.z);
+    } else {
+      placeObjectAboveGround(group, thing.position, 0.025);
+    }
   }
   return group;
 }
