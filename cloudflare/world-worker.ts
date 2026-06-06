@@ -22,6 +22,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Max-Age": "86400",
 };
+const assetLibraryBaseUrl = "https://3d.flobots.xyz";
 
 const defaultTerrainState = (): TellusTerrainState => ({
   version: 2,
@@ -63,11 +64,53 @@ function worldIdFromPath(pathname: string): { worldId: string; route: string } |
   };
 }
 
+async function assetLibraryResponse(request: Request, pathname: string): Promise<Response> {
+  const url = new URL(request.url);
+  if (request.method !== "GET") {
+    return emptyCorsResponse({ status: 405 });
+  }
+
+  if (pathname === "/api/assets/models") {
+    const upstream = new URL("/api/models", assetLibraryBaseUrl);
+    for (const key of ["page", "per_page", "search", "user_only"]) {
+      const value = url.searchParams.get(key);
+      if (value !== null) upstream.searchParams.set(key, value);
+    }
+    const response = await fetch(upstream);
+    return new Response(response.body, {
+      status: response.status,
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Type": response.headers.get("Content-Type") ?? "application/json",
+        ...corsHeaders,
+      },
+    });
+  }
+
+  const downloadMatch = /^\/api\/assets\/download\/([^/]+)$/.exec(pathname);
+  if (downloadMatch) {
+    const response = await fetch(`${assetLibraryBaseUrl}/download/${encodeURIComponent(downloadMatch[1])}`);
+    return new Response(response.body, {
+      status: response.status,
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Type": response.headers.get("Content-Type") ?? "model/gltf-binary",
+        ...corsHeaders,
+      },
+    });
+  }
+
+  return emptyCorsResponse({ status: 404 });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
       return emptyCorsResponse({ status: 204 });
+    }
+    if (url.pathname.startsWith("/api/assets/")) {
+      return assetLibraryResponse(request, url.pathname);
     }
     const target = worldIdFromPath(url.pathname);
     if (!target) {

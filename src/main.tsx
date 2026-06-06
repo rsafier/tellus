@@ -7,7 +7,9 @@ import {
   ArrowUp,
   Bot,
   Box,
+  CircleHelp,
   Leaf,
+  Menu,
   MessageCircle,
   Mic,
   Minus,
@@ -21,7 +23,6 @@ import {
   Ship,
   Sparkles,
   Trash2,
-  Wand2,
 } from "lucide-react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -99,6 +100,7 @@ interface GeneratedThing {
   kind: GeneratedKind;
   prompt: string;
   creatorId: AgentId | "visitor";
+  ownerUserId?: string;
   position: Vec3;
   rotationY: number;
   scale: number;
@@ -106,6 +108,19 @@ interface GeneratedThing {
   modelUrl?: string;
   pipelineId?: string;
   generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
+}
+
+interface AssetLibraryModel {
+  id: string;
+  name: string;
+  description?: string;
+  file_format?: string;
+  file_size?: number;
+  download_count?: number;
+}
+
+interface AssetLibraryResponse {
+  models?: AssetLibraryModel[];
 }
 
 interface DistantIslandSpec {
@@ -139,6 +154,7 @@ interface GenerateRequest {
   location: Vec3 | "near-agent" | "near-mountain" | "near-pond";
   scale?: number;
   creatorId: AgentId | "visitor";
+  ownerUserId?: string;
 }
 
 interface InteractRequest {
@@ -153,18 +169,24 @@ interface TellusSnapshot {
   logs: TellusLog[];
   paused: boolean;
   generationProvider: GenerationProvider;
+  userId: string;
+  visitorPosition?: Vec3;
+  remoteVisitors: WorldPresence[];
   selectedThingId?: string;
   sailingThingId?: string;
 }
 
 interface TellusWorldApi {
   generate(request: GenerateRequest): GeneratedThing;
+  addLibraryAsset(model: AssetLibraryModel): GeneratedThing;
   interact(request: InteractRequest): TellusLog;
   selectGenerated(id?: string): void;
   moveGenerated(id: string, dx: number, dz: number): void;
   rotateGenerated(id: string, radians: number): void;
   scaleGenerated(id: string, multiplier: number): void;
   resetGeneratedScale(id: string): void;
+  liftGenerated(id: string, amount: number): void;
+  groundGenerated(id: string): void;
   deleteGenerated(id: string): void;
   moveGeneratedToWater(id: string): void;
   boardGenerated(id: string): void;
@@ -309,6 +331,7 @@ let terrainStateDirty = false;
 let terrainStateLoaded = false;
 let terrainStateRevision = 0;
 let pageVisitorId: string | undefined;
+let stableUserId: string | undefined;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 let tellusWorldBackendAvailable = false;
 const runtimeConfig: TellusRuntimeConfig = {
@@ -714,6 +737,17 @@ function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
   return fallback ? { ...fallback } : normalizedDiscPosition(x, z);
 }
 
+function groundHeightAt(x: number, z: number): number | null {
+  if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) return terrainHeight(x, z);
+  const distantIsland = nearestDistantIsland(x, z, DISTANT_WALK_LOCAL_RADIUS);
+  return distantIsland ? distantIslandHeight(distantIsland, x, z) : null;
+}
+
+function isIntentionallyElevated(thing: GeneratedThing): boolean {
+  const groundY = groundHeightAt(thing.position.x, thing.position.z);
+  return groundY !== null && thing.position.y > groundY + 0.35;
+}
+
 function normalizedDiscPosition(x: number, z: number): Vec3 {
   const radius = Math.hypot(x, z);
   if (radius <= CENTRAL_WALK_RADIUS) {
@@ -1079,6 +1113,25 @@ function tellusWorldHttpUrl(route: "state" | "action"): string {
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}`;
 }
 
+function tellusAssetLibraryUrl(path: string): string {
+  return `${runtimeConfig.worldApiBase}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+async function loadAssetLibraryModels(): Promise<AssetLibraryModel[]> {
+  if (!runtimeConfig.worldApiBase) return [];
+  const response = await fetch(tellusAssetLibraryUrl("/api/assets/models?per_page=24"), {
+    cache: "no-store",
+  });
+  if (!response.ok) return [];
+  const parsed = await readJsonResponse<AssetLibraryResponse>(response);
+  return Array.isArray(parsed.models)
+    ? parsed.models.filter(
+        (model): model is AssetLibraryModel =>
+          typeof model.id === "string" && typeof model.name === "string",
+      )
+    : [];
+}
+
 function tellusWorldWebSocketUrl(visitorId: string): string {
   const httpUrl = new URL(tellusWorldHttpUrl("state"), window.location.href);
   httpUrl.pathname = httpUrl.pathname.replace(/\/state\/?$/, "/live");
@@ -1090,6 +1143,30 @@ function tellusWorldWebSocketUrl(visitorId: string): string {
 function tellusVisitorId(): string {
   pageVisitorId ??= crypto.randomUUID();
   return pageVisitorId;
+}
+
+function tellusUserId(): string {
+  if (stableUserId) return stableUserId;
+  const storageKey = "tellus.userId";
+  const existing = window.localStorage.getItem(storageKey);
+  if (existing) {
+    stableUserId = existing;
+    return stableUserId;
+  }
+  stableUserId = crypto.randomUUID();
+  window.localStorage.setItem(storageKey, stableUserId);
+  return stableUserId;
+}
+
+function speakTellusText(text: string): void {
+  if (!("speechSynthesis" in window)) return;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(trimmed);
+  utterance.rate = 0.96;
+  utterance.pitch = 1.04;
+  window.speechSynthesis.speak(utterance);
 }
 
 function applyTellusTerrainState(parsed: unknown): boolean {
@@ -2474,7 +2551,11 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
     group.add(seed);
   }
 
-  if (isFreeMovingVehicle(thing) || Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS) {
+  if (
+    isFreeMovingVehicle(thing) ||
+    isIntentionallyElevated(thing) ||
+    Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
+  ) {
     group.position.set(thing.position.x, thing.position.y, thing.position.z);
   } else {
     placeObjectAboveGround(group, thing.position, 0.025);
@@ -2485,7 +2566,11 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
   if (size.y > 0) {
     const scale = clamp(targetHeight / size.y, 0.45, 3.6);
     group.scale.multiplyScalar(scale);
-    if (isFreeMovingVehicle(thing) || Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS) {
+    if (
+      isFreeMovingVehicle(thing) ||
+      isIntentionallyElevated(thing) ||
+      Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
+    ) {
       group.position.set(thing.position.x, thing.position.y, thing.position.z);
     } else {
       placeObjectAboveGround(group, thing.position, 0.025);
@@ -2963,7 +3048,9 @@ function createTellusWorld(
   let worldSocketReconnectTimer: number | undefined;
   let worldSocketClosedByDestroy = false;
   const visitorId = tellusVisitorId();
+  const userId = tellusUserId();
   const remoteVisitorMeshes = new Map<string, THREE.Group>();
+  const remoteVisitors = new Map<string, WorldPresence>();
   let lastPresenceSentAt = 0;
 
   const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
@@ -3041,6 +3128,12 @@ function createTellusWorld(
     logs: logs.slice(-80),
     paused,
     generationProvider: runtimeConfig.generationProvider,
+    userId,
+    visitorPosition: { ...visitorPosition },
+    remoteVisitors: Array.from(remoteVisitors.values()).map((presence) => ({
+      ...presence,
+      position: presence.position ? { ...presence.position } : undefined,
+    })),
     selectedThingId,
     sailingThingId,
   });
@@ -3118,7 +3211,7 @@ function createTellusWorld(
     updatePondSurfacePosition();
     visitorPosition = groundedPosition(visitorPosition.x, visitorPosition.z, visitorPosition);
     for (const thing of generated) {
-      if (!isFreeMovingVehicle(thing)) {
+      if (!isFreeMovingVehicle(thing) && !isIntentionallyElevated(thing)) {
         thing.position = groundedPosition(thing.position.x, thing.position.z, thing.position);
         updateThingMeshPosition(thing);
       }
@@ -3131,6 +3224,10 @@ function createTellusWorld(
     for (const remote of presence) {
       if (remote.visitorId === visitorId || !remote.position) continue;
       activeRemoteIds.add(remote.visitorId);
+      remoteVisitors.set(remote.visitorId, {
+        ...remote,
+        position: { ...remote.position },
+      });
       let mesh = remoteVisitorMeshes.get(remote.visitorId);
       if (!mesh) {
         mesh = createRemoteVisitorMesh();
@@ -3149,7 +3246,9 @@ function createTellusWorld(
       if (activeRemoteIds.has(remoteId)) continue;
       scene.remove(mesh);
       remoteVisitorMeshes.delete(remoteId);
+      remoteVisitors.delete(remoteId);
     }
+    publish();
   };
 
   const sendPresenceUpdate = (force = false) => {
@@ -3306,7 +3405,7 @@ function createTellusWorld(
 
     visitorPosition = groundedPosition(visitorPosition.x, visitorPosition.z, visitorPosition);
     for (const thing of generated) {
-      if (!isFreeMovingVehicle(thing)) {
+      if (!isFreeMovingVehicle(thing) && !isIntentionallyElevated(thing)) {
         thing.position = groundedPosition(thing.position.x, thing.position.z, thing.position);
         updateThingMeshPosition(thing);
       }
@@ -3365,6 +3464,7 @@ function createTellusWorld(
     if (
       mesh.userData.generatingSwirl ||
       isFreeMovingVehicle(thing) ||
+      isIntentionallyElevated(thing) ||
       Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
     ) {
       mesh.position.set(thing.position.x, thing.position.y, thing.position.z);
@@ -3381,6 +3481,7 @@ function createTellusWorld(
     kind: thing.kind,
     prompt: thing.prompt,
     creatorId: thing.creatorId,
+    ownerUserId: thing.ownerUserId,
     position: thing.position,
     rotationY: thing.rotationY,
     scale: thing.scale,
@@ -3446,6 +3547,7 @@ function createTellusWorld(
       existing.kind = remote.kind as GeneratedKind;
       existing.prompt = remote.prompt;
       existing.creatorId = remote.creatorId as AgentId | "visitor";
+      existing.ownerUserId = remote.ownerUserId;
       existing.position = { ...remote.position };
       existing.rotationY = remote.rotationY;
       existing.scale = remote.scale;
@@ -3462,6 +3564,7 @@ function createTellusWorld(
       kind: remote.kind as GeneratedKind,
       prompt: remote.prompt,
       creatorId: remote.creatorId as AgentId | "visitor",
+      ownerUserId: remote.ownerUserId,
       position: { ...remote.position },
       rotationY: remote.rotationY,
       scale: remote.scale,
@@ -3569,6 +3672,35 @@ function createTellusWorld(
     const thing = thingById(id);
     if (!thing) return;
     setGeneratedScale(thing, 1);
+  };
+
+  const liftGenerated = (id: string, amount: number) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    const groundY = groundHeightAt(thing.position.x, thing.position.z);
+    const baseY = groundY ?? thing.position.y;
+    thing.position = {
+      ...thing.position,
+      y: clamp(Math.max(thing.position.y, baseY) + amount, baseY, baseY + 30),
+    };
+    if (sailingThingId === id) {
+      visitorPosition = { ...thing.position };
+    }
+    updateThingMeshPosition(thing);
+    publishGeneratedThing(thing);
+    publish();
+  };
+
+  const groundGenerated = (id: string) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    thing.position = groundedPosition(thing.position.x, thing.position.z, thing.position);
+    if (sailingThingId === id) {
+      visitorPosition = { ...thing.position };
+    }
+    updateThingMeshPosition(thing);
+    publishGeneratedThing(thing);
+    publish();
   };
 
   const deleteGenerated = (id: string) => {
@@ -3750,6 +3882,8 @@ function createTellusWorld(
       kind,
       prompt: request.prompt,
       creatorId: request.creatorId,
+      ownerUserId:
+        request.ownerUserId ?? (request.creatorId === "visitor" ? userId : undefined),
       position,
       rotationY: 0,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
@@ -3994,6 +4128,72 @@ function createTellusWorld(
     return thing;
   };
 
+  const addLibraryAsset = (model: AssetLibraryModel): GeneratedThing => {
+    const prompt = model.description?.trim() || model.name;
+    const kind = inferGeneratedKind(prompt, "visitor");
+    const modelUrl = tellusAssetLibraryUrl(`/api/assets/download/${encodeURIComponent(model.id)}`);
+    const position = chooseLocation({
+      prompt,
+      creatorId: "visitor",
+      location: {
+        x: visitorPosition.x + Math.sin(yaw) * 4,
+        y: 0,
+        z: visitorPosition.z + Math.cos(yaw) * 4,
+      },
+    });
+    const thing: GeneratedThing = {
+      id: makeId(kind),
+      kind,
+      prompt: model.name,
+      creatorId: "visitor",
+      ownerUserId: userId,
+      position,
+      rotationY: 0,
+      scale: 1,
+      color: kindColor(kind, prompt),
+      modelUrl,
+      generationStatus: "ready",
+    };
+    generated.push(thing);
+    const mesh = createGenerationSwirl(thing);
+    generatedMeshes.set(thing.id, mesh);
+    scene.add(mesh);
+    selectedThingId = thing.id;
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "generate",
+      text: `added library asset: ${model.name}`,
+    });
+    publishGeneratedThing(thing);
+    publish();
+    void loadGeneratedModel(modelUrl, thing)
+      .then((modelObject) => {
+        if (destroyed) return;
+        const oldMesh = generatedMeshes.get(thing.id);
+        if (oldMesh) {
+          scene.remove(oldMesh);
+          disposeObject(oldMesh);
+        }
+        generatedMeshes.set(thing.id, modelObject);
+        scene.add(modelObject);
+        publish();
+      })
+      .catch((error) => {
+        thing.generationStatus = "failed";
+        publishGeneratedThing(thing);
+        addLog({
+          agentId: "world",
+          agentName: "Tellus",
+          tool: "generate",
+          text: `Library asset failed to load: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        });
+      });
+    return thing;
+  };
+
   const interact = (request: InteractRequest): TellusLog => {
     const actor = agents.find((agent) => agent.id === request.actorId);
     const target = generated.find((thing) => thing.id === request.targetId);
@@ -4035,6 +4235,7 @@ function createTellusWorld(
           tool: "interact",
           text: `${agent.name} says: ${reply}`,
         });
+        speakTellusText(reply);
       })
       .catch((error) => {
         if (destroyed || paused) return;
@@ -4077,6 +4278,7 @@ function createTellusWorld(
         z: visitorPosition.z + Math.cos(yaw) * 4,
       },
       creatorId: "visitor",
+      ownerUserId: userId,
     });
   };
 
@@ -4839,12 +5041,15 @@ function createTellusWorld(
 
   return {
     generate,
+    addLibraryAsset,
     interact,
     selectGenerated,
     moveGenerated,
     rotateGenerated,
     scaleGenerated,
     resetGeneratedScale,
+    liftGenerated,
+    groundGenerated,
     deleteGenerated,
     moveGeneratedToWater,
     boardGenerated,
@@ -4880,6 +5085,7 @@ function createTellusWorld(
         scene.remove(mesh);
       }
       remoteVisitorMeshes.clear();
+      remoteVisitors.clear();
       resizeObserver?.disconnect();
       renderer?.dispose();
       if (renderer?.domElement.parentElement === container) {
@@ -4939,11 +5145,25 @@ function App(): React.ReactElement {
     logs: [],
     paused: false,
     generationProvider: runtimeConfig.generationProvider,
+    userId: tellusUserId(),
+    remoteVisitors: [],
   });
   const [prompt, setPrompt] = useState("");
+  const [chatPrompt, setChatPrompt] = useState("");
+  const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
+  const [meshToolsOpen, setMeshToolsOpen] = useState(false);
+  const [worldLogOpen, setWorldLogOpen] = useState(false);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const { listening, supported, start } = useSpeechInput((text) =>
     setPrompt(text),
+  );
+  const {
+    listening: chatListening,
+    supported: chatSupported,
+    start: startChatVoice,
+  } = useSpeechInput((text) =>
+    setChatPrompt((current) => `${current ? `${current} ` : ""}${text}`),
   );
 
   useEffect(() => {
@@ -4952,7 +5172,13 @@ function App(): React.ReactElement {
     let cancelled = false;
     let world: TellusWorldApi | null = null;
     void loadRuntimeConfig()
-      .then(() => loadTellusState())
+      .then(async () => {
+        const [models] = await Promise.all([
+          loadAssetLibraryModels().catch(() => []),
+          loadTellusState(),
+        ]);
+        if (!cancelled) setAssetLibrary(models);
+      })
       .catch((error) => {
         console.warn("Tellus startup state failed to load", error);
       })
@@ -4982,6 +5208,19 @@ function App(): React.ReactElement {
   );
   const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
   const selectedThingIsMount = selectedThing ? isMountThing(selectedThing) : false;
+  const mapRadius = OCEAN_RADIUS;
+  const mapPointStyle = (position: Vec3): React.CSSProperties => ({
+    left: `${clamp(((position.x / (mapRadius * 2)) + 0.5) * 100, 0, 100)}%`,
+    top: `${clamp(((position.z / (mapRadius * 2)) + 0.5) * 100, 0, 100)}%`,
+  });
+  const pendingGenerated = snapshot.generated.filter(
+    (thing) =>
+      thing.generationStatus === "queued" ||
+      thing.generationStatus === "generating",
+  );
+  const inventory = snapshot.generated.filter(
+    (thing) => thing.ownerUserId === snapshot.userId,
+  );
 
   const submitPrompt = () => {
     worldRef.current?.submitVisitorPrompt(prompt);
@@ -4989,91 +5228,589 @@ function App(): React.ReactElement {
   };
 
   const askSelectedAgent = () => {
-    if (!prompt.trim() || !selected) return;
-    worldRef.current?.talkToAgent(selected.id, prompt);
-    setPrompt("");
+    if (!chatPrompt.trim() || !selected) return;
+    worldRef.current?.talkToAgent(selected.id, chatPrompt);
+    setChatPrompt("");
   };
 
+  useEffect(() => {
+    const textarea = promptRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
+  }, [prompt]);
+
   const recentLogs = snapshot.logs.slice(-10).reverse();
+  const repeatTimerRef = useRef<number | undefined>(undefined);
+  const stopRepeating = () => {
+    if (repeatTimerRef.current === undefined) return;
+    window.clearInterval(repeatTimerRef.current);
+    repeatTimerRef.current = undefined;
+  };
+  const pressRepeat = (action: () => void) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      stopRepeating();
+      action();
+      repeatTimerRef.current = window.setInterval(action, 140);
+    },
+    onPointerUp: stopRepeating,
+    onPointerLeave: stopRepeating,
+    onPointerCancel: stopRepeating,
+  });
+
+  useEffect(() => stopRepeating, []);
 
   return (
-    <main className="tellus-shell">
+    <main
+      className={[
+        "tellus-shell",
+        meshToolsOpen ? "" : "mesh-tools-hidden",
+        worldLogOpen ? "" : "world-log-hidden",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <section className="world-panel" aria-label="Tellus world">
         <div ref={containerRef} className="world-canvas" />
-        <div className="brand-mark">
-          <span>Tellus</span>
-          <small>AI terrarium</small>
-        </div>
-        <div className="world-help">
-          <span>WASD / arrows</span>
-          <span>drag to look</span>
-          <span>scroll to zoom</span>
-          {snapshot.sailingThingId && <span>piloting</span>}
-        </div>
-      </section>
-
-      <aside className="control-panel">
-        <header className="panel-header">
-          <div>
-            <p>Living World MVP</p>
-            <h1>Tellus</h1>
+        <div className="world-top-bar">
+          <div className="top-left-cluster">
+            <button
+              type="button"
+              className="icon-button top-menu-button"
+              title={meshToolsOpen ? "Hide tools" : "Show tools"}
+              aria-label={meshToolsOpen ? "Hide tools" : "Show tools"}
+              onClick={() => setMeshToolsOpen((open) => !open)}
+            >
+              <Menu size={18} />
+            </button>
+            <div className="brand-mark">
+              <span>Tellus</span>
+              <small>AI terrarium</small>
+            </div>
+          </div>
+          <div className="stat-row" aria-label="World selectors">
+            <details className="stat-menu">
+              <summary>
+                <Box size={15} />
+                <strong>{snapshot.generated.length}</strong>
+                <span>generated</span>
+              </summary>
+              <div className="stat-menu-list">
+                {snapshot.generated.length > 0 ? (
+                  snapshot.generated.map((thing) => (
+                    <button
+                      key={thing.id}
+                      type="button"
+                      className={
+                        thing.id === selectedThing?.id
+                          ? "stat-menu-item active"
+                          : "stat-menu-item"
+                      }
+                      onClick={() => worldRef.current?.selectGenerated(thing.id)}
+                    >
+                      <Box size={14} />
+                      <span>
+                        <strong>{thing.kind}</strong>
+                        <small>{thing.prompt.slice(0, 34)}</small>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="stat-empty">No generated assets</span>
+                )}
+              </div>
+            </details>
+            <details className="stat-menu">
+              <summary>
+                <Bot size={15} />
+                <strong>{snapshot.agents.length}</strong>
+                <span>agents</span>
+              </summary>
+              <div className="stat-menu-list">
+                {snapshot.agents.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    className={
+                      agent.id === selectedAgent
+                        ? "stat-menu-item active"
+                        : "stat-menu-item"
+                    }
+                    onClick={() => setSelectedAgent(agent.id)}
+                  >
+                    <span
+                      className="agent-dot"
+                      style={{
+                        backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
+                      }}
+                    />
+                    <span>
+                      <strong>{agent.name}</strong>
+                      <small>{agent.epithet}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </details>
+            <details className="stat-menu">
+              <summary>
+                <Mountain size={15} />
+                <strong>1</strong>
+                <span>disc</span>
+              </summary>
+              <div className="stat-menu-list">
+                <button type="button" className="stat-menu-item active">
+                  <Mountain size={14} />
+                  <span>
+                    <strong>Tellus disc</strong>
+                    <small>active terrain</small>
+                  </span>
+                </button>
+              </div>
+            </details>
+            <button
+              type="button"
+              className="icon-button stat-pause-button"
+              title={snapshot.paused ? "Resume agents" : "Pause agents"}
+              onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
+            >
+              {snapshot.paused ? <Play size={18} /> : <Pause size={18} />}
+            </button>
           </div>
           <button
             type="button"
-            className="icon-button"
-            title={snapshot.paused ? "Resume agents" : "Pause agents"}
-            onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
+            className="icon-button top-menu-button top-log-button"
+            title={worldLogOpen ? "Hide world chat" : "Show world chat"}
+            aria-label={worldLogOpen ? "Hide world chat" : "Show world chat"}
+            onClick={() => setWorldLogOpen((open) => !open)}
           >
-            {snapshot.paused ? <Play size={18} /> : <Pause size={18} />}
+            <MessageCircle size={18} />
           </button>
-        </header>
-
-        <div className="stat-grid">
-          <div>
-            <Box size={16} />
-            <strong>{snapshot.generated.length}</strong>
-            <span>generated</span>
-          </div>
-          <div>
-            <Bot size={16} />
-            <strong>{snapshot.agents.length}</strong>
-            <span>agents</span>
-          </div>
-          <div>
-            <Mountain size={16} />
-            <strong>1</strong>
-            <span>disc</span>
-          </div>
         </div>
+        <section className="world-map" aria-label="World map">
+          <div className="world-map-disc" />
+          {snapshot.visitorPosition && (
+            <span
+              className="map-marker player"
+              style={mapPointStyle(snapshot.visitorPosition)}
+              title="You"
+            />
+          )}
+          {snapshot.remoteVisitors.map((visitor) =>
+            visitor.position ? (
+              <span
+                key={visitor.visitorId}
+                className="map-marker remote-player"
+                style={mapPointStyle(visitor.position)}
+                title="Remote player"
+              />
+            ) : null,
+          )}
+          {snapshot.agents.map((agent) => (
+            <span
+              key={agent.id}
+              className="map-marker agent"
+              style={{
+                ...mapPointStyle(agent.position),
+                backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
+              }}
+              title={`${agent.name} - ${agent.epithet}`}
+            />
+          ))}
+          {snapshot.generated.map((thing) => (
+            <span
+              key={thing.id}
+              className={[
+                "map-marker",
+                "asset",
+                thing.id === selectedThing?.id ? "selected" : "",
+                thing.generationStatus === "queued" ||
+                thing.generationStatus === "generating"
+                  ? "pending"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              style={mapPointStyle(thing.position)}
+              title={`${thing.kind}: ${thing.prompt}`}
+            />
+          ))}
+          {pendingGenerated.length > 0 && (
+            <span className="world-map-status">
+              {pendingGenerated.length} building
+            </span>
+          )}
+        </section>
+        <section className="prompt-card world-prompt-card">
+          <label htmlFor="tellus-prompt">Create</label>
+          <textarea
+            id="tellus-prompt"
+            ref={promptRef}
+            value={prompt}
+            rows={1}
+            placeholder="make a crooked apple tree with golden moss..."
+            onChange={(event) => setPrompt(event.target.value)}
+          />
+          <div className="prompt-actions">
+            <button
+              type="button"
+              className="secondary-button prompt-icon-button"
+              title={listening ? "Listening" : "Describe by voice"}
+              aria-label={listening ? "Listening" : "Describe what to create by voice"}
+              disabled={!supported || listening}
+              onClick={start}
+            >
+              <Mic size={16} />
+            </button>
+            <select
+              className="asset-select prompt-provider"
+              title="Generation quality"
+              aria-label="Generation quality"
+              value={snapshot.generationProvider}
+              onChange={(event) =>
+                worldRef.current?.setGenerationProvider(
+                  event.target.value as GenerationProvider,
+                )
+              }
+            >
+              <option value="pixal3d-gradio">High quality</option>
+              <option value="instantmesh-gradio">Fast asset</option>
+              <option value="anigen-gradio">Animated</option>
+            </select>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={submitPrompt}
+            >
+              <Send size={16} />
+              <span>Create</span>
+            </button>
+          </div>
+        </section>
+        <details className="world-help">
+          <summary>
+            <CircleHelp size={16} />
+            <span>Controls</span>
+          </summary>
+          <div className="world-help-list">
+            <span>
+              <strong>Move</strong>
+              <small>WASD / arrows</small>
+            </span>
+            <span>
+              <strong>Look</strong>
+              <small>drag</small>
+            </span>
+            <span>
+              <strong>Zoom</strong>
+              <small>scroll</small>
+            </span>
+            {snapshot.sailingThingId && (
+              <span>
+                <strong>Pilot</strong>
+                <small>active</small>
+              </span>
+            )}
+          </div>
+        </details>
+      </section>
 
-        <section className="tool-card">
-          <div className="tool-title">
-            <Wand2 size={16} />
-            <span>Generation</span>
+      <aside className="tool-panel" aria-label="World editing tools">
+        <div className="panel-strip">
+          <span>Tools</span>
+          <button
+            type="button"
+            className="icon-button"
+            title="Hide mesh tools"
+            aria-label="Hide mesh tools"
+            onClick={() => setMeshToolsOpen(false)}
+          >
+            <ArrowLeft size={17} />
+          </button>
+        </div>
+        <section className="asset-card">
+          <div className="section-heading">
+            <Box size={16} />
+            <span>Mesh Tools</span>
           </div>
           <select
             className="asset-select"
-            value={snapshot.generationProvider}
+            value={selectedThing?.id ?? ""}
+            disabled={snapshot.generated.length === 0}
             onChange={(event) =>
-              worldRef.current?.setGenerationProvider(
-                event.target.value as GenerationProvider,
-              )
+              worldRef.current?.selectGenerated(event.target.value)
             }
           >
-            <option value="pixal3d-gradio">High quality - Pixal3D</option>
-            <option value="instantmesh-gradio">Fast asset - InstantMesh</option>
-            <option value="anigen-gradio">Animated - Anigen</option>
+            {snapshot.generated.length === 0 && (
+              <option value="">No generated meshes</option>
+            )}
+            {snapshot.generated.map((thing) => (
+              <option key={thing.id} value={thing.id}>
+                {thing.kind}: {thing.prompt.slice(0, 42)}
+              </option>
+            ))}
           </select>
+          <div className="asset-meta">
+            {selectedThing ? (
+              <>
+                <span>{selectedThing.generationStatus ?? "local"}</span>
+                <span>
+                  x {selectedThing.position.x.toFixed(1)} y{" "}
+                  {selectedThing.position.y.toFixed(1)} z{" "}
+                  {selectedThing.position.z.toFixed(1)}
+                </span>
+                <span>{selectedThing.scale.toFixed(2)}x</span>
+              </>
+            ) : (
+              <>
+                <span>no mesh selected</span>
+                <span>generate or choose an asset</span>
+              </>
+            )}
+          </div>
+          <div className="asset-orb-control" aria-label="Asset position">
+            <button
+              type="button"
+              className="orb-button orb-up"
+              title="Move forward"
+              aria-label="Move forward"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, 0, -2)}
+            >
+              <ArrowUp size={17} />
+            </button>
+            <button
+              type="button"
+              className="orb-button orb-left"
+              title="Move left"
+              aria-label="Move left"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, -2, 0)}
+            >
+              <ArrowLeft size={17} />
+            </button>
+            <button
+              type="button"
+              className="orb-button orb-center"
+              title="Ground asset"
+              aria-label="Ground asset"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.groundGenerated(selectedThing.id)}
+            >
+              <Mountain size={17} />
+            </button>
+            <button
+              type="button"
+              className="orb-button orb-right"
+              title="Move right"
+              aria-label="Move right"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, 2, 0)}
+            >
+              <ArrowRight size={17} />
+            </button>
+            <button
+              type="button"
+              className="orb-button orb-down"
+              title="Move backward"
+              aria-label="Move backward"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, 0, 2)}
+            >
+              <ArrowDown size={17} />
+            </button>
+          </div>
+          <div className="transform-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              title="Rotate left"
+              aria-label="Rotate left"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 8)}
+            >
+              <RotateCcw size={17} />
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Rotate right"
+              aria-label="Rotate right"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 8)}
+            >
+              <RotateCw size={17} />
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Ground"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.groundGenerated(selectedThing.id)}
+            >
+              <span>Ground</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Lift"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, 3)}
+            >
+              <ArrowUp size={17} />
+              <span>Lift</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Lift higher"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, 8)}
+            >
+              <ArrowUp size={17} />
+              <span>Higher</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Move to water, air, or island edge"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.moveGeneratedToWater(selectedThing.id)}
+            >
+              <span>
+                {selectedThingVehicleMode === "air"
+                  ? "Air"
+                  : selectedThingVehicleMode === "water"
+                    ? "Water"
+                    : "Edge"}
+              </span>
+            </button>
+          </div>
+          <div className="scale-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              title="Scale down"
+              aria-label="Scale down"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.scaleGenerated(selectedThing.id, 0.72)}
+            >
+              <Minus size={17} />
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Reset scale"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.resetGeneratedScale(selectedThing.id)}
+            >
+              <span>1x</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              title="Scale up"
+              aria-label="Scale up"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.scaleGenerated(selectedThing.id, 1.38)}
+            >
+              <Plus size={17} />
+            </button>
+          </div>
+          <button
+            type="button"
+            className="danger-button wide-button"
+            disabled={!selectedThing}
+            onClick={() => selectedThing && worldRef.current?.deleteGenerated(selectedThing.id)}
+          >
+            <Trash2 size={16} />
+            <span>Delete Asset</span>
+          </button>
+          {selectedThing && selectedThingVehicleMode && (
+            <button
+              type="button"
+              className="primary-button wide-button"
+              onClick={() =>
+                snapshot.sailingThingId === selectedThing.id
+                  ? worldRef.current?.disembark()
+                  : worldRef.current?.boardGenerated(selectedThing.id)
+              }
+            >
+              <Ship size={16} />
+              <span>
+                {snapshot.sailingThingId === selectedThing.id
+                  ? "Disembark"
+                  : selectedThingIsMount
+                    ? "Mount and Ride"
+                    : "Board and Pilot"}
+              </span>
+            </button>
+          )}
         </section>
 
-        <section className="tool-card">
+        <section className="tool-card inventory-card">
           <div className="tool-title">
-            <Wand2 size={16} />
-            <span>Asset tools</span>
+            <Box size={16} />
+            <span>Inventory</span>
           </div>
-          <div className="tool-list">
-            <code>generate(request)</code>
-            <code>interact(target, intent)</code>
+          <div className="inventory-meta">
+            <span>{inventory.length} owned assets</span>
+            <code>{snapshot.userId.slice(0, 8)}</code>
+          </div>
+          <div className="inventory-list">
+            {inventory.length > 0 ? (
+              inventory.map((thing) => (
+                <button
+                  key={thing.id}
+                  type="button"
+                  className={
+                    thing.id === selectedThing?.id
+                      ? "inventory-item active"
+                      : "inventory-item"
+                  }
+                  onClick={() => worldRef.current?.selectGenerated(thing.id)}
+                >
+                  <span>
+                    <strong>{thing.prompt.slice(0, 28)}</strong>
+                    <small>{thing.kind} · {thing.generationStatus ?? "local"}</small>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <span className="inventory-empty">Create or import an asset to start your inventory.</span>
+            )}
+          </div>
+        </section>
+
+        <section className="tool-card inventory-card">
+          <div className="tool-title">
+            <Sparkles size={16} />
+            <span>World Assets</span>
+          </div>
+          <div className="inventory-list">
+            {assetLibrary.length > 0 ? (
+              assetLibrary.map((model) => (
+                <button
+                  key={model.id}
+                  type="button"
+                  className="inventory-item"
+                  onClick={() => worldRef.current?.addLibraryAsset(model)}
+                >
+                  <span>
+                    <strong>{model.name.slice(0, 30)}</strong>
+                    <small>
+                      {(model.file_format ?? "model").toUpperCase()}
+                      {typeof model.download_count === "number"
+                        ? ` · ${model.download_count} downloads`
+                        : ""}
+                    </small>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <span className="inventory-empty">No library assets loaded yet.</span>
+            )}
           </div>
         </section>
 
@@ -5082,27 +5819,31 @@ function App(): React.ReactElement {
             <Mountain size={16} />
             <span>Terrain</span>
           </div>
-          <div className="terrain-actions">
+          <div className="terrain-actions compact">
             <button
               type="button"
-              className="secondary-button"
-              onClick={() => worldRef.current?.sculptTerrain("raise")}
+              className="secondary-button terrain-hold"
+              title="Hold to raise terrain"
+              aria-label="Raise terrain"
+              {...pressRepeat(() => worldRef.current?.sculptTerrain("raise"))}
             >
-              <span>Raise</span>
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => worldRef.current?.sculptTerrain("lower")}
-            >
-              <span>Lower</span>
+              <ArrowUp size={18} />
             </button>
             <button
               type="button"
               className="secondary-button"
               onClick={() => worldRef.current?.sculptTerrain("flatten")}
             >
-              <span>Flatten</span>
+              <span>Flat</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button terrain-hold"
+              title="Hold to lower terrain"
+              aria-label="Lower terrain"
+              {...pressRepeat(() => worldRef.current?.sculptTerrain("lower"))}
+            >
+              <ArrowDown size={18} />
             </button>
             <button
               type="button"
@@ -5142,199 +5883,59 @@ function App(): React.ReactElement {
           </div>
         </section>
 
-        <section className="prompt-card">
-          <label htmlFor="tellus-prompt">Speak or type a world request</label>
+      </aside>
+
+      <aside className="control-panel">
+        <header className="panel-header">
+          <div>
+            <p>World</p>
+            <h1>Chat Log</h1>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            title="Hide world log"
+            aria-label="Hide world log"
+            onClick={() => setWorldLogOpen(false)}
+          >
+            <ArrowRight size={17} />
+          </button>
+        </header>
+
+        <section className="chat-card">
+          <div className="section-heading">
+            <MessageCircle size={16} />
+            <span>Discuss</span>
+          </div>
           <textarea
-            id="tellus-prompt"
-            value={prompt}
-            rows={4}
-            placeholder="make a crooked apple tree with golden moss..."
-            onChange={(event) => setPrompt(event.target.value)}
+            className="chat-input"
+            value={chatPrompt}
+            rows={3}
+            placeholder={selected ? `Ask ${selected.name}...` : "Ask an agent..."}
+            onChange={(event) => setChatPrompt(event.target.value)}
           />
-          <div className="prompt-actions">
+          <div className="chat-actions">
             <button
               type="button"
-              className="secondary-button"
-              disabled={!supported || listening}
-              onClick={start}
+              className="secondary-button prompt-icon-button"
+              title={chatListening ? "Listening" : "Speak to chat"}
+              aria-label={chatListening ? "Listening" : "Speak to chat"}
+              disabled={!chatSupported || chatListening}
+              onClick={startChatVoice}
             >
               <Mic size={16} />
-              <span>{listening ? "Listening" : "Voice"}</span>
             </button>
             <button
               type="button"
-              className="secondary-button"
+              className="secondary-button wide-button"
+              disabled={!chatPrompt.trim() || !selected}
               onClick={askSelectedAgent}
             >
               <MessageCircle size={16} />
-              <span>Discuss</span>
-            </button>
-            <button
-              type="button"
-              className="primary-button"
-              onClick={submitPrompt}
-            >
-              <Send size={16} />
-              <span>Generate</span>
+              <span>{selected ? `Ask ${selected.name}` : "Ask agent"}</span>
             </button>
           </div>
         </section>
-
-        {selectedThing && (
-          <section className="asset-card">
-            <div className="section-heading">
-              <Box size={16} />
-              <span>Position Asset</span>
-            </div>
-            <select
-              className="asset-select"
-              value={selectedThing.id}
-              onChange={(event) =>
-                worldRef.current?.selectGenerated(event.target.value)
-              }
-            >
-              {snapshot.generated.map((thing) => (
-                <option key={thing.id} value={thing.id}>
-                  {thing.kind}: {thing.prompt.slice(0, 42)}
-                </option>
-              ))}
-            </select>
-            <div className="asset-meta">
-              <span>{selectedThing.generationStatus ?? "local"}</span>
-              <span>
-                x {selectedThing.position.x.toFixed(1)} z{" "}
-                {selectedThing.position.z.toFixed(1)}
-              </span>
-              <span>{selectedThing.scale.toFixed(2)}x</span>
-            </div>
-            <div className="transform-grid">
-              <button
-                type="button"
-                className="secondary-button"
-                title="Move forward"
-                aria-label="Move forward"
-                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 0, -2)}
-              >
-                <ArrowUp size={17} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Move left"
-                aria-label="Move left"
-                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, -2, 0)}
-              >
-                <ArrowLeft size={17} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Move to water, air, or island edge"
-                onClick={() => worldRef.current?.moveGeneratedToWater(selectedThing.id)}
-              >
-                <span>
-                  {selectedThingVehicleMode === "air"
-                    ? "Lift"
-                    : selectedThingVehicleMode === "water"
-                      ? "Water"
-                      : "Edge"}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Move right"
-                aria-label="Move right"
-                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 2, 0)}
-              >
-                <ArrowRight size={17} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Rotate left"
-                aria-label="Rotate left"
-                onClick={() => worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 8)}
-              >
-                <RotateCcw size={17} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Move backward"
-                aria-label="Move backward"
-                onClick={() => worldRef.current?.moveGenerated(selectedThing.id, 0, 2)}
-              >
-                <ArrowDown size={17} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Rotate right"
-                aria-label="Rotate right"
-                onClick={() => worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 8)}
-              >
-                <RotateCw size={17} />
-              </button>
-            </div>
-            <div className="scale-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                title="Scale down"
-                aria-label="Scale down"
-                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 0.72)}
-              >
-                <Minus size={17} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Reset scale"
-                onClick={() => worldRef.current?.resetGeneratedScale(selectedThing.id)}
-              >
-                <span>1x</span>
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                title="Scale up"
-                aria-label="Scale up"
-                onClick={() => worldRef.current?.scaleGenerated(selectedThing.id, 1.38)}
-              >
-                <Plus size={17} />
-              </button>
-            </div>
-            <button
-              type="button"
-              className="danger-button wide-button"
-              onClick={() => worldRef.current?.deleteGenerated(selectedThing.id)}
-            >
-              <Trash2 size={16} />
-              <span>Delete Asset</span>
-            </button>
-            {selectedThingVehicleMode && (
-              <button
-                type="button"
-                className="primary-button wide-button"
-                onClick={() =>
-                  snapshot.sailingThingId === selectedThing.id
-                    ? worldRef.current?.disembark()
-                    : worldRef.current?.boardGenerated(selectedThing.id)
-                }
-              >
-                <Ship size={16} />
-                <span>
-                  {snapshot.sailingThingId === selectedThing.id
-                    ? "Disembark"
-                    : selectedThingIsMount
-                      ? "Mount and Ride"
-                      : "Board and Pilot"}
-                </span>
-              </button>
-            )}
-          </section>
-        )}
 
         <section className="agents-card">
           <div className="section-heading">
