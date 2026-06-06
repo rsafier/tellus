@@ -1569,6 +1569,14 @@ async function waitForDirectGeneration(
   throw new Error(`Generation job ${initial.jobId} timed out`);
 }
 
+function cancelDirectGeneration(jobId?: string): void {
+  if (!jobId) return;
+  void fetch(tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(jobId)}`), {
+    method: "DELETE",
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
 function createTerrainGeometry(): THREE.BufferGeometry {
   const positions: number[] = [];
   const colors: number[] = [];
@@ -4082,6 +4090,18 @@ function createTellusWorld(
 
   const setGenerationProvider = (provider: GenerationProvider) => {
     if (runtimeConfig.generationProvider === provider) return;
+    abortPendingGeneration();
+    for (const thing of generated) {
+      if (
+        thing.generationStatus === "queued" ||
+        thing.generationStatus === "generating"
+      ) {
+        cancelDirectGeneration(thing.pipelineId);
+        thing.generationStatus = "local";
+        thing.pipelineId = undefined;
+        publishGeneratedThing(thing);
+      }
+    }
     runtimeConfig.generationProvider = provider;
     addLog({
       agentId: "world",
@@ -4102,7 +4122,9 @@ function createTellusWorld(
           thing.generationStatus === "queued" ||
           thing.generationStatus === "generating"
         ) {
+          cancelDirectGeneration(thing.pipelineId);
           thing.generationStatus = "local";
+          thing.pipelineId = undefined;
         }
       }
     }
@@ -4858,6 +4880,14 @@ function createTellusWorld(
     destroy: () => {
       destroyed = true;
       abortPendingGeneration();
+      for (const thing of generated) {
+        if (
+          thing.generationStatus === "queued" ||
+          thing.generationStatus === "generating"
+        ) {
+          cancelDirectGeneration(thing.pipelineId);
+        }
+      }
       for (const id of generatedAnimationMixers.keys()) {
         stopGeneratedAnimation(id);
       }
