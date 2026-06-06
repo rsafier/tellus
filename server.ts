@@ -104,6 +104,14 @@ Bun.serve({
     if (url.pathname.startsWith("/generated-assets/")) {
       return withCors(await generatedAssetsHandler(request));
     }
+    if (url.pathname.startsWith("/api/")) {
+      return withCors(
+        Response.json(
+          { error: "Tellus API route not found", path: url.pathname },
+          { status: 404 },
+        ),
+      );
+    }
     return withCors(await serveStatic(url.pathname));
   },
 });
