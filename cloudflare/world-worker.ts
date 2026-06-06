@@ -22,6 +22,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Max-Age": "86400",
 };
+const presenceTtlMs = 90_000;
 
 const defaultTerrainState = (): TellusTerrainState => ({
   version: 2,
@@ -161,6 +162,7 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async snapshot(): Promise<WorldPatch> {
     await this.loadState();
+    await this.prunePresence();
     return {
       type: "world.snapshot",
       worldId: this.worldId,
@@ -173,6 +175,7 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async applyAction(action: WorldAction): Promise<WorldPatch> {
     await this.loadState();
+    await this.prunePresence();
     const now = new Date().toISOString();
 
     if (action.type === "presence.update") {
@@ -269,6 +272,23 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async persistPresence(): Promise<void> {
     await this.ctx.storage.put("presence", [...this.presence.values()]);
+  }
+
+  private async prunePresence(): Promise<boolean> {
+    const now = Date.now();
+    let pruned = false;
+    for (const [visitorId, presence] of this.presence) {
+      const lastSeenAt = Date.parse(presence.lastSeenAt);
+      if (!Number.isFinite(lastSeenAt) || now - lastSeenAt > presenceTtlMs) {
+        this.presence.delete(visitorId);
+        pruned = true;
+      }
+    }
+    if (pruned) {
+      await this.persistPresence();
+      this.broadcast({ type: "presence.updated", presence: [...this.presence.values()] });
+    }
+    return pruned;
   }
 
   private broadcast(patch: WorldPatch): void {
