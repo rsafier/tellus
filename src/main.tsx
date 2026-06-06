@@ -2833,7 +2833,7 @@ async function askAgentForDecision(
     )
     .join("\n");
 
-  const response = await fetch("/api/chat", {
+  const response = await fetch(tellusApiUrl("/api/chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -2889,7 +2889,7 @@ async function askAgentForReply(
     .slice(-10)
     .map((log) => `${log.agentName}: ${log.text}`)
     .join("\n");
-  const response = await fetch("/api/chat", {
+  const response = await fetch(tellusApiUrl("/api/chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
