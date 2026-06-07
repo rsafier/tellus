@@ -5616,7 +5616,9 @@ function createTellusWorld(
           const thing = generate({
             prompt: a.prompt.trim(),
             location: nearToLocation(a.near),
-            creatorId: "visitor",
+            // Attribute creations to THIS visitor (e.g. an embodied agent's id) instead of the generic
+            // "visitor", so the world + dashboards credit the actual creator.
+            creatorId: visitorId as GenerateRequest["creatorId"],
             scale: typeof a.scale === "number" ? a.scale : undefined,
           });
           return { ok: true, id: thing.id };
