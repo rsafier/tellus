@@ -1129,6 +1129,28 @@ function applyRuntimeConfig(config: unknown): void {
     runtimeConfig.generationProvider = generationProvider;
   }
 
+  const playerGenerationProvider = config.playerGenerationProvider;
+  if (
+    !import.meta.env.VITE_TELLUS_PLAYER_GENERATION_PROVIDER?.trim() &&
+    (playerGenerationProvider === "local" ||
+      playerGenerationProvider === "instantmesh-gradio" ||
+      playerGenerationProvider === "pixal3d-gradio" ||
+      playerGenerationProvider === "anigen-gradio")
+  ) {
+    runtimeConfig.playerGenerationProvider = playerGenerationProvider;
+  }
+
+  const agentGenerationProvider = config.agentGenerationProvider;
+  if (
+    !import.meta.env.VITE_TELLUS_AGENT_GENERATION_PROVIDER?.trim() &&
+    (agentGenerationProvider === "local" ||
+      agentGenerationProvider === "instantmesh-gradio" ||
+      agentGenerationProvider === "pixal3d-gradio" ||
+      agentGenerationProvider === "anigen-gradio")
+  ) {
+    runtimeConfig.agentGenerationProvider = agentGenerationProvider;
+  }
+
   const instantMeshTarget = config.instantMeshTarget;
   if (
     !import.meta.env.VITE_TELLUS_INSTANTMESH_TARGET?.trim() &&
@@ -3967,9 +3989,11 @@ function createTellusWorld(
   });
 
   const normalizeGeneratedThing = (thing: WorldGeneratedThing): WorldGeneratedThing => {
-    const modelUrl = thing.modelUrl
-      ? absoluteTellusApiUrl(thing.modelUrl)
-      : undefined;
+    const modelUrl = thing.generationStatus === "failed"
+      ? undefined
+      : thing.modelUrl
+        ? absoluteTellusApiUrl(thing.modelUrl)
+        : undefined;
     return {
       ...thing,
       modelUrl,
@@ -4067,6 +4091,14 @@ function createTellusWorld(
       })
       .catch((error) => {
         console.warn("Remote generated model load failed", error);
+        if (thing.modelUrl) {
+          thing.modelUrl = undefined;
+          thing.generationStatus = "failed";
+          thing.pipelineId = undefined;
+          ensureGeneratedVisual(thing);
+          publishGeneratedThing(thing);
+          publish();
+        }
       });
   };
 
@@ -7053,6 +7085,56 @@ function App(): React.ReactElement {
                 }
               >
                 <Minus size={17} />
+              </button>
+            </div>
+            <div className="selected-transform-stack selected-object-actions" aria-label="Object actions">
+              <button
+                type="button"
+                className="icon-button"
+                title={
+                  selectedThingVehicleMode
+                    ? snapshot.sailingThingId === activeSelectedThing.id
+                      ? "Dismount"
+                      : selectedThingIsMount
+                        ? "Mount"
+                        : "Pilot"
+                    : "Not mountable"
+                }
+                aria-label={
+                  selectedThingVehicleMode
+                    ? snapshot.sailingThingId === activeSelectedThing.id
+                      ? "Dismount selected asset"
+                      : selectedThingIsMount
+                        ? "Mount selected asset"
+                        : "Pilot selected asset"
+                    : "Selected asset is not mountable"
+                }
+                disabled={!selectedThingVehicleMode}
+                onClick={() => {
+                  if (!selectedThingVehicleMode) return;
+                  if (snapshot.sailingThingId === activeSelectedThing.id) {
+                    worldRef.current?.disembark();
+                    return;
+                  }
+                  worldRef.current?.boardGenerated(activeSelectedThing.id);
+                }}
+              >
+                {snapshot.sailingThingId === activeSelectedThing.id ? (
+                  <LogOut size={17} />
+                ) : (
+                  <Ship size={17} />
+                )}
+              </button>
+              <button
+                type="button"
+                className="icon-button selected-delete-button"
+                title="Delete asset"
+                aria-label="Delete selected asset"
+                onClick={() =>
+                  worldRef.current?.deleteGenerated(activeSelectedThing.id)
+                }
+              >
+                <Trash2 size={17} />
               </button>
             </div>
           </div>

@@ -969,6 +969,17 @@ textarea::placeholder {
   color: var(--hud-gold-bright);
 }
 
+.selected-delete-button {
+  color: #ffd6c9;
+  background: rgb(87 26 18 / 72%);
+  border-color: rgb(255 166 128 / 48%);
+}
+
+.selected-delete-button:hover {
+  background: rgb(122 37 25 / 82%);
+  border-color: rgb(255 197 166 / 72%);
+}
+
 .selected-transform-actions .icon-button {
   width: 34px;
   height: 34px;
