@@ -879,7 +879,9 @@ textarea::placeholder {
 }
 
 .selected-transform-label {
-  display: flex;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: center;
   gap: 7px;
   min-width: 0;
@@ -887,7 +889,16 @@ textarea::placeholder {
   font-weight: 800;
 }
 
+.selected-transform-label > svg {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+  margin-top: 9px;
+}
+
 .selected-transform-label select {
+  grid-column: 2;
+  grid-row: 1;
   width: 100%;
   min-width: 0;
   border: 1px solid var(--hud-border-soft);
@@ -907,6 +918,47 @@ textarea::placeholder {
   min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.selected-name-actions {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.selected-name-action {
+  min-width: 0;
+  height: 28px;
+  border: 1px solid var(--hud-border-soft);
+  background: rgb(18 42 22 / 78%);
+  color: var(--hud-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.selected-name-action:hover:not(:disabled) {
+  border-color: var(--hud-border);
+  background: rgb(41 72 31 / 88%);
+}
+
+.selected-name-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.selected-name-delete {
+  color: #ffd6c9;
+  background: rgb(87 26 18 / 72%);
+  border-color: rgb(255 166 128 / 48%);
+}
+
+.selected-name-delete:hover:not(:disabled) {
+  background: rgb(122 37 25 / 82%);
+  border-color: rgb(255 197 166 / 72%);
 }
 
 .selected-transform-actions {

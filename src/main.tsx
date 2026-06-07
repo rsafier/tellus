@@ -6968,6 +6968,39 @@ function App(): React.ReactElement {
                   </option>
                 ))}
               </select>
+              <div className="selected-name-actions">
+                <button
+                  type="button"
+                  className="selected-name-action"
+                  disabled={!selectedThingVehicleMode}
+                  title={
+                    selectedThingVehicleMode
+                      ? snapshot.sailingThingId === activeSelectedThing.id
+                        ? "Stop riding"
+                        : "Ride or pilot asset"
+                      : "Not rideable"
+                  }
+                  onClick={() => {
+                    if (!selectedThingVehicleMode) return;
+                    if (snapshot.sailingThingId === activeSelectedThing.id) {
+                      worldRef.current?.disembark();
+                      return;
+                    }
+                    worldRef.current?.boardGenerated(activeSelectedThing.id);
+                  }}
+                >
+                  Ride
+                </button>
+                <button
+                  type="button"
+                  className="selected-name-action selected-name-delete"
+                  onClick={() =>
+                    worldRef.current?.deleteGenerated(activeSelectedThing.id)
+                  }
+                >
+                  Delete
+                </button>
+              </div>
             </div>
             <div className="selected-nudge-pad" aria-label="Position controls">
               <button
@@ -7085,56 +7118,6 @@ function App(): React.ReactElement {
                 }
               >
                 <Minus size={17} />
-              </button>
-            </div>
-            <div className="selected-transform-stack selected-object-actions" aria-label="Object actions">
-              <button
-                type="button"
-                className="icon-button"
-                title={
-                  selectedThingVehicleMode
-                    ? snapshot.sailingThingId === activeSelectedThing.id
-                      ? "Dismount"
-                      : selectedThingIsMount
-                        ? "Mount"
-                        : "Pilot"
-                    : "Not mountable"
-                }
-                aria-label={
-                  selectedThingVehicleMode
-                    ? snapshot.sailingThingId === activeSelectedThing.id
-                      ? "Dismount selected asset"
-                      : selectedThingIsMount
-                        ? "Mount selected asset"
-                        : "Pilot selected asset"
-                    : "Selected asset is not mountable"
-                }
-                disabled={!selectedThingVehicleMode}
-                onClick={() => {
-                  if (!selectedThingVehicleMode) return;
-                  if (snapshot.sailingThingId === activeSelectedThing.id) {
-                    worldRef.current?.disembark();
-                    return;
-                  }
-                  worldRef.current?.boardGenerated(activeSelectedThing.id);
-                }}
-              >
-                {snapshot.sailingThingId === activeSelectedThing.id ? (
-                  <LogOut size={17} />
-                ) : (
-                  <Ship size={17} />
-                )}
-              </button>
-              <button
-                type="button"
-                className="icon-button selected-delete-button"
-                title="Delete asset"
-                aria-label="Delete selected asset"
-                onClick={() =>
-                  worldRef.current?.deleteGenerated(activeSelectedThing.id)
-                }
-              >
-                <Trash2 size={17} />
               </button>
             </div>
           </div>
