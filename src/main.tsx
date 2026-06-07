@@ -35,6 +35,7 @@ import {
   Sprout,
   Trash2,
   Undo2,
+  Waves,
   Wrench,
 } from "lucide-react";
 import * as THREE from "three";
@@ -1195,6 +1196,36 @@ function tellusStatePayload(): string {
   return JSON.stringify(tellusState());
 }
 
+function terrainStorageKey(): string {
+  return `tellus.terrain.${runtimeConfig.worldId}`;
+}
+
+function isResetTerrainState(value: unknown): boolean {
+  return isRecord(value) && value.savedAt === "reset-after-smoke";
+}
+
+function saveTerrainStateLocally(body: string): void {
+  try {
+    window.localStorage.setItem(terrainStorageKey(), body);
+  } catch (error) {
+    console.warn("Tellus local terrain save failed", error);
+  }
+}
+
+function loadTerrainStateLocally(): TellusTerrainState | null {
+  try {
+    const raw = window.localStorage.getItem(terrainStorageKey());
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return isTellusTerrainState(parsed) && !isResetTerrainState(parsed)
+      ? parsed
+      : null;
+  } catch (error) {
+    console.warn("Tellus local terrain load failed", error);
+    return null;
+  }
+}
+
 function tellusWorldHttpUrl(route: "state" | "action"): string {
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}`;
 }
@@ -1234,7 +1265,7 @@ function tellusVisitorId(): string {
       window.__hyadesIdentity?.visitorId ??
       new URLSearchParams(window.location.search).get("visitorId") ??
       undefined;
-    pageVisitorId = injected && injected.trim() ? injected.trim() : crypto.randomUUID();
+    pageVisitorId = injected && injected.trim() ? injected.trim() : browserUuid();
   }
   return pageVisitorId;
 }
@@ -1417,6 +1448,12 @@ async function loadTellusState(): Promise<void> {
       console.warn("Tellus world backend failed to load", error);
     }
 
+    const localSavedTerrain = loadTerrainStateLocally();
+    if (localSavedTerrain) {
+      applyTellusTerrainState(localSavedTerrain);
+      return;
+    }
+
     const response = await fetch(tellusApiUrl("/api/tellus-state"), { cache: "no-store" });
     if (!response.ok) {
       terrainStateLoaded = true;
@@ -1424,10 +1461,7 @@ async function loadTellusState(): Promise<void> {
       return;
     }
     const localTerrainState = await response.json();
-    if (
-      isRecord(localTerrainState) &&
-      localTerrainState.savedAt === "reset-after-smoke"
-    ) {
+    if (isResetTerrainState(localTerrainState)) {
       terrainStateLoaded = true;
       terrainStateDirty = false;
       return;
@@ -1453,6 +1487,7 @@ function saveTellusStateSoon(): void {
   terrainSaveTimer = window.setTimeout(() => {
     terrainSaveTimer = undefined;
     const body = tellusStatePayload();
+    saveTerrainStateLocally(body);
     void saveTellusWorldState(body)
       .then((savedToWorld) => {
         if (savedToWorld) return new Response(null, { status: 204 });
@@ -1483,6 +1518,7 @@ function saveTellusStateNow(): void {
     terrainSaveTimer = undefined;
   }
   const body = tellusStatePayload();
+  saveTerrainStateLocally(body);
   const saveRevision = terrainStateRevision;
   void saveTellusWorldState(body, true)
     .then((savedToWorld) => {
@@ -3687,10 +3723,22 @@ function createTellusWorld(
     scale: thing.scale,
     color: thing.color,
     modelUrl: thing.modelUrl,
-    pipelineId: thing.pipelineId,
-    generationStatus: thing.generationStatus,
+    pipelineId: thing.modelUrl ? undefined : thing.pipelineId,
+    generationStatus: thing.modelUrl ? "ready" : thing.generationStatus,
     updatedAt: new Date().toISOString(),
   });
+
+  const normalizeGeneratedThing = (thing: WorldGeneratedThing): WorldGeneratedThing => {
+    const modelUrl = thing.modelUrl
+      ? absoluteTellusApiUrl(thing.modelUrl)
+      : undefined;
+    return {
+      ...thing,
+      modelUrl,
+      pipelineId: modelUrl ? undefined : thing.pipelineId,
+      generationStatus: modelUrl ? "ready" : thing.generationStatus,
+    };
+  };
 
   const generatedPlacementStorageKey = () =>
     `tellus.generated.${runtimeConfig.worldId}`;
@@ -3724,7 +3772,7 @@ function createTellusWorld(
           : Array.isArray(parsed)
             ? parsed
             : [];
-      return source.filter(isWorldGeneratedThing);
+      return source.filter(isWorldGeneratedThing).map(normalizeGeneratedThing);
     } catch (error) {
       console.warn("Tellus generated placement load failed", error);
       return [];
@@ -3817,41 +3865,42 @@ function createTellusWorld(
   };
 
   const applyRemoteGeneratedThing = (remote: WorldGeneratedThing) => {
-    const existing = thingById(remote.id);
+    const normalized = normalizeGeneratedThing(remote);
+    const existing = thingById(normalized.id);
     if (existing) {
-      existing.kind = remote.kind as GeneratedKind;
-      existing.prompt = remote.prompt;
-      existing.creatorId = remote.creatorId as AgentId | "visitor";
-      existing.ownerUserId = remote.ownerUserId;
-      existing.position = { ...remote.position };
-      existing.rotationX = remote.rotationX ?? 0;
-      existing.rotationY = remote.rotationY;
-      existing.rotationZ = remote.rotationZ ?? 0;
-      existing.scale = remote.scale;
-      existing.color = remote.color;
-      existing.modelUrl = remote.modelUrl;
-      existing.pipelineId = remote.pipelineId;
-      existing.generationStatus = remote.generationStatus;
+      existing.kind = normalized.kind as GeneratedKind;
+      existing.prompt = normalized.prompt;
+      existing.creatorId = normalized.creatorId as AgentId | "visitor";
+      existing.ownerUserId = normalized.ownerUserId;
+      existing.position = { ...normalized.position };
+      existing.rotationX = normalized.rotationX ?? 0;
+      existing.rotationY = normalized.rotationY;
+      existing.rotationZ = normalized.rotationZ ?? 0;
+      existing.scale = normalized.scale;
+      existing.color = normalized.color;
+      existing.modelUrl = normalized.modelUrl;
+      existing.pipelineId = normalized.pipelineId;
+      existing.generationStatus = normalized.generationStatus;
       updateThingMeshPosition(existing);
       loadRemoteGeneratedModel(existing);
       reconcileRemoteGeneratedManifest(existing);
       return;
     }
     const thing: GeneratedThing = {
-      id: remote.id,
-      kind: remote.kind as GeneratedKind,
-      prompt: remote.prompt,
-      creatorId: remote.creatorId as AgentId | "visitor",
-      ownerUserId: remote.ownerUserId,
-      position: { ...remote.position },
-      rotationX: remote.rotationX ?? 0,
-      rotationY: remote.rotationY,
-      rotationZ: remote.rotationZ ?? 0,
-      scale: remote.scale,
-      color: remote.color,
-      modelUrl: remote.modelUrl,
-      pipelineId: remote.pipelineId,
-      generationStatus: remote.generationStatus,
+      id: normalized.id,
+      kind: normalized.kind as GeneratedKind,
+      prompt: normalized.prompt,
+      creatorId: normalized.creatorId as AgentId | "visitor",
+      ownerUserId: normalized.ownerUserId,
+      position: { ...normalized.position },
+      rotationX: normalized.rotationX ?? 0,
+      rotationY: normalized.rotationY,
+      rotationZ: normalized.rotationZ ?? 0,
+      scale: normalized.scale,
+      color: normalized.color,
+      modelUrl: normalized.modelUrl,
+      pipelineId: normalized.pipelineId,
+      generationStatus: normalized.generationStatus,
     };
     generated.push(thing);
     const mesh =
@@ -4123,26 +4172,16 @@ function createTellusWorld(
   const moveGeneratedToWater = (id: string) => {
     const thing = thingById(id);
     if (!thing) return;
-    const mode = vehicleMode(thing);
     const angle = Math.atan2(visitorPosition.z, visitorPosition.x) || 0.2;
-    const radius =
-      mode === "air"
-        ? Math.max(14, Math.hypot(thing.position.x, thing.position.z))
-        : WORLD_RADIUS + 5;
-    thing.position =
-      mode === "air"
-        ? airPosition(Math.cos(angle) * radius, Math.sin(angle) * radius)
-        : mode === "water"
-          ? waterVehiclePosition(
-              Math.cos(angle) * radius,
-              Math.sin(angle) * radius,
-              thing.position,
-            )
-          : groundedPosition(
-              Math.cos(angle) * (WORLD_RADIUS - 4),
-              Math.sin(angle) * (WORLD_RADIUS - 4),
-              thing.position,
-            );
+    const radius = Math.max(WORLD_RADIUS + 5, Math.hypot(thing.position.x, thing.position.z));
+    thing.position = waterVehiclePosition(
+      Math.cos(angle) * radius,
+      Math.sin(angle) * radius,
+      thing.position,
+    );
+    if (sailingThingId === id) {
+      visitorPosition = { ...thing.position };
+    }
     updateThingMeshPosition(thing);
     publishGeneratedThing(thing);
     publish();
@@ -5761,7 +5800,17 @@ function App(): React.ReactElement {
         : [];
     return source
       .map((item): WorldGeneratedThing | null => {
-        if (isWorldGeneratedThing(item)) return item;
+        if (isWorldGeneratedThing(item)) {
+          const modelUrl = item.modelUrl
+            ? absoluteTellusApiUrl(item.modelUrl)
+            : undefined;
+          return {
+            ...item,
+            modelUrl,
+            pipelineId: modelUrl ? undefined : item.pipelineId,
+            generationStatus: modelUrl ? "ready" : item.generationStatus,
+          };
+        }
         if (!isRecord(item) || !isRecord(item.position)) return null;
         const { position } = item;
         if (
@@ -5777,6 +5826,10 @@ function App(): React.ReactElement {
           typeof item.kind === "string" ? item.kind : item.prompt,
           "visitor",
         );
+        const modelUrl =
+          typeof item.modelUrl === "string"
+            ? absoluteTellusApiUrl(item.modelUrl)
+            : undefined;
         return {
           id: item.id,
           kind,
@@ -5804,20 +5857,23 @@ function App(): React.ReactElement {
             typeof item.color === "number" && Number.isFinite(item.color)
               ? item.color
               : kindColor(kind, item.prompt),
-          modelUrl:
-            typeof item.modelUrl === "string"
-              ? absoluteTellusApiUrl(item.modelUrl)
-              : undefined,
+          modelUrl,
           pipelineId:
-            typeof item.pipelineId === "string" ? item.pipelineId : undefined,
+            modelUrl
+              ? undefined
+              : typeof item.pipelineId === "string"
+                ? item.pipelineId
+                : undefined,
           generationStatus:
-            item.generationStatus === "local" ||
-            item.generationStatus === "queued" ||
-            item.generationStatus === "generating" ||
-            item.generationStatus === "ready" ||
-            item.generationStatus === "failed"
-              ? item.generationStatus
-              : "ready",
+            modelUrl
+              ? "ready"
+              : item.generationStatus === "local" ||
+                  item.generationStatus === "queued" ||
+                  item.generationStatus === "generating" ||
+                  item.generationStatus === "ready" ||
+                  item.generationStatus === "failed"
+                ? item.generationStatus
+                : "ready",
           updatedAt:
             typeof item.updatedAt === "string"
               ? item.updatedAt
@@ -6338,7 +6394,19 @@ function App(): React.ReactElement {
           <div className="selected-transform-hud" aria-label="Selected asset controls">
             <div className="selected-transform-label">
               <Box size={15} />
-              <span>{activeSelectedThing.prompt}</span>
+              <select
+                value={activeSelectedThing.id}
+                aria-label="Selected asset"
+                onChange={(event) =>
+                  worldRef.current?.selectGenerated(event.target.value)
+                }
+              >
+                {snapshot.generated.map((thing) => (
+                  <option key={thing.id} value={thing.id}>
+                    {thing.prompt}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="selected-nudge-pad" aria-label="Position controls">
               <button
@@ -6392,12 +6460,12 @@ function App(): React.ReactElement {
                 className="icon-button selected-water-button"
                 title="Move to water"
                 aria-label="Move asset to water"
-                onClick={() =>
-                  worldRef.current?.moveGeneratedToWater(activeSelectedThing.id)
-                }
-              >
-                <Ship size={17} />
-              </button>
+              onClick={() =>
+                worldRef.current?.moveGeneratedToWater(activeSelectedThing.id)
+              }
+            >
+              <Waves size={17} />
+            </button>
               <button
                 type="button"
                 className="icon-button"
@@ -6807,17 +6875,13 @@ function App(): React.ReactElement {
             <button
               type="button"
               className="secondary-button"
-              title="Move to water, air, or island edge"
+              title="Move to water"
+              aria-label="Move asset to water"
               disabled={!selectedThing}
               onClick={() => selectedThing && worldRef.current?.moveGeneratedToWater(selectedThing.id)}
             >
-              <span>
-                {selectedThingVehicleMode === "air"
-                  ? "Air"
-                  : selectedThingVehicleMode === "water"
-                    ? "Water"
-                    : "Edge"}
-              </span>
+              <Waves size={17} />
+              <span>Water</span>
             </button>
           </div>
           <div className="scale-actions">

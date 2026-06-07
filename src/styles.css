@@ -887,6 +887,21 @@ textarea::placeholder {
   font-weight: 800;
 }
 
+.selected-transform-label select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--hud-border-soft);
+  background: rgb(4 10 5 / 42%);
+  color: var(--hud-text);
+  outline: none;
+  padding: 7px 28px 7px 8px;
+  font: inherit;
+}
+
+.selected-transform-label select:focus {
+  border-color: var(--hud-border);
+}
+
 .selected-transform-label span {
   overflow: hidden;
   min-width: 0;
@@ -957,13 +972,6 @@ textarea::placeholder {
 .selected-transform-actions .icon-button {
   width: 34px;
   height: 34px;
-}
-
-.selected-transform-scale {
-  min-width: 54px;
-  color: var(--hud-text);
-  font-weight: 800;
-  text-align: center;
 }
 
 .tool-panel {
@@ -2275,7 +2283,7 @@ textarea::placeholder {
   .selected-transform-hud {
     bottom: 62px;
     max-width: min(660px, calc(100vw - 240px));
-    grid-template-columns: minmax(96px, 1fr) auto auto auto auto;
+    grid-template-columns: minmax(120px, 1fr) auto auto auto auto;
   }
 
   .selected-transform-label {
@@ -2289,14 +2297,23 @@ textarea::placeholder {
     right: 104px;
     bottom: 58px;
     max-width: none;
-    grid-template-columns: auto auto auto auto;
+    grid-template-columns: minmax(96px, 1fr) auto auto auto auto;
     justify-content: center;
     padding: 5px;
     transform: none;
   }
 
   .selected-transform-label {
+    min-width: 0;
+  }
+
+  .selected-transform-label svg {
     display: none;
+  }
+
+  .selected-transform-label select {
+    padding-block: 6px;
+    font-size: 12px;
   }
 
   .selected-transform-actions .icon-button {
@@ -2326,10 +2343,6 @@ textarea::placeholder {
     height: 28px;
   }
 
-  .selected-transform-scale {
-    min-width: 46px;
-    font-size: 12px;
-  }
 }
 
 @media (max-width: 480px) {
@@ -2338,6 +2351,6 @@ textarea::placeholder {
     right: 8px;
     bottom: 60px;
     justify-content: center;
-    grid-template-columns: auto auto auto auto;
+    grid-template-columns: minmax(82px, 1fr) auto auto auto auto;
   }
 }
