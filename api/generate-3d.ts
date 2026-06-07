@@ -535,6 +535,9 @@ async function generateGradioConceptImage(
   }
 
   const imagePrompt = imageGenerationPrompt(prompt, kind);
+  const negativePrompt =
+    process.env.TELLUS_TEXT_TO_IMAGE_NEGATIVE_PROMPT?.trim() ||
+    "text, watermark, logo, cropped, blurry, background clutter, multiple objects";
   const response = await fetch(
     `${baseUrl}/gradio_api/api/${
       process.env.TELLUS_GRADIO_IMAGE_API_NAME?.trim() || "generate_image"
@@ -545,11 +548,12 @@ async function generateGradioConceptImage(
       body: JSON.stringify({
         data: [
           imagePrompt,
-          Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024),
-          Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024),
-          Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 9),
           Number(process.env.TELLUS_TEXT_TO_IMAGE_SEED || 42),
-          process.env.TELLUS_TEXT_TO_IMAGE_RANDOM_SEED !== "false",
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 9),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_GUIDANCE || 0),
+          negativePrompt,
         ],
       }),
     },
