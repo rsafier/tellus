@@ -30,6 +30,13 @@ const presenceTtlMs = 90_000;
 interface PersistedWorldState {
   version: number;
   worldId: string;
+  name?: string;
+  description?: string;
+  is_public?: boolean;
+  owner?: {
+    id?: string | null;
+    username?: string;
+  };
   terrain: TellusTerrainState;
   generated: WorldGeneratedThing[];
   queuedGenerationJobs: QueuedGenerationJob[];
@@ -121,6 +128,34 @@ function persistedStateFrom(value: unknown, worldId: string): PersistedWorldStat
       typeof (source as { worldId?: unknown }).worldId === "string"
         ? (source as { worldId: string }).worldId
         : worldId,
+    name:
+      typeof (source as { name?: unknown }).name === "string"
+        ? (source as { name: string }).name
+        : undefined,
+    description:
+      typeof (source as { description?: unknown }).description === "string"
+        ? (source as { description: string }).description
+        : undefined,
+    is_public:
+      typeof (source as { is_public?: unknown }).is_public === "boolean"
+        ? (source as { is_public: boolean }).is_public
+        : undefined,
+    owner:
+      (source as { owner?: unknown }).owner &&
+      typeof (source as { owner?: unknown }).owner === "object" &&
+      !Array.isArray((source as { owner?: unknown }).owner)
+        ? {
+            id:
+              typeof ((source as { owner: { id?: unknown } }).owner.id) === "string" ||
+              (source as { owner: { id?: unknown } }).owner.id === null
+                ? (source as { owner: { id?: string | null } }).owner.id
+                : undefined,
+            username:
+              typeof ((source as { owner: { username?: unknown } }).owner.username) === "string"
+                ? (source as { owner: { username: string } }).owner.username
+                : undefined,
+          }
+        : undefined,
     terrain,
     generated,
     queuedGenerationJobs,
@@ -416,6 +451,8 @@ export class TellusWorld extends DurableObject<Env> {
     return {
       version: 1,
       worldId: this.worldId,
+      name: this.worldId === "main" ? "Tellus" : this.worldId,
+      is_public: this.worldId === "main",
       terrain: this.terrain ?? defaultTerrainState(),
       generated: [...this.generated.values()],
       queuedGenerationJobs: [...this.queuedGenerationJobs.values()],
