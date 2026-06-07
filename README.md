@@ -72,8 +72,9 @@ For same-origin Cloudflare Pages, add a route or Worker binding that sends
 
 The Durable Object should be treated as the live coordinator for WebSockets and
 short-lived presence, not as the write-heavy database for every terrain/object
-edit. To persist world state in the Flask/Mongo asset service instead, configure
-the Worker with:
+edit. Tellus does not use Durable Object storage by default; it only uses
+external persistence when `TELLUS_PERSISTENCE_API_BASE` is configured. To persist
+world state in the Flask/Postgres asset service, configure the Worker with:
 
 ```bash
 wrangler secret put TELLUS_PERSISTENCE_API_TOKEN --config wrangler.toml
@@ -85,6 +86,13 @@ or add the variable in the Cloudflare dashboard:
 ```text
 TELLUS_PERSISTENCE_API_BASE=https://3d.flobots.xyz
 TELLUS_PERSISTENCE_API_TOKEN=...
+```
+
+Only set this if you intentionally want to use Cloudflare Durable Object storage
+and accept its storage write limits:
+
+```text
+TELLUS_DO_STORAGE_MODE=durable
 ```
 
 The Worker will call:
@@ -116,9 +124,12 @@ Expected JSON shape:
 ```
 
 `GET` may also return `{ "state": { ... } }` or a Tellus
-`world.snapshot` patch. `PUT` should upsert by `worldId`. If the Flask endpoint
-is unavailable, the Worker falls back to in-memory state and then Durable Object
-storage where quota allows.
+`world.snapshot` patch. `PUT` should upsert by `worldId`. If the Flask/Postgres
+endpoint is unavailable, the Worker falls back to in-memory state so Cloudflare
+storage limits are not consumed.
+
+See [docs/tellus-flask-postgres-world-state.md](docs/tellus-flask-postgres-world-state.md)
+for a Flask/Postgres route sketch with public/private worlds.
 
 ## Coolify
 

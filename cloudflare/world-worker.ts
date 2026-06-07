@@ -16,6 +16,7 @@ interface Env {
   TELLUS_GENERATION_QUEUE?: Queue<QueuedGenerationJob>;
   TELLUS_PERSISTENCE_API_BASE?: string;
   TELLUS_PERSISTENCE_API_TOKEN?: string;
+  TELLUS_DO_STORAGE_MODE?: string;
 }
 
 const corsHeaders = {
@@ -397,6 +398,11 @@ export class TellusWorld extends DurableObject<Env> {
       return;
     }
 
+    if (!this.doStorageEnabled()) {
+      this.terrain = defaultTerrainState();
+      return;
+    }
+
     if (!this.terrain) {
       try {
         const terrain = await this.ctx.storage.get<TellusTerrainState>("terrain");
@@ -445,6 +451,10 @@ export class TellusWorld extends DurableObject<Env> {
       console.warn(`Tellus world storage write failed for ${key}; continuing in memory`, error);
       return false;
     }
+  }
+
+  private doStorageEnabled(): boolean {
+    return this.env.TELLUS_DO_STORAGE_MODE?.trim().toLowerCase() === "durable";
   }
 
   private persistedWorldState(): PersistedWorldState {
@@ -530,6 +540,7 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async persistWorldState(): Promise<void> {
     if (await this.saveExternalWorldState()) return;
+    if (!this.doStorageEnabled()) return;
     const state = this.persistedWorldState();
     await Promise.all([
       this.safeStoragePut("terrain", state.terrain),
