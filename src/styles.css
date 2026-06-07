@@ -1070,6 +1070,22 @@ textarea::placeholder {
   font-size: 10px;
 }
 
+.asset-tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-card {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-card label {
+  display: grid;
+  gap: 5px;
+  color: var(--hud-muted);
+  font-size: 12px;
+}
+
 .ai-card {
   display: grid;
   gap: 10px;
@@ -1389,6 +1405,7 @@ textarea::placeholder {
 .inventory-item {
   display: flex;
   align-items: center;
+  gap: 8px;
   width: 100%;
   border: 1px solid var(--hud-border-soft);
   background: rgb(0 0 0 / 24%);
@@ -1396,6 +1413,46 @@ textarea::placeholder {
   cursor: pointer;
   padding: 8px;
   text-align: left;
+}
+
+.asset-list {
+  max-height: min(420px, 44dvh);
+}
+
+.asset-row {
+  justify-content: space-between;
+  padding: 0;
+}
+
+.asset-row > button:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 8px;
+  text-align: left;
+}
+
+.asset-go-button {
+  align-self: stretch;
+  border: 0;
+  border-left: 1px solid var(--hud-border-soft);
+  background: rgb(222 188 86 / 14%);
+  color: var(--hud-gold-bright);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 0 10px;
+}
+
+.asset-go-button:hover {
+  background: rgb(222 188 86 / 24%);
 }
 
 .inventory-item:hover,
@@ -1471,6 +1528,90 @@ textarea::placeholder {
 
 .terrain-material-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.terrain-material-swatches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.terrain-swatch {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid var(--hud-border-soft);
+  background: rgb(0 0 0 / 18%);
+  color: var(--hud-text);
+  cursor: pointer;
+  padding: 6px;
+  text-align: left;
+}
+
+.terrain-swatch:hover {
+  border-color: var(--hud-border);
+  background: var(--hud-bg-soft);
+}
+
+.terrain-swatch-preview {
+  display: block;
+  height: 34px;
+  border: 1px solid rgb(255 244 185 / 18%);
+  box-shadow: inset 0 0 18px rgb(0 0 0 / 18%);
+}
+
+.terrain-swatch span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--hud-gold-bright);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.terrain-swatch.meadow .terrain-swatch-preview {
+  background:
+    radial-gradient(circle at 24% 28%, rgb(124 180 62 / 76%) 0 8%, transparent 9%),
+    radial-gradient(circle at 72% 62%, rgb(73 129 42 / 82%) 0 10%, transparent 11%),
+    linear-gradient(135deg, #4f8f2f, #78b840);
+}
+
+.terrain-swatch.beach .terrain-swatch-preview {
+  background:
+    radial-gradient(circle at 26% 66%, rgb(255 248 211 / 70%) 0 7%, transparent 8%),
+    radial-gradient(circle at 70% 30%, rgb(210 176 121 / 48%) 0 8%, transparent 9%),
+    linear-gradient(135deg, #e9c996, #f6dcbd);
+}
+
+.terrain-swatch.dirt .terrain-swatch-preview {
+  background:
+    linear-gradient(18deg, transparent 0 42%, rgb(87 60 29 / 32%) 43% 47%, transparent 48%),
+    radial-gradient(circle at 66% 38%, rgb(80 50 26 / 56%) 0 8%, transparent 9%),
+    linear-gradient(135deg, #6f5730, #9a7b46);
+}
+
+.terrain-swatch.pebbles .terrain-swatch-preview {
+  background:
+    radial-gradient(circle at 18% 24%, #a8956a 0 9%, transparent 10%),
+    radial-gradient(circle at 48% 58%, #46505a 0 10%, transparent 11%),
+    radial-gradient(circle at 78% 32%, #c2b17c 0 8%, transparent 9%),
+    linear-gradient(135deg, #5d665f, #7a7764);
+}
+
+.terrain-swatch.snow .terrain-swatch-preview {
+  background:
+    radial-gradient(circle at 30% 28%, rgb(255 255 255 / 84%) 0 9%, transparent 10%),
+    radial-gradient(circle at 72% 64%, rgb(176 211 222 / 55%) 0 10%, transparent 11%),
+    linear-gradient(135deg, #c8e0dc, #f2f8ef);
+}
+
+.terrain-swatch.flowers .terrain-swatch-preview {
+  background:
+    radial-gradient(circle at 23% 34%, #ffd36a 0 4%, transparent 5%),
+    radial-gradient(circle at 31% 42%, #f2a6cc 0 4%, transparent 5%),
+    radial-gradient(circle at 70% 52%, #c8dfff 0 4%, transparent 5%),
+    radial-gradient(circle at 78% 40%, #fff7d6 0 4%, transparent 5%),
+    linear-gradient(135deg, #5f9f32, #8fbd4d);
 }
 
 .prompt-card {

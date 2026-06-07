@@ -9,11 +9,9 @@ import {
   Bot,
   Box,
   CircleHelp,
-  Flower2,
   Hammer,
   Home,
   Layers,
-  Leaf,
   LogOut,
   Map as MapIcon,
   Menu,
@@ -26,11 +24,11 @@ import {
   Plus,
   RotateCcw,
   RotateCw,
+  Search,
   Send,
   Settings,
   Ship,
   Sparkles,
-  Sprout,
   Trash2,
   Waves,
 } from "lucide-react";
@@ -99,6 +97,8 @@ type GeneratedKind =
   | "object";
 
 type ToolName = "generate" | "interact";
+type AssetPanelTab = "search" | "world-assets" | "inventory";
+type ToolMenu = "terrain" | "ai" | "settings";
 
 interface Vec3 {
   x: number;
@@ -212,6 +212,7 @@ interface TellusWorldApi {
   addLibraryAsset(model: AssetLibraryModel): GeneratedThing;
   interact(request: InteractRequest): TellusLog;
   selectGenerated(id?: string): void;
+  goToGenerated(id: string): void;
   moveGenerated(id: string, dx: number, dz: number): void;
   rotateGenerated(id: string, radians: number, axis?: "x" | "y" | "z"): void;
   scaleGenerated(id: string, multiplier: number): void;
@@ -4489,6 +4490,26 @@ function createTellusWorld(
     publish();
   };
 
+  const goToGenerated = (id: string) => {
+    const thing = thingById(id);
+    if (!thing) return;
+    selectedThingId = id;
+    const distance = Math.hypot(thing.position.x, thing.position.z);
+    const offset =
+      distance > 0.001
+        ? { x: thing.position.x / distance, z: thing.position.z / distance }
+        : { x: 1, z: 0 };
+    visitorPosition = groundedPosition(
+      thing.position.x - offset.x * 3.2,
+      thing.position.z - offset.z * 3.2,
+      visitorPosition,
+    );
+    updateSelectionIndicator();
+    syncTransformControls();
+    sendPresenceUpdate(true);
+    publish();
+  };
+
   const moveGenerated = (id: string, dx: number, dz: number) => {
     const thing = thingById(id);
     if (!thing) return;
@@ -6365,6 +6386,7 @@ function createTellusWorld(
     addLibraryAsset,
     interact,
     selectGenerated,
+    goToGenerated,
     moveGenerated,
     rotateGenerated,
     scaleGenerated,
@@ -6496,10 +6518,10 @@ function App(): React.ReactElement {
   const [chatPrompt, setChatPrompt] = useState("");
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
-  const [meshToolsOpen, setMeshToolsOpen] = useState(false);
-  const [toolMenu, setToolMenu] = useState<
-    "inventory" | "world-assets" | "terrain" | "ai"
-  >("terrain");
+  const [assetPanelOpen, setAssetPanelOpen] = useState(false);
+  const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
+  const [openToolMenus, setOpenToolMenus] = useState<ToolMenu[]>([]);
+  const [worldMapOpen, setWorldMapOpen] = useState(true);
   const [worldLogOpen, setWorldLogOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const { listening, supported, start } = useSpeechInput((text) =>
@@ -6716,10 +6738,37 @@ function App(): React.ReactElement {
     promptRef.current?.focus();
   };
 
+  const isToolOpen = (menu: ToolMenu): boolean => openToolMenus.includes(menu);
+  const isAssetPanelTabOpen = (tab: AssetPanelTab): boolean =>
+    assetPanelOpen && assetPanelTab === tab;
+
+  const toggleAssetPanel = (tab: AssetPanelTab) => {
+    setAssetPanelOpen((open) => !(open && assetPanelTab === tab));
+    setAssetPanelTab(tab);
+  };
+
+  const openToolPanel = (menu: ToolMenu) => {
+    setOpenToolMenus((current) =>
+      current.includes(menu) ? current : [...current, menu],
+    );
+  };
+
+  const closeToolPanel = (menu: ToolMenu) => {
+    setOpenToolMenus((current) => current.filter((item) => item !== menu));
+  };
+
+  const toggleToolPanel = (menu: ToolMenu) => {
+    setOpenToolMenus((current) =>
+      current.includes(menu)
+        ? current.filter((item) => item !== menu)
+        : [...current, menu],
+    );
+  };
+
   const showMeshToolbar = () => {
     if (snapshot.generated.length === 0) {
-      setToolMenu("world-assets");
-      setMeshToolsOpen(true);
+      setAssetPanelOpen(true);
+      setAssetPanelTab("world-assets");
       return;
     }
     if (!snapshot.selectedThingId) {
@@ -6727,7 +6776,6 @@ function App(): React.ReactElement {
         snapshot.generated[snapshot.generated.length - 1].id,
       );
     }
-    setMeshToolsOpen(false);
   };
 
   const askSelectedAgent = () => {
@@ -6742,12 +6790,6 @@ function App(): React.ReactElement {
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 36), 116)}px`;
   }, [prompt]);
-
-  useEffect(() => {
-    if (!snapshot.selectedThingId) {
-      setMeshToolsOpen(false);
-    }
-  }, [snapshot.selectedThingId]);
 
   const recentLogs = snapshot.logs.slice(-10).reverse();
   const repeatTimerRef = useRef<number | undefined>(undefined);
@@ -6774,7 +6816,7 @@ function App(): React.ReactElement {
     <main
       className={[
         "tellus-shell",
-        meshToolsOpen ? "" : "mesh-tools-hidden",
+        openToolMenus.length > 0 || assetPanelOpen ? "" : "mesh-tools-hidden",
         worldLogOpen ? "" : "world-log-hidden",
       ]
         .filter(Boolean)
@@ -6792,10 +6834,7 @@ function App(): React.ReactElement {
                 <button type="button"><Home size={15} /><span>Home</span></button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setToolMenu("terrain");
-                    setMeshToolsOpen(true);
-                  }}
+                  onClick={() => toggleToolPanel("terrain")}
                 >
                   <Mountain size={15} />
                   <span>Terrain</span>
@@ -6804,10 +6843,7 @@ function App(): React.ReactElement {
                 <button type="button" onClick={showMeshToolbar}><Hammer size={15} /><span>Mesh Tools</span></button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setToolMenu("ai");
-                    setMeshToolsOpen(true);
-                  }}
+                  onClick={() => toggleToolPanel("ai")}
                 >
                   <Bot size={15} />
                   <span>AI</span>
@@ -6921,195 +6957,153 @@ function App(): React.ReactElement {
           </button>
         </div>
         <aside className="world-left-toolbelt" aria-label="Toolbelt">
-          <button type="button" className="toolbelt-button" title="Build" onClick={() => setMeshToolsOpen(true)}>
-            <Hammer size={18} />
-            <span>Build</span>
+          <button type="button" className="toolbelt-button primary" title="Create" onClick={focusCreatePrompt}>
+            <Send size={18} />
+            <span>Create</span>
           </button>
           <button
             type="button"
-            className="toolbelt-button"
-            title="Terrain"
-            onClick={() => {
-              setToolMenu("terrain");
-              setMeshToolsOpen(true);
-            }}
+            className={isToolOpen("settings") ? "toolbelt-button active" : "toolbelt-button"}
+            title="Settings"
+            onClick={() => toggleToolPanel("settings")}
           >
-            <Mountain size={18} />
-            <span>Terrain</span>
-          </button>
-          <button type="button" className="toolbelt-button" title="Flora" onClick={() => setPrompt("wildflowers and moss")}>
-            <Flower2 size={18} />
-            <span>Flora</span>
-          </button>
-          <button type="button" className="toolbelt-button" title="Fauna" onClick={() => setPrompt("gentle forest animal")}>
-            <Leaf size={18} />
-            <span>Fauna</span>
+            <Settings size={18} />
+            <span>Settings</span>
           </button>
           <button
             type="button"
-            className="toolbelt-button"
+            className={isAssetPanelTabOpen("search") ? "toolbelt-button active" : "toolbelt-button"}
+            title="Search assets"
+            onClick={() => toggleAssetPanel("search")}
+          >
+            <Search size={18} />
+            <span>Search</span>
+          </button>
+          <button
+            type="button"
+            className={worldMapOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Map"
+            onClick={() => setWorldMapOpen((open) => !open)}
+          >
+            <MapIcon size={18} />
+            <span>Map</span>
+          </button>
+          <button
+            type="button"
+            className={isToolOpen("ai") ? "toolbelt-button active" : "toolbelt-button"}
+            title="AI"
+            onClick={() => toggleToolPanel("ai")}
+          >
+            <Bot size={18} />
+            <span>AI</span>
+          </button>
+          <button
+            type="button"
+            className={isAssetPanelTabOpen("world-assets") ? "toolbelt-button active" : "toolbelt-button"}
             title="Objects"
-            onClick={() => {
-              setToolMenu("world-assets");
-              setMeshToolsOpen(true);
-            }}
+            onClick={() => toggleAssetPanel("world-assets")}
           >
             <Layers size={18} />
             <span>Objects</span>
           </button>
           <button
             type="button"
-            className="toolbelt-button"
+            className={isAssetPanelTabOpen("inventory") ? "toolbelt-button active" : "toolbelt-button"}
             title="Inventory"
-            onClick={() => {
-              setToolMenu("inventory");
-              setMeshToolsOpen(true);
-            }}
+            onClick={() => toggleAssetPanel("inventory")}
           >
             <Backpack size={18} />
             <span>Inventory</span>
           </button>
-          <button type="button" className="toolbelt-button" title="Chat" onClick={() => setWorldLogOpen(true)}>
+          <button
+            type="button"
+            className={isToolOpen("terrain") ? "toolbelt-button active" : "toolbelt-button"}
+            title="Terrain"
+            onClick={() => toggleToolPanel("terrain")}
+          >
+            <Mountain size={18} />
+            <span>Terrain</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Move selected asset" onClick={showMeshToolbar}>
+            <RotateCw size={18} />
+            <span>Move</span>
+          </button>
+          <button
+            type="button"
+            className={worldLogOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Chat"
+            onClick={() => setWorldLogOpen((open) => !open)}
+          >
             <MessageCircle size={18} />
             <span>Chat</span>
           </button>
-          <button type="button" className="toolbelt-button" title="Map">
-            <MapIcon size={18} />
-            <span>Map</span>
-          </button>
         </aside>
-        <aside className="world-right-hud" aria-label="World systems">
-          <section className="world-map" aria-label="World map">
-            <div className="world-map-disc" />
-            {snapshot.visitorPosition && (
-              <span
-                className="map-marker player"
-                style={mapPointStyle(snapshot.visitorPosition)}
-                title="You"
-              />
-            )}
-            {snapshot.remoteVisitors.map((visitor) =>
-              visitor.position ? (
+        {worldMapOpen && (
+          <aside className="world-right-hud" aria-label="World systems">
+            <section className="world-map" aria-label="World map">
+              <div className="world-map-disc" />
+              {snapshot.visitorPosition && (
                 <span
-                  key={visitor.visitorId}
-                  className="map-marker remote-player"
-                  style={mapPointStyle(visitor.position)}
-                  title="Remote player"
+                  className="map-marker player"
+                  style={mapPointStyle(snapshot.visitorPosition)}
+                  title="You"
                 />
-              ) : null,
-            )}
-            {snapshot.agents.map((agent) => (
-              <span
-                key={agent.id}
-                className="map-marker agent"
-                style={{
-                  ...mapPointStyle(agent.position),
-                  backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                }}
-                title={`${agent.name} - ${agent.epithet}`}
-              />
-            ))}
-            {snapshot.generated.map((thing) => (
-              <span
-                key={thing.id}
-                className={[
-                  "map-marker",
-                  "asset",
-                  thing.id === selectedThing?.id ? "selected" : "",
-                  thing.generationStatus === "queued" ||
-                  thing.generationStatus === "generating"
-                    ? "pending"
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                style={mapPointStyle(thing.position)}
-                title={`${thing.kind}: ${thing.prompt}`}
-              />
-            ))}
-            {pendingGenerated.length > 0 && (
-              <span className="world-map-status">
-                {pendingGenerated.length} building
-              </span>
-            )}
-            <section className="world-info-panel mini" aria-label="World info">
-              <dl>
-                <div><dt>Generated</dt><dd>{snapshot.generated.length}</dd></div>
-                <div><dt>Agents</dt><dd>{snapshot.agents.length}</dd></div>
-                <div><dt>Players</dt><dd>{snapshot.remoteVisitors.length + 1}</dd></div>
-                <div><dt>AI</dt><dd>{snapshot.paused ? "Paused" : "Active"}</dd></div>
-              </dl>
-            </section>
-          </section>
-          <section className="creation-panel" aria-label="Creation panel">
-            <header>
-              <h2>Creation Panel</h2>
-              <button
-                type="button"
-                className="panel-mini-button"
-                onClick={showMeshToolbar}
-              >
-                Mesh
-              </button>
-            </header>
-            <div className="creation-tabs" aria-label="Creation types">
-              <button type="button" className="active">Assets</button>
-              <button type="button">Terrain</button>
-              <button type="button">Flora</button>
-              <button type="button">AI</button>
-            </div>
-            <div className="creation-grid">
-              {assetLibrary.slice(0, 6).map((model) => (
-                <button
-                  key={model.id}
-                  type="button"
-                  className="creation-tile"
-                  onClick={() => worldRef.current?.addLibraryAsset(model)}
-                >
-                  <Box size={21} />
-                  <span>{model.name.slice(0, 18)}</span>
-                </button>
-              ))}
-              {assetLibrary.length === 0 && (
-                <>
-                  <button type="button" className="creation-tile" onClick={() => setPrompt("stone arch")}>
-                    <Mountain size={21} />
-                    <span>Stone Arch</span>
-                  </button>
-                  <button type="button" className="creation-tile" onClick={() => setPrompt("pine tree")}>
-                    <Sprout size={21} />
-                    <span>Pine Tree</span>
-                  </button>
-                  <button type="button" className="creation-tile" onClick={() => setPrompt("deer")}>
-                    <Leaf size={21} />
-                    <span>Deer</span>
-                  </button>
-                  <button type="button" className="creation-tile" onClick={() => setPrompt("small cottage")}>
-                    <Home size={21} />
-                    <span>House</span>
-                  </button>
-                </>
               )}
-            </div>
-            <button
-              type="button"
-              className="primary-button wide-button"
-              onClick={submitPrompt}
-              disabled={!prompt.trim()}
-            >
-              <Send size={15} />
-              <span>Place</span>
-            </button>
-          </section>
-          <section className="ai-monitor-panel" aria-label="AI monitor">
-            <h2>AI Monitor</h2>
-            <p><strong>Tellus AI</strong> {snapshot.paused ? "standing by" : "weaving world actions"}</p>
-            <div className="monitor-meter">
-              <span style={{ width: `${Math.min(100, pendingGenerated.length * 33)}%` }} />
-            </div>
-            <small>{pendingGenerated.length} generation tasks queued</small>
-          </section>
-        </aside>
+              {snapshot.remoteVisitors.map((visitor) =>
+                visitor.position ? (
+                  <span
+                    key={visitor.visitorId}
+                    className="map-marker remote-player"
+                    style={mapPointStyle(visitor.position)}
+                    title="Remote player"
+                  />
+                ) : null,
+              )}
+              {snapshot.agents.map((agent) => (
+                <span
+                  key={agent.id}
+                  className="map-marker agent"
+                  style={{
+                    ...mapPointStyle(agent.position),
+                    backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
+                  }}
+                  title={`${agent.name} - ${agent.epithet}`}
+                />
+              ))}
+              {snapshot.generated.map((thing) => (
+                <span
+                  key={thing.id}
+                  className={[
+                    "map-marker",
+                    "asset",
+                    thing.id === selectedThing?.id ? "selected" : "",
+                    thing.generationStatus === "queued" ||
+                    thing.generationStatus === "generating"
+                      ? "pending"
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  style={mapPointStyle(thing.position)}
+                  title={`${thing.kind}: ${thing.prompt}`}
+                />
+              ))}
+              {pendingGenerated.length > 0 && (
+                <span className="world-map-status">
+                  {pendingGenerated.length} building
+                </span>
+              )}
+              <section className="world-info-panel mini" aria-label="World info">
+                <dl>
+                  <div><dt>Generated</dt><dd>{snapshot.generated.length}</dd></div>
+                  <div><dt>Agents</dt><dd>{snapshot.agents.length}</dd></div>
+                  <div><dt>Players</dt><dd>{snapshot.remoteVisitors.length + 1}</dd></div>
+                  <div><dt>AI</dt><dd>{snapshot.paused ? "Paused" : "Active"}</dd></div>
+                </dl>
+              </section>
+            </section>
+          </aside>
+        )}
         {worldLogOpen && (
           <section className="world-mini-chat" aria-label="World chat">
             <header>
@@ -7377,137 +7371,218 @@ function App(): React.ReactElement {
         </section>
       </section>
 
+      {(assetPanelOpen || openToolMenus.length > 0) && (
       <aside className="tool-panel" aria-label="Tool panel">
-        <div className="panel-strip">
-          <span>
-            {toolMenu === "inventory"
-                ? "Inventory"
-                : toolMenu === "world-assets"
-                  ? "World Assets"
-                  : toolMenu === "terrain"
-                    ? "Terrain"
-                    : "AI"}
-          </span>
-          <button
-            type="button"
-            className="icon-button"
-            title="Hide tools"
-            aria-label="Hide tools"
-            onClick={() => setMeshToolsOpen(false)}
-          >
-            <ArrowLeft size={17} />
-          </button>
-        </div>
-        <nav className="tool-panel-tabs" aria-label="Tool menus">
-          <button
-            type="button"
-            className={toolMenu === "inventory" ? "active" : ""}
-            onClick={() => setToolMenu("inventory")}
-          >
-            <Backpack size={15} />
-            <span>Inventory</span>
-          </button>
-          <button
-            type="button"
-            className={toolMenu === "world-assets" ? "active" : ""}
-            onClick={() => setToolMenu("world-assets")}
-          >
-            <Sparkles size={15} />
-            <span>Assets</span>
-          </button>
-          <button
-            type="button"
-            className={toolMenu === "terrain" ? "active" : ""}
-            onClick={() => setToolMenu("terrain")}
-          >
-            <Mountain size={15} />
-            <span>Terrain</span>
-          </button>
-          <button
-            type="button"
-            className={toolMenu === "ai" ? "active" : ""}
-            onClick={() => setToolMenu("ai")}
-          >
-            <Bot size={15} />
-            <span>AI</span>
-          </button>
-        </nav>
-        {toolMenu === "inventory" && (
-        <section className="tool-card inventory-card">
-          <div className="tool-title">
-            <Box size={16} />
-            <span>Inventory</span>
-          </div>
-          <div className="inventory-meta">
-            <span>{inventory.length} owned assets</span>
-            <code>{snapshot.userId.slice(0, 8)}</code>
-          </div>
-          <div className="inventory-list">
-            {inventory.length > 0 ? (
-              inventory.map((thing) => (
-                <button
-                  key={thing.id}
-                  type="button"
-                  className={
-                    thing.id === selectedThing?.id
-                      ? "inventory-item active"
-                      : "inventory-item"
-                  }
-                  onClick={() => worldRef.current?.selectGenerated(thing.id)}
-                >
-                  <span>
-                    <strong>{thing.prompt.slice(0, 28)}</strong>
-                    <small>{thing.kind} · {thing.generationStatus ?? "local"}</small>
-                  </span>
-                </button>
-              ))
-            ) : (
-              <span className="inventory-empty">Create or import an asset to start your inventory.</span>
+        {assetPanelOpen && (
+          <section className="tool-card inventory-card asset-drawer">
+            <div className="panel-strip">
+              <span>Assets</span>
+              <button
+                type="button"
+                className="icon-button"
+                title="Hide assets"
+                aria-label="Hide assets"
+                onClick={() => setAssetPanelOpen(false)}
+              >
+                <ArrowLeft size={17} />
+              </button>
+            </div>
+            <nav className="tool-panel-tabs asset-tabs" aria-label="Asset tabs">
+              <button
+                type="button"
+                className={assetPanelTab === "search" ? "active" : ""}
+                onClick={() => setAssetPanelTab("search")}
+              >
+                <Search size={15} />
+                <span>Search</span>
+              </button>
+              <button
+                type="button"
+                className={assetPanelTab === "world-assets" ? "active" : ""}
+                onClick={() => setAssetPanelTab("world-assets")}
+              >
+                <Layers size={15} />
+                <span>World</span>
+              </button>
+              <button
+                type="button"
+                className={assetPanelTab === "inventory" ? "active" : ""}
+                onClick={() => setAssetPanelTab("inventory")}
+              >
+                <Backpack size={15} />
+                <span>Mine</span>
+              </button>
+            </nav>
+            {assetPanelTab === "search" && (
+              <div className="inventory-list asset-list">
+                {assetLibrary.length > 0 ? (
+                  assetLibrary.map((model) => (
+                    <button
+                      key={model.id}
+                      type="button"
+                      className="inventory-item"
+                      onClick={() => worldRef.current?.addLibraryAsset(model)}
+                    >
+                      <Box size={16} />
+                      <span>
+                        <strong>{model.name.slice(0, 30)}</strong>
+                        <small>
+                          {(model.file_format ?? "model").toUpperCase()}
+                          {typeof model.download_count === "number"
+                            ? ` · ${model.download_count} downloads`
+                            : ""}
+                        </small>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="inventory-empty">No library assets loaded yet.</span>
+                )}
+              </div>
             )}
-          </div>
-        </section>
+            {assetPanelTab === "world-assets" && (
+              <div className="inventory-list asset-list">
+                {snapshot.generated.length > 0 ? (
+                  snapshot.generated.map((thing) => (
+                    <article
+                      key={thing.id}
+                      className={
+                        thing.id === selectedThing?.id
+                          ? "inventory-item asset-row active"
+                          : "inventory-item asset-row"
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => worldRef.current?.selectGenerated(thing.id)}
+                      >
+                        <Box size={16} />
+                        <span>
+                          <strong>{thing.prompt.slice(0, 30)}</strong>
+                          <small>
+                            {thing.kind} · {thing.generationStatus ?? "local"} · x{" "}
+                            {thing.position.x.toFixed(0)} z{" "}
+                            {thing.position.z.toFixed(0)}
+                          </small>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="asset-go-button"
+                        onClick={() => worldRef.current?.goToGenerated(thing.id)}
+                      >
+                        Go
+                      </button>
+                    </article>
+                  ))
+                ) : (
+                  <span className="inventory-empty">No world objects yet.</span>
+                )}
+              </div>
+            )}
+            {assetPanelTab === "inventory" && (
+              <div className="inventory-list asset-list">
+                {inventory.length > 0 ? (
+                  inventory.map((thing) => (
+                    <article
+                      key={thing.id}
+                      className={
+                        thing.id === selectedThing?.id
+                          ? "inventory-item asset-row active"
+                          : "inventory-item asset-row"
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => worldRef.current?.selectGenerated(thing.id)}
+                      >
+                        <Box size={16} />
+                        <span>
+                          <strong>{thing.prompt.slice(0, 30)}</strong>
+                          <small>{thing.kind} · {thing.generationStatus ?? "local"}</small>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="asset-go-button"
+                        onClick={() => worldRef.current?.goToGenerated(thing.id)}
+                      >
+                        Go
+                      </button>
+                    </article>
+                  ))
+                ) : (
+                  <span className="inventory-empty">No owned assets yet.</span>
+                )}
+              </div>
+            )}
+          </section>
         )}
 
-        {toolMenu === "world-assets" && (
-        <section className="tool-card inventory-card">
-          <div className="tool-title">
-            <Sparkles size={16} />
-            <span>World Assets</span>
-          </div>
-          <div className="inventory-list">
-            {assetLibrary.length > 0 ? (
-              assetLibrary.map((model) => (
-                <button
-                  key={model.id}
-                  type="button"
-                  className="inventory-item"
-                  onClick={() => worldRef.current?.addLibraryAsset(model)}
-                >
-                  <span>
-                    <strong>{model.name.slice(0, 30)}</strong>
-                    <small>
-                      {model.source === "generated"
-                        ? "Generated"
-                        : (model.file_format ?? "model").toUpperCase()}
-                      {model.source !== "generated" && typeof model.download_count === "number"
-                        ? ` · ${model.download_count} downloads`
-                        : ""}
-                    </small>
-                  </span>
-                </button>
-              ))
-            ) : (
-              <span className="inventory-empty">No library assets loaded yet.</span>
-            )}
-          </div>
-        </section>
+        {isToolOpen("settings") && (
+          <section className="tool-card settings-card">
+            <div className="panel-strip">
+              <span>Settings</span>
+              <button
+                type="button"
+                className="icon-button"
+                title="Hide settings"
+                aria-label="Hide settings"
+                onClick={() => closeToolPanel("settings")}
+              >
+                <ArrowLeft size={17} />
+              </button>
+            </div>
+            <label>
+              <span>Players</span>
+              <select
+                className="asset-select"
+                value={snapshot.playerGenerationProvider}
+                onChange={(event) =>
+                  worldRef.current?.setPlayerGenerationProvider(
+                    event.target.value as RoleGenerationProvider,
+                  )
+                }
+              >
+                <option value="instantmesh-gradio">Fast asset</option>
+                <option value="pixal3d-gradio">High quality</option>
+                <option value="anigen-gradio">Animated</option>
+                <option value="local">Local fallback</option>
+              </select>
+            </label>
+            <label>
+              <span>Agents</span>
+              <select
+                className="asset-select"
+                value={snapshot.agentGenerationProvider}
+                onChange={(event) =>
+                  worldRef.current?.setAgentGenerationProvider(
+                    event.target.value as RoleGenerationProvider,
+                  )
+                }
+              >
+                <option value="pixal3d-gradio">High quality</option>
+                <option value="instantmesh-gradio">Fast asset</option>
+                <option value="anigen-gradio">Animated</option>
+                <option value="local">Local fallback</option>
+              </select>
+            </label>
+          </section>
         )}
 
-        {toolMenu === "ai" && (
+        {isToolOpen("ai") && (
           <section className="tool-card ai-card">
-            <div className="tool-title">
-              <Bot size={16} />
+            <div className="panel-strip">
               <span>AI Agents</span>
+              <button
+                type="button"
+                className="icon-button"
+                title="Hide AI"
+                aria-label="Hide AI"
+                onClick={() => closeToolPanel("ai")}
+              >
+                <ArrowLeft size={17} />
+              </button>
             </div>
             <div className="agent-list compact">
               {snapshot.agents.map((agent) => (
@@ -7575,11 +7650,19 @@ function App(): React.ReactElement {
           </section>
         )}
 
-        {toolMenu === "terrain" && (
+        {isToolOpen("terrain") && (
         <section className="tool-card">
-          <div className="tool-title">
-            <Mountain size={16} />
+          <div className="panel-strip">
             <span>Terrain</span>
+            <button
+              type="button"
+              className="icon-button"
+              title="Hide terrain"
+              aria-label="Hide terrain"
+              onClick={() => closeToolPanel("terrain")}
+            >
+              <ArrowLeft size={17} />
+            </button>
           </div>
           <div className="terrain-subtitle">Height</div>
           <div className="terrain-actions compact terrain-height-actions">
@@ -7610,47 +7693,53 @@ function App(): React.ReactElement {
             </button>
           </div>
           <div className="terrain-subtitle with-rule">Materials</div>
-          <div className="terrain-actions compact terrain-material-actions">
+          <div className="terrain-material-swatches">
             <button
               type="button"
-              className="secondary-button"
+              className="terrain-swatch meadow"
               onClick={() => worldRef.current?.sculptTerrain("meadow")}
             >
+              <span className="terrain-swatch-preview" />
               <span>Meadow</span>
             </button>
             <button
               type="button"
-              className="secondary-button"
+              className="terrain-swatch beach"
               onClick={() => worldRef.current?.sculptTerrain("beach")}
             >
+              <span className="terrain-swatch-preview" />
               <span>Beach</span>
             </button>
             <button
               type="button"
-              className="secondary-button"
+              className="terrain-swatch dirt"
               onClick={() => worldRef.current?.sculptTerrain("dirt")}
             >
+              <span className="terrain-swatch-preview" />
               <span>Dirt</span>
             </button>
             <button
               type="button"
-              className="secondary-button"
+              className="terrain-swatch pebbles"
               onClick={() => worldRef.current?.sculptTerrain("rock")}
             >
+              <span className="terrain-swatch-preview" />
               <span>Pebbles</span>
             </button>
             <button
               type="button"
-              className="secondary-button"
+              className="terrain-swatch snow"
               onClick={() => worldRef.current?.sculptTerrain("snow")}
             >
+              <span className="terrain-swatch-preview" />
               <span>Snow</span>
             </button>
             <button
               type="button"
-              className="secondary-button"
+              className="terrain-swatch flowers"
               onClick={() => worldRef.current?.sculptTerrain("flowers")}
             >
+              <span className="terrain-swatch-preview" />
               <span>Flowers</span>
             </button>
           </div>
@@ -7658,6 +7747,7 @@ function App(): React.ReactElement {
         )}
 
       </aside>
+      )}
 
     </main>
   );
