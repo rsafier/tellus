@@ -112,7 +112,7 @@ INSTANTMESH_SAMPLE_STEPS=30
 TELLUS_GENERATED_ASSET_DIR=Z:\3d\assets\tellus
 TELLUS_TEXT_TO_IMAGE_PROVIDER=gradio
 TELLUS_TEXT_TO_IMAGE_BASE_URL=http://192.168.1.173:7862
-TELLUS_GRADIO_IMAGE_API_NAME=generate_image
+TELLUS_GRADIO_IMAGE_API_NAME=generate
 ```
 
 For deployed builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL that the
@@ -130,8 +130,8 @@ text prompt -> concept image -> InstantMesh -> persisted GLB
 Set `TELLUS_TEXT_TO_IMAGE_PROVIDER=gradio` with
 `TELLUS_TEXT_TO_IMAGE_BASE_URL=http://192.168.1.173:7862` to use the Mac-side
 Z-Image-Turbo MLX Gradio service. Tellus calls the named Gradio API
-`/gradio_api/api/generate_image` with prompt, height, width, steps, seed, and
-random-seed inputs.
+`/gradio_api/api/generate` with prompt, seed, steps, width, height, guidance,
+and negative-prompt inputs.
 
 Tellus can also use `TELLUS_TEXT_TO_IMAGE_PROVIDER=comfyui` with a ComfyUI
 workflow, `TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111`, or
