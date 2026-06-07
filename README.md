@@ -141,6 +141,8 @@ Set these Coolify environment variables:
 ```text
 PORT=3000
 VITE_TELLUS_GENERATION_PROVIDER=instantmesh-gradio
+VITE_TELLUS_PLAYER_GENERATION_PROVIDER=instantmesh-gradio
+VITE_TELLUS_AGENT_GENERATION_PROVIDER=pixal3d-gradio
 INSTANTMESH_GRADIO_BASE_URL=http://192.168.1.177:43839
 INSTANTMESH_SAMPLE_STEPS=30
 ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
@@ -166,6 +168,11 @@ VITE_TELLUS_GENERATION_PROVIDER=local
 `local` keeps the fast procedural meshes. `asset-forge` calls the Asset Forge
 pipeline. `instantmesh-gradio` calls a direct InstantMesh Gradio adapter through
 Tellus' own `/api/generate-3d` endpoint.
+
+Tellus can route players and agents through different direct generators. The
+default is fast player creation through `VITE_TELLUS_PLAYER_GENERATION_PROVIDER=instantmesh-gradio`
+and slower autonomous agent creation through
+`VITE_TELLUS_AGENT_GENERATION_PROVIDER=pixal3d-gradio`.
 
 For direct InstantMesh:
 

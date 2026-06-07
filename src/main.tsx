@@ -78,6 +78,11 @@ type GenerationProvider =
   | "instantmesh-gradio"
   | "pixal3d-gradio"
   | "anigen-gradio";
+type DirectGenerationProvider = Extract<
+  GenerationProvider,
+  "instantmesh-gradio" | "pixal3d-gradio" | "anigen-gradio"
+>;
+type RoleGenerationProvider = DirectGenerationProvider | "local";
 type InstantMeshTarget = "dgx" | "local";
 type GeneratedKind =
   | "tree"
@@ -187,6 +192,8 @@ interface TellusSnapshot {
   logs: TellusLog[];
   paused: boolean;
   generationProvider: GenerationProvider;
+  playerGenerationProvider: RoleGenerationProvider;
+  agentGenerationProvider: RoleGenerationProvider;
   instantMeshTarget: InstantMeshTarget;
   userId: string;
   visitorPosition?: Vec3;
@@ -215,6 +222,8 @@ interface TellusWorldApi {
   updateAgentGoal(agentId: AgentId, goal: string): void;
   importGeneratedThings(things: WorldGeneratedThing[]): void;
   setGenerationProvider(provider: GenerationProvider): void;
+  setPlayerGenerationProvider(provider: RoleGenerationProvider): void;
+  setAgentGenerationProvider(provider: RoleGenerationProvider): void;
   setInstantMeshTarget(target: InstantMeshTarget): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
@@ -227,6 +236,8 @@ interface TellusRuntimeConfig {
   assetForgeApiBase: string;
   agentModel: string;
   generationProvider: GenerationProvider;
+  playerGenerationProvider: RoleGenerationProvider;
+  agentGenerationProvider: RoleGenerationProvider;
   instantMeshTarget: InstantMeshTarget;
   instantMeshTargets: Record<InstantMeshTarget, string>;
   worldApiBase: string;
@@ -415,6 +426,14 @@ const runtimeConfig: TellusRuntimeConfig = {
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
       | undefined) ?? "instantmesh-gradio",
+  playerGenerationProvider:
+    (import.meta.env.VITE_TELLUS_PLAYER_GENERATION_PROVIDER as
+      | RoleGenerationProvider
+      | undefined) ?? "instantmesh-gradio",
+  agentGenerationProvider:
+    (import.meta.env.VITE_TELLUS_AGENT_GENERATION_PROVIDER as
+      | RoleGenerationProvider
+      | undefined) ?? "pixal3d-gradio",
   instantMeshTarget:
     (import.meta.env.VITE_TELLUS_INSTANTMESH_TARGET as InstantMeshTarget | undefined) ??
     "dgx",
@@ -1803,14 +1822,14 @@ async function waitForPixel3DModelUrl(
   throw new Error(`Pipeline ${pipelineId} timed out`);
 }
 
-function hasExternalGenerationProvider(): boolean {
-  if (runtimeConfig.generationProvider === "asset-forge") {
+function hasExternalGenerationProvider(provider = runtimeConfig.generationProvider): boolean {
+  if (provider === "asset-forge") {
     return Boolean(runtimeConfig.assetForgeApiBase);
   }
   return (
-    runtimeConfig.generationProvider === "instantmesh-gradio" ||
-    runtimeConfig.generationProvider === "pixal3d-gradio" ||
-    runtimeConfig.generationProvider === "anigen-gradio"
+    provider === "instantmesh-gradio" ||
+    provider === "pixal3d-gradio" ||
+    provider === "anigen-gradio"
   );
 }
 
@@ -1819,8 +1838,21 @@ function isMissingApiRouteError(error: unknown): boolean {
   return /\b(404|405)\b/.test(error.message) || error.message.includes("endpoint unavailable");
 }
 
+function generationProviderForThing(thing: GeneratedThing): GenerationProvider {
+  if (
+    runtimeConfig.generationProvider === "local" ||
+    runtimeConfig.generationProvider === "asset-forge"
+  ) {
+    return runtimeConfig.generationProvider;
+  }
+  return thing.creatorId === "visitor"
+    ? runtimeConfig.playerGenerationProvider
+    : runtimeConfig.agentGenerationProvider;
+}
+
 async function startDirectInstantMeshGeneration(
   thing: GeneratedThing,
+  provider: DirectGenerationProvider,
   signal?: AbortSignal,
 ): Promise<DirectGenerationResponse> {
   const response = await fetch(tellusApiUrl("/api/generate-3d"), {
@@ -1831,9 +1863,9 @@ async function startDirectInstantMeshGeneration(
       id: thing.id,
       prompt: thing.prompt,
       kind: thing.kind,
-      provider: runtimeConfig.generationProvider,
+      provider,
       instantMeshBaseUrl:
-        runtimeConfig.generationProvider === "instantmesh-gradio"
+        provider === "instantmesh-gradio"
           ? runtimeConfig.instantMeshTargets[runtimeConfig.instantMeshTarget]
           : undefined,
     }),
@@ -3528,6 +3560,8 @@ function createTellusWorld(
     logs: logs.slice(-80),
     paused,
     generationProvider: runtimeConfig.generationProvider,
+    playerGenerationProvider: runtimeConfig.playerGenerationProvider,
+    agentGenerationProvider: runtimeConfig.agentGenerationProvider,
     instantMeshTarget: runtimeConfig.instantMeshTarget,
     userId,
     visitorPosition: { ...visitorPosition },
@@ -4517,7 +4551,6 @@ function createTellusWorld(
   const generate = (request: GenerateRequest): GeneratedThing => {
     const kind = inferGeneratedKind(request.prompt, request.creatorId);
     const position = chooseLocation(request);
-    const usesExternalGeneration = hasExternalGenerationProvider() && directGenerationAvailable;
     const thing: GeneratedThing = {
       id: makeId(kind),
       kind,
@@ -4529,8 +4562,12 @@ function createTellusWorld(
       rotationY: 0,
       scale: request.scale ?? 0.75 + rand(tick + generated.length) * 0.8,
       color: kindColor(kind, request.prompt),
-      generationStatus: usesExternalGeneration ? "queued" : "local",
+      generationStatus: "local",
     };
+    const generationProvider = generationProviderForThing(thing);
+    const usesExternalGeneration =
+      hasExternalGenerationProvider(generationProvider) && directGenerationAvailable;
+    thing.generationStatus = usesExternalGeneration ? "queued" : "local";
     generated.push(thing);
     const mesh = usesExternalGeneration
       ? createGenerationSwirl(thing)
@@ -4562,7 +4599,7 @@ function createTellusWorld(
     };
 
     if (
-      runtimeConfig.generationProvider === "asset-forge" &&
+      generationProvider === "asset-forge" &&
       runtimeConfig.assetForgeApiBase
     ) {
       const generationController = new AbortController();
@@ -4649,11 +4686,11 @@ function createTellusWorld(
         });
     } else if (
       directGenerationAvailable &&
-      (runtimeConfig.generationProvider === "instantmesh-gradio" ||
-        runtimeConfig.generationProvider === "pixal3d-gradio" ||
-        runtimeConfig.generationProvider === "anigen-gradio")
+      (generationProvider === "instantmesh-gradio" ||
+        generationProvider === "pixal3d-gradio" ||
+        generationProvider === "anigen-gradio")
     ) {
-      const providerName = generationProviderLabels[runtimeConfig.generationProvider];
+      const providerName = generationProviderLabels[generationProvider];
       const generationController = new AbortController();
       pendingGenerationControllers.set(thing.id, generationController);
       addLog({
@@ -4662,7 +4699,11 @@ function createTellusWorld(
         tool: "generate",
         text: `Sending ${thing.kind} to ${providerName}: "${thing.prompt}"`,
       });
-      void startDirectInstantMeshGeneration(thing, generationController.signal)
+      void startDirectInstantMeshGeneration(
+        thing,
+        generationProvider,
+        generationController.signal,
+      )
         .then(async (initialResult) => {
           if (destroyed || paused || !thingById(thing.id)) return;
           thing.pipelineId = initialResult.jobId;
@@ -4949,6 +4990,30 @@ function createTellusWorld(
       agentName: "Tellus",
       tool: "interact",
       text: `Generation pipeline set to ${generationProviderLabels[provider]}.`,
+    });
+    publish();
+  };
+
+  const setPlayerGenerationProvider = (provider: RoleGenerationProvider) => {
+    if (runtimeConfig.playerGenerationProvider === provider) return;
+    runtimeConfig.playerGenerationProvider = provider;
+    addLog({
+      agentId: "world",
+      agentName: "Tellus",
+      tool: "interact",
+      text: `Player generation set to ${generationProviderLabels[provider]}.`,
+    });
+    publish();
+  };
+
+  const setAgentGenerationProvider = (provider: RoleGenerationProvider) => {
+    if (runtimeConfig.agentGenerationProvider === provider) return;
+    runtimeConfig.agentGenerationProvider = provider;
+    addLog({
+      agentId: "world",
+      agentName: "Tellus",
+      tool: "interact",
+      text: `Agent generation set to ${generationProviderLabels[provider]}.`,
     });
     publish();
   };
@@ -6111,6 +6176,8 @@ function createTellusWorld(
     updateAgentGoal,
     importGeneratedThings,
     setGenerationProvider,
+    setPlayerGenerationProvider,
+    setAgentGenerationProvider,
     setInstantMeshTarget,
     setPaused,
     submitVisitorPrompt,
@@ -6210,6 +6277,8 @@ function App(): React.ReactElement {
     logs: [],
     paused: false,
     generationProvider: runtimeConfig.generationProvider,
+    playerGenerationProvider: runtimeConfig.playerGenerationProvider,
+    agentGenerationProvider: runtimeConfig.agentGenerationProvider,
     instantMeshTarget: runtimeConfig.instantMeshTarget,
     userId: tellusUserId(),
     remoteVisitors: [],
@@ -6527,24 +6596,41 @@ function App(): React.ReactElement {
                   </summary>
                   <div className="settings-menu-panel">
                     <label>
-                      <span>Generation</span>
+                      <span>Players</span>
                       <select
                         className="asset-select"
-                        value={snapshot.generationProvider}
+                        value={snapshot.playerGenerationProvider}
                         onChange={(event) =>
-                          worldRef.current?.setGenerationProvider(
-                            event.target.value as GenerationProvider,
+                          worldRef.current?.setPlayerGenerationProvider(
+                            event.target.value as RoleGenerationProvider,
+                          )
+                        }
+                      >
+                        <option value="instantmesh-gradio">Fast asset</option>
+                        <option value="pixal3d-gradio">High quality</option>
+                        <option value="anigen-gradio">Animated</option>
+                        <option value="local">Local fallback</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Agents</span>
+                      <select
+                        className="asset-select"
+                        value={snapshot.agentGenerationProvider}
+                        onChange={(event) =>
+                          worldRef.current?.setAgentGenerationProvider(
+                            event.target.value as RoleGenerationProvider,
                           )
                         }
                       >
                         <option value="pixal3d-gradio">High quality</option>
                         <option value="instantmesh-gradio">Fast asset</option>
                         <option value="anigen-gradio">Animated</option>
-                        <option value="asset-forge">Asset Forge</option>
                         <option value="local">Local fallback</option>
                       </select>
                     </label>
-                    {snapshot.generationProvider === "instantmesh-gradio" && (
+                    {(snapshot.playerGenerationProvider === "instantmesh-gradio" ||
+                      snapshot.agentGenerationProvider === "instantmesh-gradio") && (
                       <label>
                         <span>InstantMesh</span>
                         <select
