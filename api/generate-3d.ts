@@ -147,6 +147,55 @@ interface ComfyHistoryResponse {
 
 const generationJobs = new Map<string, GenerationJob>();
 let generationQueueTail: Promise<void> = Promise.resolve();
+const queuedJobTtlMs = Number(process.env.TELLUS_GENERATION_QUEUED_TTL_MS ?? 8 * 60 * 1000);
+const jobExecutionTimeoutMs = Number(
+  process.env.TELLUS_GENERATION_JOB_TIMEOUT_MS ?? 4 * 60 * 1000,
+);
+const runningJobTtlMs = Number(process.env.TELLUS_GENERATION_RUNNING_TTL_MS ?? 28 * 60 * 1000);
+
+function generationJobExpired(job: GenerationJob, now = Date.now()): boolean {
+  if (job.status === "queued") return now - job.createdAt > queuedJobTtlMs;
+  if (job.status === "generating") {
+    return now - (job.startedAt ?? job.createdAt) > runningJobTtlMs;
+  }
+  return false;
+}
+
+function pruneGenerationJobs(): void {
+  const now = Date.now();
+  for (const [jobId, job] of generationJobs) {
+    if (generationJobExpired(job, now)) {
+      job.status = "failed";
+      job.error = "Generation job expired before completion";
+    }
+    if (
+      (job.status === "completed" || job.status === "failed") &&
+      now - (job.startedAt ?? job.createdAt) > runningJobTtlMs
+    ) {
+      generationJobs.delete(jobId);
+    }
+  }
+}
+
+async function withGenerationTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = jobExecutionTimeoutMs,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`Generation job timed out after ${Math.round(timeoutMs / 1000)}s`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 function conceptImageDataUrl(prompt: string, kind: string): string {
   const width = 256;
@@ -509,6 +558,9 @@ async function generateGradioConceptImage(
   }
 
   const imagePrompt = imageGenerationPrompt(prompt, kind);
+  const negativePrompt =
+    process.env.TELLUS_TEXT_TO_IMAGE_NEGATIVE_PROMPT?.trim() ||
+    "text, watermark, logo, cropped, blurry, background clutter, multiple objects";
   const response = await fetch(
     `${baseUrl}/gradio_api/api/${
       process.env.TELLUS_GRADIO_IMAGE_API_NAME?.trim() || "generate_image"
@@ -519,11 +571,12 @@ async function generateGradioConceptImage(
       body: JSON.stringify({
         data: [
           imagePrompt,
-          Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024),
-          Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024),
-          Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 9),
           Number(process.env.TELLUS_TEXT_TO_IMAGE_SEED || 42),
-          process.env.TELLUS_TEXT_TO_IMAGE_RANDOM_SEED !== "false",
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_STEPS || 9),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_WIDTH || 1024),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_HEIGHT || 1024),
+          Number(process.env.TELLUS_TEXT_TO_IMAGE_GUIDANCE || 0),
+          negativePrompt,
         ],
       }),
     },
@@ -1221,6 +1274,16 @@ function missingProviderConfigMessage(provider: Generation3DProvider): string {
   return "INSTANTMESH_GRADIO_BASE_URL is not configured";
 }
 
+function disabledProviderMessage(provider: Generation3DProvider): string | null {
+  const disabled = new Set(
+    (process.env.TELLUS_DISABLED_3D_PROVIDERS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  return disabled.has(provider) ? `${provider} is temporarily disabled` : null;
+}
+
 async function executeGeneration(params: {
   payload: Generate3DRequest;
   provider: Generation3DProvider;
@@ -1366,7 +1429,8 @@ function startGenerationJob(params: {
   generationId: string;
 }): GenerationJob {
   const existing = generationJobs.get(params.generationId);
-  if (existing) return existing;
+  if (existing && !generationJobExpired(existing)) return existing;
+  if (existing) generationJobs.delete(existing.id);
   const job: GenerationJob = {
     id: params.generationId,
     provider: params.provider,
@@ -1376,13 +1440,20 @@ function startGenerationJob(params: {
   generationJobs.set(job.id, job);
 
   const run = async () => {
+    if (!generationJobs.has(job.id) || generationJobExpired(job)) {
+      job.status = "failed";
+      job.error = "Generation job expired before starting";
+      return;
+    }
     job.status = "generating";
     job.startedAt = Date.now();
     try {
-      const result = await executeGeneration(params);
+      const result = await withGenerationTimeout(executeGeneration(params));
+      if (!generationJobs.has(job.id)) return;
       job.status = "completed";
       job.result = result;
     } catch (error) {
+      if (!generationJobs.has(job.id)) return;
       job.status = "failed";
       job.error =
         error instanceof Error ? error.message : `${params.provider} generation failed`;
@@ -1395,6 +1466,7 @@ function startGenerationJob(params: {
 
 export async function generate3DHandler(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  pruneGenerationJobs();
   if (request.method === "GET") {
     const jobId = url.searchParams.get("jobId") || "";
     const job = generationJobs.get(jobId);
@@ -1414,12 +1486,30 @@ export async function generate3DHandler(request: Request): Promise<Response> {
     } satisfies Generate3DResponse);
   }
 
+  if (request.method === "DELETE") {
+    const jobId = url.searchParams.get("jobId") || "";
+    const job = generationJobs.get(jobId);
+    if (!job) {
+      return Response.json({ ok: true, jobId, cancelled: false });
+    }
+    if (job.status === "queued" || job.status === "generating") {
+      job.status = "failed";
+      job.error = "Generation job cancelled by client";
+    }
+    generationJobs.delete(jobId);
+    return Response.json({ ok: true, jobId, cancelled: true });
+  }
+
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
   const payload = await readRequestJson(request);
   const provider = generationProviderFromValue(payload.provider);
+  const disabledProvider = disabledProviderMessage(provider);
+  if (disabledProvider) {
+    return Response.json({ error: disabledProvider }, { status: 503 });
+  }
   const baseUrl = providerBaseUrl(provider)
     ?.trim()
     .replace(/\/+$/, "");
