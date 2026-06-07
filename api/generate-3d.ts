@@ -156,11 +156,24 @@ interface ComfyHistoryResponse {
 
 const generationJobs = new Map<string, GenerationJob>();
 let generationQueueTail: Promise<void> = Promise.resolve();
-const queuedJobTtlMs = Number(process.env.TELLUS_GENERATION_QUEUED_TTL_MS ?? 8 * 60 * 1000);
-const jobExecutionTimeoutMs = Number(
-  process.env.TELLUS_GENERATION_JOB_TIMEOUT_MS ?? 4 * 60 * 1000,
+
+function millisecondsEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const queuedJobTtlMs = millisecondsEnv(
+  "TELLUS_GENERATION_QUEUED_TTL_MS",
+  90 * 60 * 1000,
 );
-const runningJobTtlMs = Number(process.env.TELLUS_GENERATION_RUNNING_TTL_MS ?? 28 * 60 * 1000);
+const jobExecutionTimeoutMs = millisecondsEnv(
+  "TELLUS_GENERATION_JOB_TIMEOUT_MS",
+  45 * 60 * 1000,
+);
+const runningJobTtlMs = millisecondsEnv(
+  "TELLUS_GENERATION_RUNNING_TTL_MS",
+  90 * 60 * 1000,
+);
 
 function generationJobExpired(job: GenerationJob, now = Date.now()): boolean {
   if (job.status === "queued") return now - job.createdAt > queuedJobTtlMs;

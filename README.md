@@ -176,7 +176,10 @@ TELLUS_GENERATED_ASSET_DIR=Z:\3d\assets\tellus
 TELLUS_TEXT_TO_IMAGE_PROVIDER=gradio
 TELLUS_TEXT_TO_IMAGE_BASE_URL=http://192.168.1.173:7862
 TELLUS_GRADIO_IMAGE_API_NAME=generate
-TELLUS_GENERATION_JOB_TIMEOUT_MS=240000
+PIXAL3D_TIMEOUT_MS=1200000
+TELLUS_GENERATION_JOB_TIMEOUT_MS=2700000
+TELLUS_GENERATION_QUEUED_TTL_MS=5400000
+TELLUS_GENERATION_RUNNING_TTL_MS=5400000
 ```
 
 For deployed builds, `INSTANTMESH_GRADIO_BASE_URL` must be a URL that the
@@ -197,9 +200,11 @@ Z-Image-Turbo MLX Gradio service. Tellus calls the named Gradio API
 `/gradio_api/api/generate` with prompt, seed, steps, width, height, guidance,
 and negative-prompt inputs.
 
-`TELLUS_GENERATION_JOB_TIMEOUT_MS` caps each queued 3D generation lane. Keep it
-long enough for Z-Image plus the 3D model step to finish, but short enough that
-a wedged upstream Gradio request cannot block later visitors indefinitely.
+`TELLUS_GENERATION_JOB_TIMEOUT_MS` caps each queued 3D generation lane. Pixal3D
+and Anigen can run much longer than InstantMesh, so keep this well above the
+upstream Gradio timeout. `TELLUS_GENERATION_QUEUED_TTL_MS` should also be long
+enough for jobs waiting behind the currently loaded model, otherwise queued
+visitor requests can expire before they ever start.
 
 Tellus can also use `TELLUS_TEXT_TO_IMAGE_PROVIDER=comfyui` with a ComfyUI
 workflow, `TELLUS_TEXT_TO_IMAGE_PROVIDER=automatic1111`, or
