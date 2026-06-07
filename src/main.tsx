@@ -65,7 +65,14 @@ import "./styles.css";
 
 type AgentId = "johnny" | "mira" | "sol" | "atlas";
 
-type TerrainKind = "meadow" | "rock" | "snow" | "beach" | "dirt" | "water";
+type TerrainKind =
+  | "meadow"
+  | "rock"
+  | "snow"
+  | "beach"
+  | "dirt"
+  | "flowers"
+  | "water";
 type TerrainPaintKind = Exclude<TerrainKind, "water">;
 type TerrainEditMode = "raise" | "lower" | "flatten" | TerrainPaintKind;
 type GenerationProvider =
@@ -487,10 +494,11 @@ type MaterialWithTextureMaps = THREE.Material & {
 
 const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5fa22e),
-  rock: new THREE.Color(0x5f7074),
+  rock: new THREE.Color(0x6f7467),
   snow: new THREE.Color(0xd4e7e2),
   beach: new THREE.Color(0xf6dcbd),
   dirt: new THREE.Color(0x8a7241),
+  flowers: new THREE.Color(0x6daa35),
   water: new THREE.Color(0x256f92),
 };
 
@@ -500,6 +508,7 @@ const terrainPaintKinds = [
   "dirt",
   "rock",
   "snow",
+  "flowers",
 ] as const satisfies readonly TerrainPaintKind[];
 
 function terrainPaintCode(kind: TerrainPaintKind): number {
@@ -512,6 +521,74 @@ function terrainPaintKindFromCode(code: number): TerrainPaintKind | null {
 
 function isTerrainPaintMode(mode: TerrainEditMode): mode is TerrainPaintKind {
   return terrainPaintKinds.includes(mode as TerrainPaintKind);
+}
+
+function terrainVertexColor(
+  kind: TerrainKind,
+  x: number,
+  z: number,
+  seed: number,
+): THREE.Color {
+  const color = terrainColors[kind].clone();
+  if (kind === "flowers") {
+    const fleck = rand(seed * 7 + 2309);
+    if (fleck > 0.92) return new THREE.Color(0xffd36a);
+    if (fleck > 0.84) return new THREE.Color(0xf2a6cc);
+    if (fleck > 0.78) return new THREE.Color(0xc8dfff);
+    color.lerp(new THREE.Color(0x89b84a), 0.35);
+  } else if (kind === "rock") {
+    const pebble = rand(seed * 5 + 7919);
+    color.lerp(
+      pebble > 0.66 ? new THREE.Color(0xa8956a) : new THREE.Color(0x46505a),
+      0.24,
+    );
+  }
+  const noise = 0.9 + rand(seed + Math.floor(x * 13) + Math.floor(z * 17)) * 0.18;
+  return color.multiplyScalar(noise);
+}
+
+function createFlowerSpriteTexture(petalColor: string): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  if (!context) return new THREE.CanvasTexture(canvas);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.translate(32, 32);
+  context.fillStyle = petalColor;
+  for (let petal = 0; petal < 5; petal++) {
+    context.save();
+    context.rotate((petal / 5) * Math.PI * 2);
+    context.beginPath();
+    context.ellipse(0, -13, 8, 15, 0, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  }
+  context.fillStyle = "#f4d35e";
+  context.beginPath();
+  context.arc(0, 0, 7, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = "rgba(41, 69, 28, 0.32)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.arc(0, 0, 25, 0, Math.PI * 2);
+  context.stroke();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createFlowerSpriteMaterials(): THREE.SpriteMaterial[] {
+  return ["#fff7d6", "#f6adc8", "#d4ddff", "#ffe28a"].map(
+    (petalColor) =>
+      new THREE.SpriteMaterial({
+        map: createFlowerSpriteTexture(petalColor),
+        transparent: true,
+        depthWrite: false,
+        sizeAttenuation: true,
+      }),
+  );
 }
 
 function createAgentSeeds(): TellusAgent[] {
@@ -1992,9 +2069,7 @@ function createTerrainGeometry(): THREE.BufferGeometry {
       const pz = vz * edgeScale;
       const py = inside ? terrainHeight(px, pz) : -4.5;
       const kind = inside ? terrainKind(px, pz, py) : "rock";
-      const color = terrainColors[kind].clone();
-      const noise = 0.9 + rand(x * 1009 + z * 9176) * 0.18;
-      color.multiplyScalar(noise);
+      const color = terrainVertexColor(kind, px, pz, x * 1009 + z * 9176);
       positions.push(px, py, pz);
       colors.push(color.r, color.g, color.b);
     }
@@ -2077,13 +2152,20 @@ function createDistantIslandTerrainGeometry(
       positions.push(point.localX, y, point.localZ);
       const painted = distantTerrainPaintAt(spec, point.x, point.z);
       const color = painted
-        ? terrainColors[painted].clone()
+        ? terrainVertexColor(
+            painted,
+            point.x,
+            point.z,
+            spec.seed + xIndex * 41 + zIndex * 83,
+          )
         : new THREE.Color(0x5a9735).lerp(
             new THREE.Color(0x7a6a4a),
             clamp(point.localRadius * 0.42, 0, 0.42),
           );
-      const noise = 0.9 + rand(spec.seed + xIndex * 41 + zIndex * 83) * 0.14;
-      color.multiplyScalar(noise);
+      if (!painted) {
+        const noise = 0.9 + rand(spec.seed + xIndex * 41 + zIndex * 83) * 0.14;
+        color.multiplyScalar(noise);
+      }
       colors.push(color.r, color.g, color.b);
     }
   }
@@ -3400,7 +3482,7 @@ async function askAgentForDecision(
         {
           role: "system",
           content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual view and a visual screenshot from your own stable body camera, not the visitor camera. Choose exactly one world action. Return only JSON. Use action \"moveSelf\" with dx and dz between -8 and 8 to walk your own body to a better viewpoint. Use action \"generate\" with keys prompt, intent, speech to add one single asset. Or use action \"sculptTerrain\" with terrainMode one of raise, lower, flatten, meadow, beach, dirt, rock, snow. Or use action \"moveAsset\" with targetId plus dx and dz between -4 and 4. Or use action \"rotateAsset\" with targetId plus rotation between -1 and 1 radians. Or use action \"scaleAsset\" with targetId plus scaleMultiplier between 0.65 and 1.5. Or use action \"moveAssetToWater\" with targetId. Do not repeat existing generated objects. The speech should be one short in-character sentence said aloud before you act.",
+            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual view and a visual screenshot from your own stable body camera, not the visitor camera. Choose exactly one world action. Return only JSON. Use action \"moveSelf\" with dx and dz between -8 and 8 to walk your own body to a better viewpoint. Use action \"generate\" with keys prompt, intent, speech to add one single asset. Or use action \"sculptTerrain\" with terrainMode one of raise, lower, flatten, meadow, beach, dirt, rock, snow, flowers. Or use action \"moveAsset\" with targetId plus dx and dz between -4 and 4. Or use action \"rotateAsset\" with targetId plus rotation between -1 and 1 radians. Or use action \"scaleAsset\" with targetId plus scaleMultiplier between 0.65 and 1.5. Or use action \"moveAssetToWater\" with targetId. Do not repeat existing generated objects. The speech should be one short in-character sentence said aloud before you act.",
         },
         {
           role: "user",
@@ -3560,12 +3642,16 @@ function createTellusWorld(
   );
   terrain.receiveShadow = true;
   const pondWater = createPondWater();
+  const flowerPatchGroup = new THREE.Group();
+  flowerPatchGroup.name = "tellus-flower-patches";
+  const flowerSpriteMaterials = createFlowerSpriteMaterials();
   scene.add(
     fallbackSky,
     ocean,
     archipelago,
     terrain,
     pondWater,
+    flowerPatchGroup,
     createFloatingRim(),
     moonCloudVeil.group,
   );
@@ -3658,6 +3744,44 @@ function createTellusWorld(
     if (shore) shore.position.y = waterLevel - 0.035;
   };
 
+  const refreshFlowerPatches = () => {
+    flowerPatchGroup.clear();
+    const flowerCode = terrainPaintCode("flowers");
+    let flowerCount = 0;
+    for (
+      let zIndex = 1;
+      zIndex < TERRAIN_VERTEX_COUNT - 1 && flowerCount < 180;
+      zIndex += 2
+    ) {
+      for (
+        let xIndex = 1;
+        xIndex < TERRAIN_VERTEX_COUNT - 1 && flowerCount < 180;
+        xIndex += 2
+      ) {
+        const index = terrainGridIndex(xIndex, zIndex);
+        if (terrainPaint[index] !== flowerCode) continue;
+        const seed = xIndex * 1009 + zIndex * 9176;
+        if (rand(seed + 31) < 0.34) continue;
+        const vx = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+        const vz = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+        if (Math.hypot(vx, vz) > WORLD_RADIUS - 1) continue;
+        const jitterX = (rand(seed + 101) - 0.5) * 1.2;
+        const jitterZ = (rand(seed + 203) - 0.5) * 1.2;
+        const x = vx + jitterX;
+        const z = vz + jitterZ;
+        const sprite = new THREE.Sprite(
+          flowerSpriteMaterials[flowerCount % flowerSpriteMaterials.length],
+        );
+        sprite.position.set(x, terrainHeight(x, z) + 0.16, z);
+        const scale = 0.52 + rand(seed + 409) * 0.32;
+        sprite.scale.set(scale, scale, scale);
+        sprite.renderOrder = 2;
+        flowerPatchGroup.add(sprite);
+        flowerCount++;
+      }
+    }
+  };
+
   const refreshTerrainGeometry = () => {
     const positions = terrain.geometry.getAttribute(
       "position",
@@ -3675,16 +3799,21 @@ function createTellusWorld(
         const py = inside ? terrainHeight(px, pz) : -4.5;
         const index = terrainGridIndex(xIndex, zIndex);
         positions.setXYZ(index, px, py, pz);
-        const color = terrainColors[inside ? terrainKind(px, pz, py) : "rock"].clone();
-        const noise = 0.9 + rand(xIndex * 1009 + zIndex * 9176) * 0.18;
-        color.multiplyScalar(noise);
+        const color = terrainVertexColor(
+          inside ? terrainKind(px, pz, py) : "rock",
+          px,
+          pz,
+          xIndex * 1009 + zIndex * 9176,
+        );
         colors.setXYZ(index, color.r, color.g, color.b);
       }
     }
     positions.needsUpdate = true;
     colors.needsUpdate = true;
     terrain.geometry.computeVertexNormals();
+    refreshFlowerPatches();
   };
+  refreshFlowerPatches();
 
   const refreshDistantIslandGeometry = (spec: DistantIslandSpec) => {
     const island = archipelago.getObjectByName(`tellus-distant-island-${spec.seed}`);
@@ -6291,6 +6420,11 @@ function createTellusWorld(
       }
       remoteVisitorMeshes.clear();
       remoteVisitors.clear();
+      flowerPatchGroup.clear();
+      for (const material of flowerSpriteMaterials) {
+        material.map?.dispose();
+        material.dispose();
+      }
       resizeObserver?.disconnect();
       transformControls?.detach();
       transformControls?.dispose();
@@ -7503,7 +7637,7 @@ function App(): React.ReactElement {
               className="secondary-button"
               onClick={() => worldRef.current?.sculptTerrain("rock")}
             >
-              <span>Rock</span>
+              <span>Pebbles</span>
             </button>
             <button
               type="button"
@@ -7511,6 +7645,13 @@ function App(): React.ReactElement {
               onClick={() => worldRef.current?.sculptTerrain("snow")}
             >
               <span>Snow</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => worldRef.current?.sculptTerrain("flowers")}
+            >
+              <span>Flowers</span>
             </button>
           </div>
         </section>
