@@ -5370,9 +5370,9 @@ function createTellusWorld(
   const moonDirection = new THREE.Vector3();
   const moonArcDirection = new THREE.Vector3();
 
-  const updateDayNightCycle = (now: number) => {
+  const updateDayNightCycle = (cycleNow: number, animationNow = performance.now()) => {
     const phase =
-      (runtimeConfig.dayNightStart + now / runtimeConfig.dayNightCycleMs) % 1;
+      (runtimeConfig.dayNightStart + cycleNow / runtimeConfig.dayNightCycleMs) % 1;
     const angle = phase * Math.PI * 2;
     const sunHeight = Math.sin(angle);
     const skySunHeight = sunHeight + 0.18;
@@ -5459,7 +5459,7 @@ function createTellusWorld(
         MOON_DISTANCE,
       );
       moonModel.lookAt(camera.position);
-      moonModel.rotateY(now * 0.000018);
+      moonModel.rotateY(animationNow * 0.000018);
       moonModel.visible = moonVisibility > 0.01;
       moonArcDirection.set(
         baseMoonX + sideMoonX * moonLateral,
@@ -5485,7 +5485,7 @@ function createTellusWorld(
           moonHorizonAmount *
           (0.72 + night * 0.28);
         if (material.map) {
-          material.map.offset.x = (now * 0.000004) % 1;
+          material.map.offset.x = (animationNow * 0.000004) % 1;
         }
       });
     }
@@ -5677,7 +5677,7 @@ function createTellusWorld(
     updateSelectionIndicator(now);
     syncTransformControls();
     updateCamera();
-    updateDayNightCycle(now);
+    updateDayNightCycle(Date.now(), now);
     try {
       renderer.render(scene, camera);
       refreshWorldFeedback(now);
@@ -5902,7 +5902,7 @@ function createTellusWorld(
             skyboxTintMaterials.add(material);
           }
           scene.add(skyboxResult.model);
-          updateDayNightCycle(performance.now());
+          updateDayNightCycle(Date.now());
           syncExternalSkyboxToCamera(camera.position);
           addLog({
             agentId: "world",
@@ -5933,7 +5933,7 @@ function createTellusWorld(
             moonMaterials.add(material);
           }
           scene.add(moonModel);
-          updateDayNightCycle(performance.now());
+          updateDayNightCycle(Date.now());
           addLog({
             agentId: "world",
             agentName: "Tellus",
