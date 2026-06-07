@@ -14,6 +14,8 @@ import {
 interface Env {
   TELLUS_WORLD: DurableObjectNamespace<TellusWorld>;
   TELLUS_GENERATION_QUEUE?: Queue<QueuedGenerationJob>;
+  TELLUS_PERSISTENCE_API_BASE?: string;
+  TELLUS_PERSISTENCE_API_TOKEN?: string;
 }
 
 const corsHeaders = {
@@ -24,6 +26,15 @@ const corsHeaders = {
 };
 const assetLibraryBaseUrl = "https://3d.flobots.xyz";
 const presenceTtlMs = 90_000;
+
+interface PersistedWorldState {
+  version: number;
+  worldId: string;
+  terrain: TellusTerrainState;
+  generated: WorldGeneratedThing[];
+  queuedGenerationJobs: QueuedGenerationJob[];
+  savedAt: string;
+}
 
 const defaultTerrainState = (): TellusTerrainState => ({
   version: 2,
@@ -62,6 +73,61 @@ function worldIdFromPath(pathname: string): { worldId: string; route: string } |
   return {
     worldId: decodeURIComponent(match[1]),
     route: match[2] ?? "state",
+  };
+}
+
+function isQueuedGenerationJob(value: unknown): value is QueuedGenerationJob {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as { id?: unknown }).id === "string" &&
+    typeof (value as { worldId?: unknown }).worldId === "string" &&
+    typeof (value as { request?: { prompt?: unknown } }).request?.prompt === "string" &&
+    ((value as { status?: unknown }).status === "queued" ||
+      (value as { status?: unknown }).status === "generating" ||
+      (value as { status?: unknown }).status === "completed" ||
+      (value as { status?: unknown }).status === "failed") &&
+    typeof (value as { createdAt?: unknown }).createdAt === "string" &&
+    typeof (value as { updatedAt?: unknown }).updatedAt === "string"
+  );
+}
+
+function persistedStateFrom(value: unknown, worldId: string): PersistedWorldState | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source =
+    (value as Partial<WorldPatch>).type === "world.snapshot"
+      ? value
+      : (value as { state?: unknown }).state && typeof (value as { state?: unknown }).state === "object"
+        ? (value as { state: unknown }).state
+        : value;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const terrain = (source as { terrain?: unknown }).terrain;
+  if (!isTellusTerrainState(terrain)) return null;
+  const generated = Array.isArray((source as { generated?: unknown }).generated)
+    ? (source as { generated: unknown[] }).generated.filter(isWorldGeneratedThing)
+    : [];
+  const queuedGenerationJobs = Array.isArray(
+    (source as { queuedGenerationJobs?: unknown }).queuedGenerationJobs,
+  )
+    ? (source as { queuedGenerationJobs: unknown[] }).queuedGenerationJobs.filter(isQueuedGenerationJob)
+    : [];
+  return {
+    version:
+      typeof (source as { version?: unknown }).version === "number"
+        ? (source as { version: number }).version
+        : 1,
+    worldId:
+      typeof (source as { worldId?: unknown }).worldId === "string"
+        ? (source as { worldId: string }).worldId
+        : worldId,
+    terrain,
+    generated,
+    queuedGenerationJobs,
+    savedAt:
+      typeof (source as { savedAt?: unknown }).savedAt === "string"
+        ? (source as { savedAt: string }).savedAt
+        : new Date().toISOString(),
   };
 }
 
@@ -131,6 +197,7 @@ export class TellusWorld extends DurableObject<Env> {
   private generated = new Map<string, WorldGeneratedThing>();
   private queuedGenerationJobs = new Map<string, QueuedGenerationJob>();
   private storageWritesAvailable = true;
+  private externalPersistenceAvailable = true;
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -241,7 +308,7 @@ export class TellusWorld extends DurableObject<Env> {
         revision: Math.max((this.terrain?.revision ?? 0) + 1, action.terrain.revision),
         savedAt: now,
       };
-      await this.safeStoragePut("terrain", this.terrain);
+      await this.persistWorldState();
       return {
         type: "terrain.updated",
         terrain: this.terrain,
@@ -259,7 +326,7 @@ export class TellusWorld extends DurableObject<Env> {
         updatedAt: now,
       };
       this.queuedGenerationJobs.set(job.id, job);
-      await this.safeStoragePut("queuedGenerationJobs", [...this.queuedGenerationJobs.values()]);
+      await this.persistWorldState();
       await this.env.TELLUS_GENERATION_QUEUE?.send(job);
       return { type: "generation.queued", job };
     }
@@ -270,13 +337,13 @@ export class TellusWorld extends DurableObject<Env> {
         updatedAt: now,
       };
       this.generated.set(thing.id, thing);
-      await this.safeStoragePut("generated", [...this.generated.values()]);
+      await this.persistWorldState();
       return { type: "generated.updated", thing, actorId: action.visitorId };
     }
 
     if (action.type === "generated.delete") {
       this.generated.delete(action.id);
-      await this.safeStoragePut("generated", [...this.generated.values()]);
+      await this.persistWorldState();
       return { type: "generated.deleted", id: action.id, actorId: action.visitorId };
     }
 
@@ -288,6 +355,13 @@ export class TellusWorld extends DurableObject<Env> {
   }
 
   private async loadState(): Promise<void> {
+    if (this.terrain) return;
+    const externalState = await this.loadExternalWorldState();
+    if (externalState) {
+      this.applyPersistedState(externalState);
+      return;
+    }
+
     if (!this.terrain) {
       try {
         const terrain = await this.ctx.storage.get<TellusTerrainState>("terrain");
@@ -336,6 +410,95 @@ export class TellusWorld extends DurableObject<Env> {
       console.warn(`Tellus world storage write failed for ${key}; continuing in memory`, error);
       return false;
     }
+  }
+
+  private persistedWorldState(): PersistedWorldState {
+    return {
+      version: 1,
+      worldId: this.worldId,
+      terrain: this.terrain ?? defaultTerrainState(),
+      generated: [...this.generated.values()],
+      queuedGenerationJobs: [...this.queuedGenerationJobs.values()],
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  private applyPersistedState(state: PersistedWorldState): void {
+    this.terrain = state.terrain;
+    this.generated = new Map(
+      state.generated.filter(isWorldGeneratedThing).map((item) => [item.id, item]),
+    );
+    this.queuedGenerationJobs = new Map(
+      state.queuedGenerationJobs.filter(isQueuedGenerationJob).map((item) => [item.id, item]),
+    );
+  }
+
+  private externalPersistenceUrl(): string | null {
+    const base = this.env.TELLUS_PERSISTENCE_API_BASE?.trim().replace(/\/+$/, "");
+    if (!base) return null;
+    return `${base}/api/tellus/worlds/${encodeURIComponent(this.worldId)}/state`;
+  }
+
+  private externalPersistenceHeaders(): HeadersInit {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    const token = this.env.TELLUS_PERSISTENCE_API_TOKEN?.trim();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }
+
+  private async loadExternalWorldState(): Promise<PersistedWorldState | null> {
+    const url = this.externalPersistenceUrl();
+    if (!url || !this.externalPersistenceAvailable) return null;
+    try {
+      const response = await fetch(url, {
+        headers: this.externalPersistenceHeaders(),
+      });
+      if (response.status === 404) return null;
+      if (!response.ok) {
+        this.externalPersistenceAvailable = false;
+        console.warn(`Tellus external world load failed: ${response.status}`);
+        return null;
+      }
+      return persistedStateFrom(await response.json(), this.worldId);
+    } catch (error) {
+      this.externalPersistenceAvailable = false;
+      console.warn("Tellus external world load failed", error);
+      return null;
+    }
+  }
+
+  private async saveExternalWorldState(): Promise<boolean> {
+    const url = this.externalPersistenceUrl();
+    if (!url || !this.externalPersistenceAvailable) return false;
+    try {
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: this.externalPersistenceHeaders(),
+        body: JSON.stringify(this.persistedWorldState()),
+      });
+      if (!response.ok) {
+        this.externalPersistenceAvailable = false;
+        console.warn(`Tellus external world save failed: ${response.status}`);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      this.externalPersistenceAvailable = false;
+      console.warn("Tellus external world save failed", error);
+      return false;
+    }
+  }
+
+  private async persistWorldState(): Promise<void> {
+    if (await this.saveExternalWorldState()) return;
+    const state = this.persistedWorldState();
+    await Promise.all([
+      this.safeStoragePut("terrain", state.terrain),
+      this.safeStoragePut("generated", state.generated),
+      this.safeStoragePut("queuedGenerationJobs", state.queuedGenerationJobs),
+    ]);
   }
 
   private async prunePresence(): Promise<boolean> {

@@ -68,6 +68,58 @@ or runtime config:
 For same-origin Cloudflare Pages, add a route or Worker binding that sends
 `/api/world/*` to the `tellus-world` Worker.
 
+### Cheaper Durable World Persistence
+
+The Durable Object should be treated as the live coordinator for WebSockets and
+short-lived presence, not as the write-heavy database for every terrain/object
+edit. To persist world state in the Flask/Mongo asset service instead, configure
+the Worker with:
+
+```bash
+wrangler secret put TELLUS_PERSISTENCE_API_TOKEN --config wrangler.toml
+wrangler deploy --config wrangler.toml --var TELLUS_PERSISTENCE_API_BASE:https://3d.flobots.xyz
+```
+
+or add the variable in the Cloudflare dashboard:
+
+```text
+TELLUS_PERSISTENCE_API_BASE=https://3d.flobots.xyz
+TELLUS_PERSISTENCE_API_TOKEN=...
+```
+
+The Worker will call:
+
+```text
+GET /api/tellus/worlds/:worldId/state
+PUT /api/tellus/worlds/:worldId/state
+```
+
+Expected JSON shape:
+
+```json
+{
+  "version": 1,
+  "worldId": "main",
+  "terrain": {
+    "version": 2,
+    "revision": 12,
+    "terrainSculptOffsets": [],
+    "terrainPaint": [],
+    "distantIslandSculptOffsets": {},
+    "distantIslandPaint": {},
+    "savedAt": "2026-06-07T00:00:00.000Z"
+  },
+  "generated": [],
+  "queuedGenerationJobs": [],
+  "savedAt": "2026-06-07T00:00:00.000Z"
+}
+```
+
+`GET` may also return `{ "state": { ... } }` or a Tellus
+`world.snapshot` patch. `PUT` should upsert by `worldId`. If the Flask endpoint
+is unavailable, the Worker falls back to in-memory state and then Durable Object
+storage where quota allows.
+
 ## Coolify
 
 Deploy Tellus as a Dockerfile-based app. The container listens on port `3000`
