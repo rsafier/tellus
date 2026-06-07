@@ -3996,6 +3996,26 @@ function createTellusWorld(
     });
   };
 
+  const shouldShowGeneratingSwirl = (thing: GeneratedThing): boolean =>
+    !thing.modelUrl &&
+    (thing.generationStatus === "queued" ||
+      thing.generationStatus === "generating");
+
+  const replaceGeneratedSwirlWithFallback = (thing: GeneratedThing) => {
+    const currentMesh = generatedMeshes.get(thing.id);
+    if (currentMesh && !currentMesh.userData.generatingSwirl) return;
+    if (currentMesh) {
+      stopGeneratedAnimation(thing.id);
+      scene.remove(currentMesh);
+      disposeObject(currentMesh);
+    }
+    const fallbackMesh = createGeneratedMesh(thing);
+    generatedMeshes.set(thing.id, fallbackMesh);
+    scene.add(fallbackMesh);
+    syncTransformControls();
+    updateThingMeshPosition(thing);
+  };
+
   const loadRemoteGeneratedModel = (thing: GeneratedThing) => {
     if (!thing.modelUrl || thing.generationStatus !== "ready") return;
     const currentMesh = generatedMeshes.get(thing.id);
@@ -4022,6 +4042,7 @@ function createTellusWorld(
         publish();
       })
       .catch((error) => {
+        replaceGeneratedSwirlWithFallback(thing);
         console.warn("Remote generated model load failed", error);
       });
   };
@@ -4078,6 +4099,9 @@ function createTellusWorld(
       existing.pipelineId = normalized.pipelineId;
       existing.generationStatus = normalized.generationStatus;
       updateThingMeshPosition(existing);
+      if (existing.modelUrl && existing.generationStatus === "ready") {
+        replaceGeneratedSwirlWithFallback(existing);
+      }
       loadRemoteGeneratedModel(existing);
       reconcileRemoteGeneratedManifest(existing);
       return;
@@ -4099,10 +4123,9 @@ function createTellusWorld(
       generationStatus: normalized.generationStatus,
     };
     generated.push(thing);
-    const mesh =
-      thing.modelUrl && thing.generationStatus === "ready"
-        ? createGenerationSwirl(thing)
-        : createGeneratedMesh(thing);
+    const mesh = shouldShowGeneratingSwirl(thing)
+      ? createGenerationSwirl(thing)
+      : createGeneratedMesh(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
     syncTransformControls();
