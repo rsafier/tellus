@@ -2994,6 +2994,16 @@ function createGenerationSwirl(thing: GeneratedThing): THREE.Object3D {
   return group;
 }
 
+function shouldShowGenerationSwirl(thing: GeneratedThing): boolean {
+  if (thing.generationStatus === "queued" || thing.generationStatus === "generating") {
+    return true;
+  }
+  if (thing.generationStatus === "failed" && !thing.modelUrl) {
+    return true;
+  }
+  return Boolean(thing.modelUrl && thing.generationStatus === "ready");
+}
+
 function applyThingRotation(object: THREE.Object3D, thing: GeneratedThing): void {
   object.rotation.set(thing.rotationX ?? 0, thing.rotationY, thing.rotationZ ?? 0);
 }
@@ -4026,6 +4036,24 @@ function createTellusWorld(
       });
   };
 
+  const ensureGeneratedVisual = (thing: GeneratedThing) => {
+    const wantsSwirl = shouldShowGenerationSwirl(thing);
+    const currentMesh = generatedMeshes.get(thing.id);
+    if (currentMesh && Boolean(currentMesh.userData.generatingSwirl) === wantsSwirl) {
+      return;
+    }
+    if (currentMesh) {
+      stopGeneratedAnimation(thing.id);
+      scene.remove(currentMesh);
+      disposeObject(currentMesh);
+    }
+    const nextMesh = wantsSwirl ? createGenerationSwirl(thing) : createGeneratedMesh(thing);
+    generatedMeshes.set(thing.id, nextMesh);
+    scene.add(nextMesh);
+    syncTransformControls();
+    updateThingMeshPosition(thing);
+  };
+
   const reconcileRemoteGeneratedManifest = (thing: GeneratedThing) => {
     if (thing.modelUrl || !thing.pipelineId || pendingManifestReconciliations.has(thing.id)) {
       return;
@@ -4077,6 +4105,7 @@ function createTellusWorld(
       existing.modelUrl = normalized.modelUrl;
       existing.pipelineId = normalized.pipelineId;
       existing.generationStatus = normalized.generationStatus;
+      ensureGeneratedVisual(existing);
       updateThingMeshPosition(existing);
       loadRemoteGeneratedModel(existing);
       reconcileRemoteGeneratedManifest(existing);
@@ -4099,10 +4128,9 @@ function createTellusWorld(
       generationStatus: normalized.generationStatus,
     };
     generated.push(thing);
-    const mesh =
-      thing.modelUrl && thing.generationStatus === "ready"
-        ? createGenerationSwirl(thing)
-        : createGeneratedMesh(thing);
+    const mesh = shouldShowGenerationSwirl(thing)
+      ? createGenerationSwirl(thing)
+      : createGeneratedMesh(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
     syncTransformControls();
@@ -4605,7 +4633,6 @@ function createTellusWorld(
             return;
           }
           thing.generationStatus = "failed";
-          showLocalFallbackMesh();
           publishGeneratedThing(thing);
           addLog({
             agentId: "world",
@@ -4714,11 +4741,12 @@ function createTellusWorld(
             return;
           }
           thing.generationStatus = "failed";
-          showLocalFallbackMesh();
           publishGeneratedThing(thing);
           if (isMissingApiRouteError(error)) {
             directGenerationAvailable = false;
             thing.generationStatus = "local";
+            showLocalFallbackMesh();
+            publishGeneratedThing(thing);
             addLog({
               agentId: "world",
               agentName: "Tellus",
