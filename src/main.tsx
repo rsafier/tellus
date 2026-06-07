@@ -232,6 +232,8 @@ interface TellusRuntimeConfig {
   worldApiBase: string;
   worldId: string;
   skyboxUrl: string;
+  dayNightCycleMs: number;
+  dayNightStart: number;
   enabledAgents: AgentId[];
   avatars: Partial<Record<AgentId, string>>;
 }
@@ -369,6 +371,14 @@ const SKYBOX_FALLBACK_URLS = [
   "/skybox/free_-_skybox_basic_sky.glb",
 ];
 const SKYBOX_VERTICAL_OFFSET = 0;
+const DEFAULT_DAY_NIGHT_CYCLE_MS = 10 * 60 * 1000;
+const DEFAULT_DAY_NIGHT_START = 0.18;
+const MIN_DAY_NIGHT_CYCLE_MS = 60_000;
+const MOON_MODEL_URL = "/moon/moon.glb";
+const MOON_DISTANCE = 124;
+const MOON_SIZE = 26;
+const MOON_ARC_AZIMUTH = 0.54;
+const MOON_ARC_LATERAL_SWAY = 0.58;
 const terrainSculptOffsets = new Float32Array(
   TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
 );
@@ -381,6 +391,18 @@ let pageVisitorId: string | undefined;
 let stableUserId: string | undefined;
 const PIXEL3D_PROVIDER = "pixel3d-gradio";
 let tellusWorldBackendAvailable = false;
+
+function boundedNumber(
+  value: string | number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
 const runtimeConfig: TellusRuntimeConfig = {
   apiBase:
     import.meta.env.VITE_TELLUS_API_BASE?.replace(/\/+$/, "") ?? "",
@@ -408,6 +430,18 @@ const runtimeConfig: TellusRuntimeConfig = {
     import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "",
   worldId: import.meta.env.VITE_TELLUS_WORLD_ID ?? "main",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
+  dayNightCycleMs: boundedNumber(
+    import.meta.env.VITE_TELLUS_DAY_NIGHT_CYCLE_MS,
+    DEFAULT_DAY_NIGHT_CYCLE_MS,
+    MIN_DAY_NIGHT_CYCLE_MS,
+    60 * 60 * 1000,
+  ),
+  dayNightStart: boundedNumber(
+    import.meta.env.VITE_TELLUS_DAY_NIGHT_START,
+    DEFAULT_DAY_NIGHT_START,
+    0,
+    1,
+  ),
   enabledAgents: ["johnny"],
   avatars: {
     johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
@@ -1097,6 +1131,26 @@ function applyRuntimeConfig(config: unknown): void {
   const skyboxUrl = config.skyboxUrl;
   if (typeof skyboxUrl === "string" && skyboxUrl.trim()) {
     runtimeConfig.skyboxUrl = skyboxUrl.trim();
+  }
+
+  const dayNightCycleMs = config.dayNightCycleMs;
+  if (typeof dayNightCycleMs === "number") {
+    runtimeConfig.dayNightCycleMs = boundedNumber(
+      dayNightCycleMs,
+      runtimeConfig.dayNightCycleMs,
+      MIN_DAY_NIGHT_CYCLE_MS,
+      60 * 60 * 1000,
+    );
+  }
+
+  const dayNightStart = config.dayNightStart;
+  if (typeof dayNightStart === "number") {
+    runtimeConfig.dayNightStart = boundedNumber(
+      dayNightStart,
+      runtimeConfig.dayNightStart,
+      0,
+      1,
+    );
   }
 
   const worldApiBase = config.worldApiBase;
@@ -2050,7 +2104,6 @@ function createDistantIsland(spec: DistantIslandSpec): THREE.Group {
     hill.rotation.y = rand(spec.seed + i * 29) * Math.PI;
     group.add(hill);
   }
-
   return group;
 }
 
@@ -2070,6 +2123,67 @@ function createSkyDome(): THREE.Mesh {
     side: THREE.BackSide,
   });
   return new THREE.Mesh(geometry, material);
+}
+
+function createMoonHorizonOccluderTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const context = canvas.getContext("2d");
+  if (!context) return new THREE.CanvasTexture(canvas);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+
+  const verticalFade = context.createLinearGradient(0, 0, 0, canvas.height);
+  verticalFade.addColorStop(0, "rgba(255, 255, 255, 0)");
+  verticalFade.addColorStop(0.2, "rgba(255, 255, 255, 0.28)");
+  verticalFade.addColorStop(0.44, "rgba(255, 255, 255, 0.82)");
+  verticalFade.addColorStop(1, "rgba(255, 255, 255, 1)");
+  context.fillStyle = verticalFade;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const edgeFade = context.createLinearGradient(0, 0, canvas.width, 0);
+  edgeFade.addColorStop(0, "rgba(0, 0, 0, 0)");
+  edgeFade.addColorStop(0.2, "rgba(0, 0, 0, 1)");
+  edgeFade.addColorStop(0.8, "rgba(0, 0, 0, 1)");
+  edgeFade.addColorStop(1, "rgba(0, 0, 0, 0)");
+  context.globalCompositeOperation = "destination-in";
+  context.fillStyle = edgeFade;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.globalCompositeOperation = "source-over";
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function createMoonCloudVeil(): {
+  group: THREE.Group;
+  materials: THREE.MeshBasicMaterial[];
+} {
+  const group = new THREE.Group();
+  group.name = "tellus-moon-cloud-veil";
+  group.renderOrder = -70;
+  group.visible = false;
+  const materials: THREE.MeshBasicMaterial[] = [];
+  const material = new THREE.MeshBasicMaterial({
+    map: createMoonHorizonOccluderTexture(),
+    color: 0x3a2376,
+    transparent: true,
+    opacity: 0,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const cloud = new THREE.Mesh(
+    new THREE.PlaneGeometry(MOON_SIZE * 5.2, MOON_SIZE * 1.45),
+    material,
+  );
+  cloud.renderOrder = -70;
+  cloud.position.y = -MOON_SIZE * 0.26;
+  cloud.position.z = 0.08;
+  materials.push(material);
+  group.add(cloud);
+  return { group, materials };
 }
 
 function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
@@ -2210,6 +2324,73 @@ function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
   });
 
   return model;
+}
+
+function collectSkyboxTintMaterials(
+  model: THREE.Object3D,
+): THREE.MeshBasicMaterial[] {
+  const materials: THREE.MeshBasicMaterial[] = [];
+  model.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const meshMaterials = Array.isArray(child.material)
+      ? child.material
+      : [child.material];
+    for (const material of meshMaterials) {
+      if (material instanceof THREE.MeshBasicMaterial) {
+        materials.push(material);
+      }
+    }
+  });
+  return materials;
+}
+
+function prepareMoonModel(model: THREE.Object3D): {
+  model: THREE.Object3D;
+  materials: THREE.MeshStandardMaterial[];
+} {
+  const bounds = new THREE.Box3().setFromObject(model);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
+  const largestAxis = Math.max(size.x, size.y, size.z);
+  const scale = largestAxis > 0 ? MOON_SIZE / largestAxis : 1;
+  const moonMaterials: THREE.MeshStandardMaterial[] = [];
+
+  model.name = "tellus-moon";
+  model.scale.setScalar(scale);
+  model.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+  model.renderOrder = -80;
+
+  model.traverse((child) => {
+    child.frustumCulled = false;
+    if (!(child instanceof THREE.Mesh)) return;
+    child.renderOrder = -80;
+    child.castShadow = false;
+    child.receiveShadow = false;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    const preparedMaterials = materials.map((material) => {
+      const mappedMaterial = material as MaterialWithTextureMaps;
+      const moonMaterial = new THREE.MeshStandardMaterial({
+        map: mappedMaterial.map ?? null,
+        emissiveMap: mappedMaterial.map ?? null,
+        color: 0xf4f0e6,
+        emissive: 0xffffff,
+        emissiveIntensity: 1.8,
+        roughness: 0.72,
+        metalness: 0,
+        transparent: false,
+        opacity: 1,
+        depthTest: true,
+        depthWrite: false,
+      });
+      moonMaterials.push(moonMaterial);
+      return moonMaterial;
+    });
+    child.material = Array.isArray(child.material)
+      ? preparedMaterials
+      : preparedMaterials[0];
+  });
+
+  return { model, materials: moonMaterials };
 }
 
 async function loadSkyboxModel(): Promise<
@@ -3221,6 +3402,7 @@ function createTellusWorld(
   const generatedMeshes = new Map<string, THREE.Object3D>();
   const generatedAnimationMixers = new Map<string, THREE.AnimationMixer>();
   const agentMeshes = new Map<AgentId, THREE.Group>();
+  const skyboxTintMaterials = new Set<THREE.MeshBasicMaterial>();
   const pendingAgentDecisions = new Set<AgentId>();
   const pendingGenerationControllers = new Map<string, AbortController>();
   const pendingManifestReconciliations = new Set<string>();
@@ -3228,6 +3410,9 @@ function createTellusWorld(
   let selectedThingId: string | undefined;
   let sailingThingId: string | undefined;
   let externalSkybox: THREE.Object3D | null = null;
+  let moonModel: THREE.Object3D | null = null;
+  const moonMaterials = new Set<THREE.MeshStandardMaterial>();
+  const moonCloudVeil = createMoonCloudVeil();
   let visualFeedback = "";
   let nextWorldFeedbackAt =
     performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
@@ -3259,6 +3444,9 @@ function createTellusWorld(
   const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
   const agentVisionCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 260);
   const fallbackSky = createSkyDome();
+  if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
+    skyboxTintMaterials.add(fallbackSky.material);
+  }
   const useWebGPU = "gpu" in navigator;
   const ocean = createOceanSurface(useWebGPU);
   const archipelago = createDistantArchipelago();
@@ -3279,6 +3467,7 @@ function createTellusWorld(
     terrain,
     pondWater,
     createFloatingRim(),
+    moonCloudVeil.group,
   );
 
   let transformControls: TransformControls | null = null;
@@ -3289,7 +3478,12 @@ function createTellusWorld(
   const sun = new THREE.DirectionalLight(0xffdfb7, 4.1);
   sun.position.set(-55, 58, 42);
   sun.castShadow = true;
-  scene.add(sun, new THREE.HemisphereLight(0xb6ccff, 0x3d5332, 2.25));
+  const moon = new THREE.DirectionalLight(0x9fb7ff, 0.55);
+  moon.position.set(55, 42, -42);
+  moon.castShadow = true;
+  moon.shadow.mapSize.set(1024, 1024);
+  const hemisphere = new THREE.HemisphereLight(0xb6ccff, 0x3d5332, 2.25);
+  scene.add(sun, moon, hemisphere);
 
   for (const agent of agents) {
     const mesh = createAgentMesh(agent);
@@ -5141,6 +5335,174 @@ function createTellusWorld(
     );
   };
 
+  const daylightBackground = new THREE.Color(0xa7c3ef);
+  const sunriseBackground = new THREE.Color(0xf5b85f);
+  const sunsetBackground = new THREE.Color(0xf08ed8);
+  const nightBackground = new THREE.Color(0x8a24d6);
+  const daylightSkyboxTint = new THREE.Color(0xffffff);
+  const sunriseSkyboxTint = new THREE.Color(0xffc45f);
+  const sunsetSkyboxTint = new THREE.Color(0xff83d6);
+  const nightSkyboxTint = new THREE.Color(0xff58ff);
+  const daylightSun = new THREE.Color(0xffdfb7);
+  const duskSun = new THREE.Color(0xffbd5d);
+  const nightSun = new THREE.Color(0xad7be7);
+  const daylightHemiSky = new THREE.Color(0xb6ccff);
+  const duskHemiSky = new THREE.Color(0xffc66d);
+  const nightHemiSky = new THREE.Color(0x7542ad);
+  const daylightHemiGround = new THREE.Color(0x3d5332);
+  const nightHemiGround = new THREE.Color(0x35224f);
+  const oceanDay = new THREE.Color(0x49a8d8);
+  const oceanDusk = new THREE.Color(0xc49a54);
+  const oceanNight = new THREE.Color(0x6b22a8);
+  const reflectedSkyColor = new THREE.Color();
+  const moonDayTint = new THREE.Color(0xf8f9ff);
+  const moonNightTint = new THREE.Color(0xffffff);
+  const backgroundColor = new THREE.Color();
+  const skyboxTint = new THREE.Color();
+  const sunColor = new THREE.Color();
+  const hemiSkyColor = new THREE.Color();
+  const hemiGroundColor = new THREE.Color();
+  const oceanColor = new THREE.Color();
+  const moonMaterialColor = new THREE.Color();
+  const moonDirection = new THREE.Vector3();
+  const moonArcDirection = new THREE.Vector3();
+
+  const updateDayNightCycle = (now: number) => {
+    const phase =
+      (runtimeConfig.dayNightStart + now / runtimeConfig.dayNightCycleMs) % 1;
+    const angle = phase * Math.PI * 2;
+    const sunHeight = Math.sin(angle);
+    const skySunHeight = sunHeight + 0.18;
+    const daylight = THREE.MathUtils.smoothstep(skySunHeight, -0.2, 0.32);
+    const night = 1 - daylight;
+    const twilight =
+      clamp(1 - Math.abs(skySunHeight - 0.02) / 0.48, 0, 1) *
+      (0.45 + daylight * 0.55);
+    const twilightBackground =
+      Math.cos(angle) >= 0 ? sunriseBackground : sunsetBackground;
+    const twilightSkyboxTint =
+      Math.cos(angle) >= 0 ? sunriseSkyboxTint : sunsetSkyboxTint;
+    const waterPhaseColor =
+      Math.cos(angle) >= 0
+        ? sunriseSkyboxTint
+        : sunsetSkyboxTint;
+    reflectedSkyColor
+      .copy(nightSkyboxTint)
+      .lerp(daylightBackground, daylight)
+      .lerp(waterPhaseColor, twilight * 0.62);
+      oceanColor
+        .copy(oceanNight)
+        .lerp(oceanDay, daylight * 0.28)
+        .lerp(reflectedSkyColor, 0.78);
+
+    backgroundColor
+      .copy(nightBackground)
+      .lerp(daylightBackground, daylight)
+      .lerp(twilightBackground, twilight * 0.78);
+    if (scene.background instanceof THREE.Color) {
+      scene.background.copy(backgroundColor);
+    }
+    if (scene.fog instanceof THREE.Fog) {
+      scene.fog.color.copy(backgroundColor);
+      scene.fog.near = 54 + daylight * 18;
+      scene.fog.far = 176 + daylight * 54;
+    }
+
+    skyboxTint
+      .copy(nightSkyboxTint)
+      .lerp(daylightSkyboxTint, daylight)
+      .lerp(twilightSkyboxTint, twilight * 0.62);
+    for (const material of skyboxTintMaterials) {
+      material.color.copy(skyboxTint);
+    }
+
+    sun.position.set(Math.cos(angle) * -72, sunHeight * 88, Math.sin(angle) * 58);
+    sun.intensity = 0.05 + daylight * 4.15 + twilight * 0.55;
+    sunColor.copy(nightSun).lerp(daylightSun, daylight).lerp(duskSun, twilight);
+    sun.color.copy(sunColor);
+
+    moon.position.copy(sun.position).multiplyScalar(-1);
+    moon.position.y = Math.max(18, moon.position.y);
+    moon.intensity = 0.42 + night * 3.35;
+    if (moonModel) {
+      const moonRisePhase = 0.54;
+      const moonVisibleDuration = 0.4;
+      const moonNightProgress =
+        ((phase - moonRisePhase + 1) % 1) / moonVisibleDuration;
+      const moonIsInVisibleWindow = moonNightProgress >= 0 && moonNightProgress <= 1;
+      const moonArcProgress = clamp(moonNightProgress, 0, 1);
+      const moonVisibility =
+        (moonIsInVisibleWindow ? 1 : 0) *
+        THREE.MathUtils.smoothstep(moonArcProgress, 0.02, 0.16) *
+        (1 - THREE.MathUtils.smoothstep(moonArcProgress, 0.86, 0.98));
+      const moonArcHeight =
+        0.04 + Math.sin(moonArcProgress * Math.PI) * 0.72;
+      const moonHorizonAmount =
+        1 - THREE.MathUtils.smoothstep(moonArcHeight, 0.24, 0.48);
+      const baseMoonX = Math.sin(MOON_ARC_AZIMUTH);
+      const baseMoonZ = Math.cos(MOON_ARC_AZIMUTH);
+      const sideMoonX = Math.cos(MOON_ARC_AZIMUTH);
+      const sideMoonZ = -Math.sin(MOON_ARC_AZIMUTH);
+      const moonLateral =
+        (moonArcProgress - 0.5) * MOON_ARC_LATERAL_SWAY * 2;
+      moonArcDirection.set(
+        baseMoonX + sideMoonX * moonLateral,
+        moonArcHeight,
+        baseMoonZ + sideMoonZ * moonLateral,
+      );
+      moonDirection.copy(moonArcDirection).normalize();
+      moonModel.position.copy(camera.position).addScaledVector(
+        moonDirection,
+        MOON_DISTANCE,
+      );
+      moonModel.lookAt(camera.position);
+      moonModel.rotateY(now * 0.000018);
+      moonModel.visible = moonVisibility > 0.01;
+      moonArcDirection.set(
+        baseMoonX + sideMoonX * moonLateral,
+        0.13,
+        baseMoonZ + sideMoonZ * moonLateral,
+      );
+      moonDirection.copy(moonArcDirection).normalize();
+      moonCloudVeil.group.position.copy(camera.position).addScaledVector(
+        moonDirection,
+        MOON_DISTANCE - 0.55,
+      );
+      moonCloudVeil.group.lookAt(camera.position);
+      moonCloudVeil.group.visible = moonHorizonAmount > 0.03 && moonVisibility > 0.02;
+      moonMaterialColor.copy(moonDayTint).lerp(moonNightTint, night);
+      for (const material of moonMaterials) {
+        material.color.copy(moonMaterialColor);
+        material.emissive.copy(moonMaterialColor).multiplyScalar(2.2 + night * 1.45);
+      }
+      moonCloudVeil.materials.forEach((material) => {
+        material.color.copy(oceanColor);
+        material.opacity =
+          moonVisibility *
+          moonHorizonAmount *
+          (0.72 + night * 0.28);
+        if (material.map) {
+          material.map.offset.x = (now * 0.000004) % 1;
+        }
+      });
+    }
+
+    hemiSkyColor
+      .copy(nightHemiSky)
+      .lerp(daylightHemiSky, daylight)
+      .lerp(duskHemiSky, twilight * 0.55);
+    hemiGroundColor.copy(nightHemiGround).lerp(daylightHemiGround, daylight);
+    hemisphere.color.copy(hemiSkyColor);
+    hemisphere.groundColor.copy(hemiGroundColor);
+    hemisphere.intensity = 0.82 + daylight * 1.55 + twilight * 0.3;
+
+    const oceanMaterial = ocean.material;
+    if (oceanMaterial instanceof THREE.MeshBasicMaterial) {
+      oceanMaterial.color.copy(oceanColor);
+      oceanMaterial.opacity = 0.58 + daylight * 0.14;
+    }
+  };
+
   const agentVisionLookTarget = (agent: TellusAgent): Vec3 => {
     if (distance2D(agent.position, agent.target) > 1.2) {
       return agent.target;
@@ -5210,13 +5572,19 @@ function createTellusWorld(
       targetY,
       visitorPosition.z,
     );
+    const skyLookAmount = Math.max(0, pitch + 0.08);
+    const cameraPitch = Math.min(pitch, -0.08);
+    const lookTarget = target.clone();
     const offset = new THREE.Vector3(
-      Math.sin(yaw) * Math.cos(pitch) * -zoom,
-      Math.sin(-pitch) * zoom + 2.2,
-      Math.cos(yaw) * Math.cos(pitch) * -zoom,
+      Math.sin(yaw) * Math.cos(cameraPitch) * -zoom,
+      Math.sin(-cameraPitch) * zoom + 2.2,
+      Math.cos(yaw) * Math.cos(cameraPitch) * -zoom,
     );
+    if (skyLookAmount > 0) {
+      lookTarget.y += skyLookAmount * zoom * 2.6;
+    }
     camera.position.copy(target).add(offset);
-    camera.lookAt(target);
+    camera.lookAt(lookTarget);
     syncExternalSkyboxToCamera(camera.position);
   };
 
@@ -5306,6 +5674,7 @@ function createTellusWorld(
     updateSelectionIndicator(now);
     syncTransformControls();
     updateCamera();
+    updateDayNightCycle(now);
     try {
       renderer.render(scene, camera);
       refreshWorldFeedback(now);
@@ -5390,7 +5759,7 @@ function createTellusWorld(
     pointerX = event.clientX;
     pointerY = event.clientY;
     yaw -= dx * 0.006;
-    pitch = clamp(pitch - dy * 0.003, -0.82, -0.08);
+    pitch = clamp(pitch - dy * 0.003, -1.05, 1.05);
   };
   const selectGeneratedAtPointer = (event: PointerEvent) => {
     const rect = container.getBoundingClientRect();
@@ -5520,10 +5889,18 @@ function createTellusWorld(
         .then((skyboxResult) => {
           if (!skyboxResult || destroyed) return;
           scene.remove(fallbackSky);
+          if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
+            skyboxTintMaterials.delete(fallbackSky.material);
+          }
           fallbackSky.geometry.dispose();
           disposeMaterial(fallbackSky.material);
           externalSkybox = skyboxResult.model;
+          for (const material of collectSkyboxTintMaterials(externalSkybox)) {
+            skyboxTintMaterials.add(material);
+          }
           scene.add(skyboxResult.model);
+          updateDayNightCycle(performance.now());
+          syncExternalSkyboxToCamera(camera.position);
           addLog({
             agentId: "world",
             agentName: "Tellus",
@@ -5539,6 +5916,36 @@ function createTellusWorld(
             agentName: "Tellus",
             tool: "interact",
             text: `Skybox load failed: ${error instanceof Error ? error.message : "unknown skybox error"}`,
+          });
+        });
+      void loadGltfObject(MOON_MODEL_URL)
+        .then((moonAsset) => {
+          if (destroyed) {
+            disposeObject(moonAsset);
+            return;
+          }
+          const preparedMoon = prepareMoonModel(moonAsset);
+          moonModel = preparedMoon.model;
+          for (const material of preparedMoon.materials) {
+            moonMaterials.add(material);
+          }
+          scene.add(moonModel);
+          updateDayNightCycle(performance.now());
+          addLog({
+            agentId: "world",
+            agentName: "Tellus",
+            tool: "interact",
+            text: "Loaded moon model",
+          });
+        })
+        .catch((error) => {
+          addLog({
+            agentId: "world",
+            agentName: "Tellus",
+            tool: "interact",
+            text: `Moon model load failed: ${
+              error instanceof Error ? error.message : "unknown moon error"
+            }`,
           });
         });
       for (const agent of agents) {

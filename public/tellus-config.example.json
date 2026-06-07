@@ -6,6 +6,8 @@
   "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
   "worldId": "main",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
+  "dayNightCycleMs": 600000,
+  "dayNightStart": 0.18,
   "enabledAgents": ["johnny"],
   "avatars": {
     "johnny": "https://cdn.example.com/tellus/johnny.glb",
