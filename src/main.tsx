@@ -275,6 +275,17 @@ declare global {
     SpeechRecognition?: SpeechRecognitionConstructor;
     webkitSpeechRecognition?: SpeechRecognitionConstructor;
     __tellusRoot?: ReturnType<typeof createRoot>;
+    // Optional identity a host (e.g. a headless-browser agent sidecar) can pin BEFORE the app boots, so an
+    // embodied external agent appears as a stable, distinct visitor instead of a fresh random one.
+    __hyadesIdentity?: { visitorId?: string; avatarUrl?: string };
+    // Stable agent-control hook (attached in createTellusWorld). Lets an external driver read world state and
+    // take actions through the same in-world dispatch the built-in agents use. Object-literal property names
+    // survive the production build (esbuild does not mangle keys / member access by default).
+    tellusAgent?: {
+      getState: (radius?: number) => unknown;
+      getNearby: (radius?: number) => unknown;
+      sendAction: (verb: string, args?: Record<string, unknown>) => unknown;
+    };
   }
 }
 
@@ -1093,7 +1104,15 @@ function tellusWorldWebSocketUrl(visitorId: string): string {
 }
 
 function tellusVisitorId(): string {
-  pageVisitorId ??= crypto.randomUUID();
+  if (!pageVisitorId) {
+    // Honor a host-pinned identity (window.__hyadesIdentity or a ?visitorId= query param) before falling
+    // back to a fresh random id — lets an embodied external agent join as a stable, distinct visitor.
+    const injected =
+      window.__hyadesIdentity?.visitorId ??
+      new URLSearchParams(window.location.search).get("visitorId") ??
+      undefined;
+    pageVisitorId = injected && injected.trim() ? injected.trim() : crypto.randomUUID();
+  }
   return pageVisitorId;
 }
 
@@ -4925,6 +4944,97 @@ function createTellusWorld(
   };
 
   void init();
+
+  // Stable agent-control hook (window.tellusAgent). An external driver — e.g. a headless-browser agent
+  // sidecar — reads world state and takes actions AS THIS PAGE'S VISITOR through the exact same in-world
+  // dispatch functions the built-in autonomous agents use, so an embodied external agent and the native
+  // agents share one action path. Verbs mirror the built-in agent decision vocabulary.
+  const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const nearToLocation = (near: unknown): GenerateRequest["location"] =>
+    near === "mountain" ? "near-mountain" : near === "pond" ? "near-pond" : near === "agent" ? "near-agent" : { ...visitorPosition };
+  const tellusAgent = {
+    getNearby(radius = 30) {
+      return generated
+        .map((thing) => ({
+          id: thing.id,
+          kind: thing.kind,
+          prompt: thing.prompt,
+          status: thing.generationStatus ?? "ready",
+          distance: distance2D(visitorPosition, thing.position),
+          direction: compassDirection(visitorPosition, thing.position),
+          scale: thing.scale,
+        }))
+        .filter((o) => o.distance <= radius)
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 12);
+    },
+    getState(radius = 30) {
+      const groundHeight = terrainHeight(visitorPosition.x, visitorPosition.z);
+      return {
+        visitorId,
+        position: { ...visitorPosition },
+        terrainType: terrainKind(visitorPosition.x, visitorPosition.z, groundHeight),
+        terrainHeight: groundHeight,
+        distanceToPond: Math.hypot(visitorPosition.x - POND_CENTER.x, visitorPosition.z - POND_CENTER.z),
+        distanceToSummit: Math.hypot(visitorPosition.x, visitorPosition.z),
+        distanceToShore: Math.max(0, WORLD_RADIUS - Math.hypot(visitorPosition.x, visitorPosition.z)),
+        nearby: tellusAgent.getNearby(radius),
+        verbs: ["moveSelf", "generate", "sculptTerrain", "moveAsset", "rotateAsset", "scaleAsset", "moveAssetToWater"],
+      };
+    },
+    sendAction(verb: string, args: Record<string, unknown> = {}) {
+      const a = args ?? {};
+      switch (verb) {
+        case "moveSelf": {
+          visitorPosition = groundedPosition(
+            visitorPosition.x + clamp(num(a.dx, 0), -8, 8),
+            visitorPosition.z + clamp(num(a.dz, 0), -8, 8),
+            visitorPosition,
+          );
+          sendPresenceUpdate(true);
+          return { ok: true, position: { ...visitorPosition } };
+        }
+        case "generate": {
+          if (typeof a.prompt !== "string" || !a.prompt.trim()) return { ok: false, error: "generate requires a prompt" };
+          const thing = generate({
+            prompt: a.prompt.trim(),
+            location: nearToLocation(a.near),
+            creatorId: "visitor",
+            scale: typeof a.scale === "number" ? a.scale : undefined,
+          });
+          return { ok: true, id: thing.id };
+        }
+        case "sculptTerrain": {
+          const mode = (typeof a.mode === "string" ? a.mode : typeof a.terrainMode === "string" ? a.terrainMode : "flatten") as TerrainEditMode;
+          sculptTerrainAt(mode, visitorPosition, "visitor", "Agent");
+          return { ok: true };
+        }
+        case "moveAsset": {
+          if (typeof a.targetId !== "string") return { ok: false, error: "moveAsset requires a targetId" };
+          moveGenerated(a.targetId, clamp(num(a.dx, 0), -4, 4), clamp(num(a.dz, 0), -4, 4));
+          return { ok: true };
+        }
+        case "rotateAsset": {
+          if (typeof a.targetId !== "string") return { ok: false, error: "rotateAsset requires a targetId" };
+          rotateGenerated(a.targetId, clamp(num(a.rotation, Math.PI / 8), -1, 1));
+          return { ok: true };
+        }
+        case "scaleAsset": {
+          if (typeof a.targetId !== "string") return { ok: false, error: "scaleAsset requires a targetId" };
+          scaleGenerated(a.targetId, clamp(num(a.scaleMultiplier, 1.15), 0.65, 1.5));
+          return { ok: true };
+        }
+        case "moveAssetToWater": {
+          if (typeof a.targetId !== "string") return { ok: false, error: "moveAssetToWater requires a targetId" };
+          moveGeneratedToWater(a.targetId);
+          return { ok: true };
+        }
+        default:
+          return { ok: false, error: `unknown verb: ${verb}` };
+      }
+    },
+  };
+  window.tellusAgent = tellusAgent;
 
   return {
     generate,
