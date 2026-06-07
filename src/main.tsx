@@ -10,7 +10,6 @@ import {
   Box,
   CircleHelp,
   Flower2,
-  Grid3X3,
   Hammer,
   Home,
   Layers,
@@ -25,7 +24,6 @@ import {
   Pause,
   Play,
   Plus,
-  Redo2,
   RotateCcw,
   RotateCw,
   Send,
@@ -34,9 +32,7 @@ import {
   Sparkles,
   Sprout,
   Trash2,
-  Undo2,
   Waves,
-  Wrench,
 } from "lucide-react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
@@ -6730,30 +6726,61 @@ function App(): React.ReactElement {
           </button>
         </div>
         <aside className="world-left-toolbelt" aria-label="Toolbelt">
-          <button type="button" className="toolbelt-button" title="Undo">
-            <Undo2 size={18} />
-            <span>Undo</span>
-          </button>
-          <button type="button" className="toolbelt-button" title="Redo">
-            <Redo2 size={18} />
-            <span>Redo</span>
-          </button>
-          <button type="button" className="toolbelt-button" title="Grid">
-            <Grid3X3 size={18} />
-            <span>Grid</span>
-          </button>
-          <button type="button" className="toolbelt-button" title="Brush size">
-            <Wrench size={18} />
-            <span>Brush</span>
+          <button type="button" className="toolbelt-button" title="Build" onClick={() => setMeshToolsOpen(true)}>
+            <Hammer size={18} />
+            <span>Build</span>
           </button>
           <button
             type="button"
             className="toolbelt-button"
-            title="Open creation tools"
-            onClick={() => setMeshToolsOpen(true)}
+            title="Terrain"
+            onClick={() => {
+              setToolMenu("terrain");
+              setMeshToolsOpen(true);
+            }}
           >
-            <Hammer size={18} />
-            <span>Build</span>
+            <Mountain size={18} />
+            <span>Terrain</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Flora" onClick={() => setPrompt("wildflowers and moss")}>
+            <Flower2 size={18} />
+            <span>Flora</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Fauna" onClick={() => setPrompt("gentle forest animal")}>
+            <Leaf size={18} />
+            <span>Fauna</span>
+          </button>
+          <button
+            type="button"
+            className="toolbelt-button"
+            title="Objects"
+            onClick={() => {
+              setToolMenu("world-assets");
+              setMeshToolsOpen(true);
+            }}
+          >
+            <Layers size={18} />
+            <span>Objects</span>
+          </button>
+          <button
+            type="button"
+            className="toolbelt-button"
+            title="Inventory"
+            onClick={() => {
+              setToolMenu("inventory");
+              setMeshToolsOpen(true);
+            }}
+          >
+            <Backpack size={18} />
+            <span>Inventory</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Chat" onClick={() => setWorldLogOpen(true)}>
+            <MessageCircle size={18} />
+            <span>Chat</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Map">
+            <MapIcon size={18} />
+            <span>Map</span>
           </button>
         </aside>
         <aside className="world-right-hud" aria-label="World systems">
@@ -7122,40 +7149,6 @@ function App(): React.ReactElement {
             </div>
           </div>
         )}
-        <nav className="quick-action-bar" aria-label="Quick action bar">
-          <button type="button" onClick={() => setMeshToolsOpen(true)}>
-            <Hammer size={18} />
-            <span>Build</span>
-          </button>
-          <button type="button" onClick={() => setMeshToolsOpen(true)}>
-            <Mountain size={18} />
-            <span>Terrain</span>
-          </button>
-          <button type="button" onClick={() => setPrompt("wildflowers and moss")}>
-            <Flower2 size={18} />
-            <span>Flora</span>
-          </button>
-          <button type="button" onClick={() => setPrompt("gentle forest animal")}>
-            <Leaf size={18} />
-            <span>Fauna</span>
-          </button>
-          <button type="button" onClick={() => setMeshToolsOpen(true)}>
-            <Layers size={18} />
-            <span>Objects</span>
-          </button>
-          <button type="button" onClick={() => setMeshToolsOpen(true)}>
-            <Backpack size={18} />
-            <span>Inventory</span>
-          </button>
-          <button type="button" onClick={() => setWorldLogOpen(true)}>
-            <MessageCircle size={18} />
-            <span>Chat</span>
-          </button>
-          <button type="button">
-            <MapIcon size={18} />
-            <span>Map</span>
-          </button>
-        </nav>
         <section className="prompt-card world-prompt-card">
           <label htmlFor="tellus-prompt">Create</label>
           <textarea
