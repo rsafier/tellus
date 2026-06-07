@@ -2,6 +2,9 @@ name = "tellus-world"
 main = "cloudflare/world-worker.ts"
 compatibility_date = "2026-06-05"
 
+[vars]
+TELLUS_PERSISTENCE_API_BASE = "https://3d.flobots.xyz"
+
 [[durable_objects.bindings]]
 name = "TELLUS_WORLD"
 class_name = "TellusWorld"
