@@ -130,6 +130,7 @@ export class TellusWorld extends DurableObject<Env> {
   private presence = new Map<string, WorldPresence>();
   private generated = new Map<string, WorldGeneratedThing>();
   private queuedGenerationJobs = new Map<string, QueuedGenerationJob>();
+  private storageWritesAvailable = true;
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -240,7 +241,7 @@ export class TellusWorld extends DurableObject<Env> {
         revision: Math.max((this.terrain?.revision ?? 0) + 1, action.terrain.revision),
         savedAt: now,
       };
-      await this.ctx.storage.put("terrain", this.terrain);
+      await this.safeStoragePut("terrain", this.terrain);
       return {
         type: "terrain.updated",
         terrain: this.terrain,
@@ -258,7 +259,7 @@ export class TellusWorld extends DurableObject<Env> {
         updatedAt: now,
       };
       this.queuedGenerationJobs.set(job.id, job);
-      await this.ctx.storage.put("queuedGenerationJobs", [...this.queuedGenerationJobs.values()]);
+      await this.safeStoragePut("queuedGenerationJobs", [...this.queuedGenerationJobs.values()]);
       await this.env.TELLUS_GENERATION_QUEUE?.send(job);
       return { type: "generation.queued", job };
     }
@@ -269,13 +270,13 @@ export class TellusWorld extends DurableObject<Env> {
         updatedAt: now,
       };
       this.generated.set(thing.id, thing);
-      await this.ctx.storage.put("generated", [...this.generated.values()]);
+      await this.safeStoragePut("generated", [...this.generated.values()]);
       return { type: "generated.updated", thing, actorId: action.visitorId };
     }
 
     if (action.type === "generated.delete") {
       this.generated.delete(action.id);
-      await this.ctx.storage.put("generated", [...this.generated.values()]);
+      await this.safeStoragePut("generated", [...this.generated.values()]);
       return { type: "generated.deleted", id: action.id, actorId: action.visitorId };
     }
 
@@ -288,33 +289,53 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async loadState(): Promise<void> {
     if (!this.terrain) {
-      const terrain = await this.ctx.storage.get<TellusTerrainState>("terrain");
-      this.terrain = isTellusTerrainState(terrain) ? terrain : defaultTerrainState();
-    }
-    if (this.presence.size === 0) {
-      const presence = await this.ctx.storage.get<WorldPresence[]>("presence");
-      if (Array.isArray(presence)) {
-        this.presence = new Map(presence.map((item) => [item.visitorId, item]));
+      try {
+        const terrain = await this.ctx.storage.get<TellusTerrainState>("terrain");
+        this.terrain = isTellusTerrainState(terrain) ? terrain : defaultTerrainState();
+      } catch (error) {
+        console.warn("Tellus world terrain storage unavailable; using default terrain", error);
+        this.terrain = defaultTerrainState();
       }
     }
     if (this.queuedGenerationJobs.size === 0) {
-      const jobs = await this.ctx.storage.get<QueuedGenerationJob[]>("queuedGenerationJobs");
-      if (Array.isArray(jobs)) {
-        this.queuedGenerationJobs = new Map(jobs.map((item) => [item.id, item]));
+      try {
+        const jobs = await this.ctx.storage.get<QueuedGenerationJob[]>("queuedGenerationJobs");
+        if (Array.isArray(jobs)) {
+          this.queuedGenerationJobs = new Map(jobs.map((item) => [item.id, item]));
+        }
+      } catch (error) {
+        console.warn("Tellus world queued job storage unavailable; using memory only", error);
       }
     }
     if (this.generated.size === 0) {
-      const generated = await this.ctx.storage.get<WorldGeneratedThing[]>("generated");
-      if (Array.isArray(generated)) {
-        this.generated = new Map(
-          generated.filter(isWorldGeneratedThing).map((item) => [item.id, item]),
-        );
+      try {
+        const generated = await this.ctx.storage.get<WorldGeneratedThing[]>("generated");
+        if (Array.isArray(generated)) {
+          this.generated = new Map(
+            generated.filter(isWorldGeneratedThing).map((item) => [item.id, item]),
+          );
+        }
+      } catch (error) {
+        console.warn("Tellus world generated storage unavailable; using memory only", error);
       }
     }
   }
 
   private async persistPresence(): Promise<void> {
-    await this.ctx.storage.put("presence", [...this.presence.values()]);
+    // Presence is live-only. Persisting it on every heartbeat burns Durable Object
+    // storage writes without adding useful recovery state.
+  }
+
+  private async safeStoragePut(key: string, value: unknown): Promise<boolean> {
+    if (!this.storageWritesAvailable) return false;
+    try {
+      await this.ctx.storage.put(key, value);
+      return true;
+    } catch (error) {
+      this.storageWritesAvailable = false;
+      console.warn(`Tellus world storage write failed for ${key}; continuing in memory`, error);
+      return false;
+    }
   }
 
   private async prunePresence(): Promise<boolean> {

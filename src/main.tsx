@@ -4098,7 +4098,11 @@ function createTellusWorld(
     const thing = thingById(id);
     if (!thing) return;
     const groundY = groundHeightAt(thing.position.x, thing.position.z);
-    const baseY = groundY ?? thing.position.y;
+    const baseY =
+      groundY ??
+      (Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
+        ? SEA_LEVEL + 0.14
+        : thing.position.y);
     thing.position = {
       ...thing.position,
       y: clamp(thing.position.y + amount, baseY, baseY + 30),

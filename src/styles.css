@@ -932,7 +932,7 @@ textarea::placeholder {
 .selected-nudge-pad {
   display: grid;
   grid-template-columns: repeat(3, 30px);
-  grid-template-rows: repeat(3, 22px);
+  grid-template-rows: repeat(3, 30px);
   align-items: center;
   justify-items: center;
   gap: 1px;
@@ -2335,7 +2335,7 @@ textarea::placeholder {
 
   .selected-nudge-pad {
     grid-template-columns: repeat(3, 28px);
-    grid-template-rows: repeat(3, 20px);
+    grid-template-rows: repeat(3, 28px);
   }
 
   .selected-nudge-pad .icon-button {
