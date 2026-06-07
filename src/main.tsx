@@ -5,10 +5,18 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Backpack,
   Bot,
   Box,
   CircleHelp,
+  Flower2,
+  Grid3X3,
+  Hammer,
+  Home,
+  Layers,
   Leaf,
+  LogOut,
+  Map as MapIcon,
   Menu,
   MessageCircle,
   Mic,
@@ -17,14 +25,20 @@ import {
   Pause,
   Play,
   Plus,
+  Redo2,
   RotateCcw,
   RotateCw,
   Send,
+  Settings,
   Ship,
   Sparkles,
+  Sprout,
   Trash2,
+  Undo2,
+  Wrench,
 } from "lucide-react";
 import * as THREE from "three";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   MeshBasicNodeMaterial,
@@ -63,6 +77,7 @@ type GenerationProvider =
   | "instantmesh-gradio"
   | "pixal3d-gradio"
   | "anigen-gradio";
+type InstantMeshTarget = "dgx" | "local";
 type GeneratedKind =
   | "tree"
   | "flower"
@@ -102,7 +117,9 @@ interface GeneratedThing {
   creatorId: AgentId | "visitor";
   ownerUserId?: string;
   position: Vec3;
+  rotationX?: number;
   rotationY: number;
+  rotationZ?: number;
   scale: number;
   color: number;
   modelUrl?: string;
@@ -169,6 +186,7 @@ interface TellusSnapshot {
   logs: TellusLog[];
   paused: boolean;
   generationProvider: GenerationProvider;
+  instantMeshTarget: InstantMeshTarget;
   userId: string;
   visitorPosition?: Vec3;
   remoteVisitors: WorldPresence[];
@@ -182,7 +200,7 @@ interface TellusWorldApi {
   interact(request: InteractRequest): TellusLog;
   selectGenerated(id?: string): void;
   moveGenerated(id: string, dx: number, dz: number): void;
-  rotateGenerated(id: string, radians: number): void;
+  rotateGenerated(id: string, radians: number, axis?: "x" | "y" | "z"): void;
   scaleGenerated(id: string, multiplier: number): void;
   resetGeneratedScale(id: string): void;
   liftGenerated(id: string, amount: number): void;
@@ -193,7 +211,10 @@ interface TellusWorldApi {
   disembark(): void;
   sculptTerrain(mode: TerrainEditMode): void;
   talkToAgent(agentId: AgentId, message: string): void;
+  updateAgentGoal(agentId: AgentId, goal: string): void;
+  importGeneratedThings(things: WorldGeneratedThing[]): void;
   setGenerationProvider(provider: GenerationProvider): void;
+  setInstantMeshTarget(target: InstantMeshTarget): void;
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
   snapshot(): TellusSnapshot;
@@ -205,6 +226,8 @@ interface TellusRuntimeConfig {
   assetForgeApiBase: string;
   agentModel: string;
   generationProvider: GenerationProvider;
+  instantMeshTarget: InstantMeshTarget;
+  instantMeshTargets: Record<InstantMeshTarget, string>;
   worldApiBase: string;
   worldId: string;
   skyboxUrl: string;
@@ -272,6 +295,9 @@ interface DirectGenerationResponse {
 
 interface GeneratedAssetManifestEntry {
   id?: string;
+  prompt?: string;
+  kind?: string;
+  createdAt?: string;
   modelUrl?: string;
 }
 
@@ -308,6 +334,10 @@ declare global {
       getNearby: (radius?: number) => unknown;
       sendAction: (verb: string, args?: Record<string, unknown>) => unknown;
     };
+    __tellusSnapshot?: () => TellusSnapshot;
+    __tellusImportGenerated?: (things: unknown) => number;
+    __tellusImportSnapshot?: (snapshot: unknown) => number;
+    __tellusSaveGeneratedPlacements?: () => number;
   }
 }
 
@@ -362,6 +392,17 @@ const runtimeConfig: TellusRuntimeConfig = {
     (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
       | TellusRuntimeConfig["generationProvider"]
       | undefined) ?? "instantmesh-gradio",
+  instantMeshTarget:
+    (import.meta.env.VITE_TELLUS_INSTANTMESH_TARGET as InstantMeshTarget | undefined) ??
+    "dgx",
+  instantMeshTargets: {
+    dgx:
+      import.meta.env.VITE_TELLUS_INSTANTMESH_DGX_URL?.replace(/\/+$/, "") ??
+      "http://192.168.1.177:43839",
+    local:
+      import.meta.env.VITE_TELLUS_INSTANTMESH_LOCAL_URL?.replace(/\/+$/, "") ??
+      "http://127.0.0.1:43839",
+  },
   worldApiBase:
     import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "",
   worldId: import.meta.env.VITE_TELLUS_WORLD_ID ?? "main",
@@ -380,6 +421,10 @@ const generationProviderLabels: Record<GenerationProvider, string> = {
   "instantmesh-gradio": "Fast asset",
   "pixal3d-gradio": "High quality",
   "anigen-gradio": "Animated",
+};
+const instantMeshTargetLabels: Record<InstantMeshTarget, string> = {
+  dgx: "DGX",
+  local: "Local",
 };
 const allAgentIds = ["johnny", "mira", "sol", "atlas"] as const;
 
@@ -978,6 +1023,13 @@ function makeId(prefix: string): string {
     .slice(2, 7)}`;
 }
 
+function browserUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return makeId("uuid");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1021,6 +1073,24 @@ function applyRuntimeConfig(config: unknown): void {
       generationProvider === "anigen-gradio")
   ) {
     runtimeConfig.generationProvider = generationProvider;
+  }
+
+  const instantMeshTarget = config.instantMeshTarget;
+  if (
+    !import.meta.env.VITE_TELLUS_INSTANTMESH_TARGET?.trim() &&
+    (instantMeshTarget === "dgx" || instantMeshTarget === "local")
+  ) {
+    runtimeConfig.instantMeshTarget = instantMeshTarget;
+  }
+
+  const instantMeshTargets = config.instantMeshTargets;
+  if (isRecord(instantMeshTargets)) {
+    for (const target of ["dgx", "local"] as const) {
+      const baseUrl = instantMeshTargets[target];
+      if (typeof baseUrl === "string" && baseUrl.trim()) {
+        runtimeConfig.instantMeshTargets[target] = baseUrl.trim().replace(/\/+$/, "");
+      }
+    }
   }
 
   const skyboxUrl = config.skyboxUrl;
@@ -1177,7 +1247,7 @@ function tellusUserId(): string {
     stableUserId = existing;
     return stableUserId;
   }
-  stableUserId = crypto.randomUUID();
+  stableUserId = browserUuid();
   window.localStorage.setItem(storageKey, stableUserId);
   return stableUserId;
 }
@@ -1353,7 +1423,16 @@ async function loadTellusState(): Promise<void> {
       terrainStateDirty = false;
       return;
     }
-    if (!applyTellusTerrainState(await response.json())) {
+    const localTerrainState = await response.json();
+    if (
+      isRecord(localTerrainState) &&
+      localTerrainState.savedAt === "reset-after-smoke"
+    ) {
+      terrainStateLoaded = true;
+      terrainStateDirty = false;
+      return;
+    }
+    if (!applyTellusTerrainState(localTerrainState)) {
       terrainStateLoaded = true;
       terrainStateDirty = false;
     }
@@ -1458,27 +1537,37 @@ function absoluteTellusApiUrl(path: string): string {
 }
 
 let generatedAssetManifestCache:
-  | { loadedAt: number; byId: Map<string, string> }
+  | { loadedAt: number; entries: GeneratedAssetManifestEntry[]; byId: Map<string, string> }
   | undefined;
 
-async function generatedAssetManifestModelUrls(): Promise<Map<string, string>> {
+async function generatedAssetManifestEntries(): Promise<GeneratedAssetManifestEntry[]> {
   const now = Date.now();
   if (generatedAssetManifestCache && now - generatedAssetManifestCache.loadedAt < 5000) {
-    return generatedAssetManifestCache.byId;
+    return generatedAssetManifestCache.entries;
   }
   const response = await fetch(tellusApiUrl("/generated-assets/manifest.json"), {
     cache: "no-store",
   });
-  if (!response.ok) return new Map();
+  if (!response.ok) return [];
   const parsed = (await response.json()) as unknown;
+  const entries = Array.isArray(parsed)
+    ? (parsed as GeneratedAssetManifestEntry[]).filter(
+        (entry) =>
+          typeof entry.id === "string" &&
+          typeof entry.modelUrl === "string",
+      )
+    : [];
   const byId = new Map<string, string>();
-  if (Array.isArray(parsed)) {
-    for (const entry of parsed as GeneratedAssetManifestEntry[]) {
-      if (typeof entry.id !== "string" || typeof entry.modelUrl !== "string") continue;
-      byId.set(entry.id, absoluteTellusApiUrl(entry.modelUrl));
-    }
+  for (const entry of entries) {
+    byId.set(entry.id as string, absoluteTellusApiUrl(entry.modelUrl as string));
   }
-  generatedAssetManifestCache = { loadedAt: now, byId };
+  generatedAssetManifestCache = { loadedAt: now, entries, byId };
+  return entries;
+}
+
+async function generatedAssetManifestModelUrls(): Promise<Map<string, string>> {
+  await generatedAssetManifestEntries();
+  const byId = generatedAssetManifestCache?.byId ?? new Map<string, string>();
   return byId;
 }
 
@@ -1653,6 +1742,10 @@ async function startDirectInstantMeshGeneration(
       prompt: thing.prompt,
       kind: thing.kind,
       provider: runtimeConfig.generationProvider,
+      instantMeshBaseUrl:
+        runtimeConfig.generationProvider === "instantmesh-gradio"
+          ? runtimeConfig.instantMeshTargets[runtimeConfig.instantMeshTarget]
+          : undefined,
     }),
   });
   const contentType = response.headers.get("Content-Type") ?? "";
@@ -2158,7 +2251,7 @@ async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<T
   if (animations.length > 0) {
     fitted.userData.animations = animations;
   }
-  fitted.rotation.y = thing.rotationY;
+  applyThingRotation(fitted, thing);
   if (isFreeMovingVehicle(thing)) {
     fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
   } else {
@@ -2633,7 +2726,7 @@ function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
       placeObjectAboveGround(group, thing.position, 0.025);
     }
   }
-  group.rotation.y = thing.rotationY;
+  applyThingRotation(group, thing);
   return group;
 }
 
@@ -2682,6 +2775,10 @@ function createGenerationSwirl(thing: GeneratedThing): THREE.Object3D {
   group.position.set(thing.position.x, thing.position.y + 0.08, thing.position.z);
   group.userData.baseY = group.position.y;
   return group;
+}
+
+function applyThingRotation(object: THREE.Object3D, thing: GeneratedThing): void {
+  object.rotation.set(thing.rotationX ?? 0, thing.rotationY, thing.rotationZ ?? 0);
 }
 
 const johnnyFallbackIdeas = [
@@ -3148,6 +3245,11 @@ function createTellusWorld(
     createFloatingRim(),
   );
 
+  let transformControls: TransformControls | null = null;
+  let transformControlsHelper: THREE.Object3D | null = null;
+  let transformControlsObject: THREE.Object3D | null = null;
+  let transformDragging = false;
+
   const sun = new THREE.DirectionalLight(0xffdfb7, 4.1);
   sun.position.set(-55, 58, 42);
   sun.castShadow = true;
@@ -3186,6 +3288,7 @@ function createTellusWorld(
     logs: logs.slice(-80),
     paused,
     generationProvider: runtimeConfig.generationProvider,
+    instantMeshTarget: runtimeConfig.instantMeshTarget,
     userId,
     visitorPosition: { ...visitorPosition },
     remoteVisitors: Array.from(remoteVisitors.values()).map((presence) => ({
@@ -3518,7 +3621,7 @@ function createTellusWorld(
   const updateThingMeshPosition = (thing: GeneratedThing) => {
     const mesh = generatedMeshes.get(thing.id);
     if (!mesh) return;
-    mesh.rotation.y = thing.rotationY;
+    applyThingRotation(mesh, thing);
     if (
       mesh.userData.generatingSwirl ||
       isFreeMovingVehicle(thing) ||
@@ -3529,9 +3632,46 @@ function createTellusWorld(
       if (mesh.userData.generatingSwirl) {
         mesh.userData.baseY = mesh.position.y;
       }
+      updateSelectionIndicator();
       return;
     }
     placeObjectAboveGround(mesh, thing.position, 0.04);
+    updateSelectionIndicator();
+  };
+
+  const updateSelectionIndicator = (_now?: number) => undefined;
+
+  const commitTransformControlRotation = () => {
+    if (!selectedThingId || !transformControlsObject) return;
+    const thing = thingById(selectedThingId);
+    if (!thing) return;
+    thing.rotationX = transformControlsObject.rotation.x;
+    thing.rotationY = transformControlsObject.rotation.y;
+    thing.rotationZ = transformControlsObject.rotation.z;
+    publishGeneratedThing(thing);
+    publish();
+  };
+
+  const syncTransformControls = () => {
+    if (!transformControls) return;
+    const mesh =
+      selectedThingId !== undefined
+        ? generatedMeshes.get(selectedThingId)
+        : undefined;
+    if (!mesh) {
+      transformControls.detach();
+      transformControlsObject = null;
+      if (transformControlsHelper) transformControlsHelper.visible = false;
+      return;
+    }
+    if (transformControlsObject !== mesh) {
+      transformControls.attach(mesh);
+      transformControlsObject = mesh;
+    }
+    transformControls.setMode("rotate");
+    transformControls.setSpace("local");
+    transformControls.setRotationSnap(THREE.MathUtils.degToRad(5));
+    if (transformControlsHelper) transformControlsHelper.visible = true;
   };
 
   const worldGeneratedThing = (thing: GeneratedThing): WorldGeneratedThing => ({
@@ -3541,7 +3681,9 @@ function createTellusWorld(
     creatorId: thing.creatorId,
     ownerUserId: thing.ownerUserId,
     position: thing.position,
+    rotationX: thing.rotationX,
     rotationY: thing.rotationY,
+    rotationZ: thing.rotationZ,
     scale: thing.scale,
     color: thing.color,
     modelUrl: thing.modelUrl,
@@ -3550,7 +3692,47 @@ function createTellusWorld(
     updatedAt: new Date().toISOString(),
   });
 
+  const generatedPlacementStorageKey = () =>
+    `tellus.generated.${runtimeConfig.worldId}`;
+
+  const generatedPlacementSnapshot = (): WorldGeneratedThing[] =>
+    generated.map((thing) => worldGeneratedThing(thing));
+
+  const saveGeneratedPlacementSnapshot = () => {
+    try {
+      window.localStorage.setItem(
+        generatedPlacementStorageKey(),
+        JSON.stringify({
+          version: 1,
+          savedAt: new Date().toISOString(),
+          generated: generatedPlacementSnapshot(),
+        }),
+      );
+    } catch (error) {
+      console.warn("Tellus generated placement save failed", error);
+    }
+  };
+
+  const loadGeneratedPlacementSnapshot = (): WorldGeneratedThing[] => {
+    try {
+      const raw = window.localStorage.getItem(generatedPlacementStorageKey());
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      const source =
+        isRecord(parsed) && Array.isArray(parsed.generated)
+          ? parsed.generated
+          : Array.isArray(parsed)
+            ? parsed
+            : [];
+      return source.filter(isWorldGeneratedThing);
+    } catch (error) {
+      console.warn("Tellus generated placement load failed", error);
+      return [];
+    }
+  };
+
   const publishGeneratedThing = (thing: GeneratedThing) => {
+    saveGeneratedPlacementSnapshot();
     if (!tellusWorldBackendAvailable) return;
     const action = {
       type: "generated.upsert",
@@ -3592,6 +3774,7 @@ function createTellusWorld(
         generatedMeshes.set(thing.id, model);
         startGeneratedAnimation(thing.id, model);
         scene.add(model);
+        syncTransformControls();
         publish();
       })
       .catch((error) => {
@@ -3641,7 +3824,9 @@ function createTellusWorld(
       existing.creatorId = remote.creatorId as AgentId | "visitor";
       existing.ownerUserId = remote.ownerUserId;
       existing.position = { ...remote.position };
+      existing.rotationX = remote.rotationX ?? 0;
       existing.rotationY = remote.rotationY;
+      existing.rotationZ = remote.rotationZ ?? 0;
       existing.scale = remote.scale;
       existing.color = remote.color;
       existing.modelUrl = remote.modelUrl;
@@ -3659,7 +3844,9 @@ function createTellusWorld(
       creatorId: remote.creatorId as AgentId | "visitor",
       ownerUserId: remote.ownerUserId,
       position: { ...remote.position },
+      rotationX: remote.rotationX ?? 0,
       rotationY: remote.rotationY,
+      rotationZ: remote.rotationZ ?? 0,
       scale: remote.scale,
       color: remote.color,
       modelUrl: remote.modelUrl,
@@ -3673,6 +3860,7 @@ function createTellusWorld(
         : createGeneratedMesh(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
+    syncTransformControls();
     updateThingMeshPosition(thing);
     loadRemoteGeneratedModel(thing);
     reconcileRemoteGeneratedManifest(thing);
@@ -3682,7 +3870,83 @@ function createTellusWorld(
     for (const remote of remoteThings) {
       applyRemoteGeneratedThing(remote);
     }
+    saveGeneratedPlacementSnapshot();
     publish();
+  };
+
+  const importGeneratedThings = (things: WorldGeneratedThing[]) => {
+    for (const thing of things.filter(isWorldGeneratedThing)) {
+      applyRemoteGeneratedThing(thing);
+    }
+    saveGeneratedPlacementSnapshot();
+    addLog({
+      agentId: "world",
+      agentName: "Tellus",
+      tool: "interact",
+      text: `Recovered ${things.length} generated assets into the scene.`,
+    });
+    publish();
+  };
+
+  const recoverGeneratedFromPlacementSnapshot = (): boolean => {
+    if (generated.length > 0) return true;
+    const recovered = loadGeneratedPlacementSnapshot();
+    if (recovered.length === 0) return false;
+    importGeneratedThings(recovered);
+    return true;
+  };
+
+  const recoverGeneratedFromManifest = () => {
+    if (generated.length > 0) return;
+    void generatedAssetManifestEntries()
+      .then((entries) => {
+        if (destroyed || generated.length > 0 || entries.length === 0) return;
+        const recovered = entries
+          .map((entry, index): WorldGeneratedThing | null => {
+            if (
+              typeof entry.id !== "string" ||
+              typeof entry.modelUrl !== "string"
+            ) {
+              return null;
+            }
+            const prompt =
+              typeof entry.prompt === "string" && entry.prompt.trim()
+                ? entry.prompt
+                : "recovered generated asset";
+            const kind = inferGeneratedKind(
+              typeof entry.kind === "string" ? entry.kind : prompt,
+              "visitor",
+            );
+            const angle = index * 2.399963229728653;
+            const radius = 8 + (index % 9) * 4.2;
+            return {
+              id: entry.id,
+              kind,
+              prompt,
+              creatorId: "visitor",
+              ownerUserId: userId,
+              position: normalizedDiscPosition(
+                Math.cos(angle) * radius,
+                Math.sin(angle) * radius,
+              ),
+              rotationY: angle + Math.PI,
+              scale: 1,
+              color: kindColor(kind, prompt),
+              modelUrl: absoluteTellusApiUrl(entry.modelUrl),
+              generationStatus: "ready",
+              updatedAt:
+                typeof entry.createdAt === "string"
+                  ? entry.createdAt
+                  : new Date().toISOString(),
+            };
+          })
+          .filter((thing): thing is WorldGeneratedThing => thing !== null);
+        if (recovered.length === 0) return;
+        importGeneratedThings(recovered);
+      })
+      .catch((error) => {
+        console.warn("Generated asset manifest recovery failed", error);
+      });
   };
 
   const applyRemoteGeneratedDelete = (id: string) => {
@@ -3697,14 +3961,21 @@ function createTellusWorld(
       generatedMeshes.delete(id);
     }
     if (selectedThingId === id) selectedThingId = undefined;
+    syncTransformControls();
     if (sailingThingId === id) sailingThingId = undefined;
+    saveGeneratedPlacementSnapshot();
     publish();
   };
 
   connectTellusWorldRealtime();
+  if (!recoverGeneratedFromPlacementSnapshot()) {
+    recoverGeneratedFromManifest();
+  }
 
   const selectGenerated = (id?: string) => {
     selectedThingId = id && thingById(id) ? id : undefined;
+    updateSelectionIndicator();
+    syncTransformControls();
     publish();
   };
 
@@ -3733,12 +4004,18 @@ function createTellusWorld(
     publish();
   };
 
-  const rotateGenerated = (id: string, radians: number) => {
+  const rotateGenerated = (id: string, radians: number, axis: "x" | "y" | "z" = "y") => {
     const thing = thingById(id);
     if (!thing) return;
-    thing.rotationY += radians;
+    if (axis === "x") {
+      thing.rotationX = (thing.rotationX ?? 0) + radians;
+    } else if (axis === "z") {
+      thing.rotationZ = (thing.rotationZ ?? 0) + radians;
+    } else {
+      thing.rotationY += radians;
+    }
     const mesh = generatedMeshes.get(id);
-    if (mesh) mesh.rotation.y = thing.rotationY;
+    if (mesh) applyThingRotation(mesh, thing);
     publishGeneratedThing(thing);
     publish();
   };
@@ -3775,7 +4052,7 @@ function createTellusWorld(
     const baseY = groundY ?? thing.position.y;
     thing.position = {
       ...thing.position,
-      y: clamp(Math.max(thing.position.y, baseY) + amount, baseY, baseY + 30),
+      y: clamp(thing.position.y + amount, baseY, baseY + 30),
     };
     if (sailingThingId === id) {
       visitorPosition = { ...thing.position };
@@ -3810,6 +4087,7 @@ function createTellusWorld(
       disposeObject(mesh);
       generatedMeshes.delete(id);
     }
+    syncTransformControls();
     if (sailingThingId === id) {
       sailingThingId = undefined;
       visitorPosition = groundedPosition(
@@ -3838,6 +4116,7 @@ function createTellusWorld(
         });
       }
     }
+    saveGeneratedPlacementSnapshot();
     publish();
   };
 
@@ -3990,6 +4269,7 @@ function createTellusWorld(
       : createGeneratedMesh(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
+    syncTransformControls();
 
     const actor = agents.find((agent) => agent.id === request.creatorId);
     addLog({
@@ -4010,6 +4290,7 @@ function createTellusWorld(
       const fallbackMesh = createGeneratedMesh(thing);
       generatedMeshes.set(thing.id, fallbackMesh);
       scene.add(fallbackMesh);
+      syncTransformControls();
     };
 
     if (
@@ -4065,6 +4346,7 @@ function createTellusWorld(
           generatedMeshes.set(thing.id, model);
           startGeneratedAnimation(thing.id, model);
           scene.add(model);
+          syncTransformControls();
           addLog({
             agentId: "world",
             agentName: "Pixel3D",
@@ -4173,6 +4455,7 @@ function createTellusWorld(
           generatedMeshes.set(thing.id, model);
           startGeneratedAnimation(thing.id, model);
           scene.add(model);
+          syncTransformControls();
           addLog({
             agentId: "world",
             agentName: providerName,
@@ -4253,6 +4536,7 @@ function createTellusWorld(
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
     selectedThingId = thing.id;
+    syncTransformControls();
     addLog({
       agentId: "visitor",
       agentName: "Visitor",
@@ -4271,6 +4555,7 @@ function createTellusWorld(
         }
         generatedMeshes.set(thing.id, modelObject);
         scene.add(modelObject);
+        syncTransformControls();
         publish();
       })
       .catch((error) => {
@@ -4397,6 +4682,25 @@ function createTellusWorld(
       tool: "interact",
       text: `Generation pipeline set to ${generationProviderLabels[provider]}.`,
     });
+    publish();
+  };
+
+  const setInstantMeshTarget = (target: InstantMeshTarget) => {
+    if (runtimeConfig.instantMeshTarget === target) return;
+    runtimeConfig.instantMeshTarget = target;
+    addLog({
+      agentId: "world",
+      agentName: "Tellus",
+      tool: "interact",
+      text: `InstantMesh target set to ${instantMeshTargetLabels[target]}.`,
+    });
+    publish();
+  };
+
+  const updateAgentGoal = (agentId: AgentId, goal: string) => {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent) return;
+    agent.goal = goal;
     publish();
   };
 
@@ -4956,6 +5260,8 @@ function createTellusWorld(
       mixer.update(delta);
     }
     syncMeshes(now);
+    updateSelectionIndicator(now);
+    syncTransformControls();
     updateCamera();
     try {
       renderer.render(scene, camera);
@@ -4976,8 +5282,43 @@ function createTellusWorld(
     }
   };
 
+  const isTextEditingTarget = (target: EventTarget | null): boolean => {
+    if (!(target instanceof HTMLElement)) return false;
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target.isContentEditable
+    );
+  };
+
+  const nudgeSelectedWithArrowKey = (key: string): boolean => {
+    if (!selectedThingId) return false;
+    if (key === "ArrowUp") {
+      moveGenerated(selectedThingId, 0, -2);
+      return true;
+    }
+    if (key === "ArrowDown") {
+      moveGenerated(selectedThingId, 0, 2);
+      return true;
+    }
+    if (key === "ArrowLeft") {
+      moveGenerated(selectedThingId, -2, 0);
+      return true;
+    }
+    if (key === "ArrowRight") {
+      moveGenerated(selectedThingId, 2, 0);
+      return true;
+    }
+    return false;
+  };
+
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.key.startsWith("Arrow")) event.preventDefault();
+    if (isTextEditingTarget(event.target)) return;
+    if (event.key.startsWith("Arrow")) {
+      event.preventDefault();
+      if (nudgeSelectedWithArrowKey(event.key)) return;
+    }
     keys.add(event.key.toLowerCase());
   };
   const handleKeyUp = (event: KeyboardEvent) =>
@@ -4992,13 +5333,14 @@ function createTellusWorld(
     }
   };
   const handlePointerDown = (event: PointerEvent) => {
+    if (transformDragging) return;
     isDragging = true;
     pointerTravel = 0;
     pointerX = event.clientX;
     pointerY = event.clientY;
   };
   const handlePointerMove = (event: PointerEvent) => {
-    if (!isDragging) return;
+    if (transformDragging || !isDragging) return;
     const dx = event.clientX - pointerX;
     const dy = event.clientY - pointerY;
     pointerTravel += Math.hypot(dx, dy);
@@ -5029,8 +5371,13 @@ function createTellusWorld(
         object = object.parent;
       }
     }
+    selectGenerated(undefined);
   };
   const handlePointerUp = (event: PointerEvent) => {
+    if (transformDragging) {
+      isDragging = false;
+      return;
+    }
     if (isDragging && pointerTravel < 6) {
       selectGeneratedAtPointer(event);
     }
@@ -5067,6 +5414,31 @@ function createTellusWorld(
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.shadowMap.enabled = true;
       container.appendChild(renderer.domElement);
+      transformControls = new TransformControls(camera, renderer.domElement);
+      transformControlsHelper = transformControls.getHelper();
+      transformControls.setMode("rotate");
+      transformControls.setSpace("local");
+      transformControls.setRotationSnap(THREE.MathUtils.degToRad(5));
+      transformControlsHelper.visible = false;
+      transformControls.addEventListener("dragging-changed", (event) => {
+        transformDragging = Boolean(event.value);
+        if (!transformDragging) {
+          commitTransformControlRotation();
+          updateSelectionIndicator();
+        }
+      });
+      transformControls.addEventListener("objectChange", () => {
+        if (!selectedThingId || !transformControlsObject) return;
+        const thing = thingById(selectedThingId);
+        if (!thing) return;
+        thing.rotationX = transformControlsObject.rotation.x;
+        thing.rotationY = transformControlsObject.rotation.y;
+        thing.rotationZ = transformControlsObject.rotation.z;
+        publish();
+        updateSelectionIndicator();
+      });
+      scene.add(transformControlsHelper);
+      syncTransformControls();
       resizeObserver = new ResizeObserver(() => resize());
       resizeObserver.observe(container);
       resize();
@@ -5255,7 +5627,10 @@ function createTellusWorld(
     disembark,
     sculptTerrain,
     talkToAgent,
+    updateAgentGoal,
+    importGeneratedThings,
     setGenerationProvider,
+    setInstantMeshTarget,
     setPaused,
     submitVisitorPrompt,
     snapshot,
@@ -5294,6 +5669,8 @@ function createTellusWorld(
       remoteVisitorMeshes.clear();
       remoteVisitors.clear();
       resizeObserver?.disconnect();
+      transformControls?.detach();
+      transformControls?.dispose();
       renderer?.dispose();
       if (renderer?.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
@@ -5352,6 +5729,7 @@ function App(): React.ReactElement {
     logs: [],
     paused: false,
     generationProvider: runtimeConfig.generationProvider,
+    instantMeshTarget: runtimeConfig.instantMeshTarget,
     userId: tellusUserId(),
     remoteVisitors: [],
   });
@@ -5360,6 +5738,9 @@ function App(): React.ReactElement {
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
   const [meshToolsOpen, setMeshToolsOpen] = useState(false);
+  const [toolMenu, setToolMenu] = useState<
+    "mesh" | "inventory" | "world-assets" | "terrain" | "ai"
+  >("mesh");
   const [worldLogOpen, setWorldLogOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const { listening, supported, start } = useSpeechInput((text) =>
@@ -5372,6 +5753,125 @@ function App(): React.ReactElement {
   } = useSpeechInput((text) =>
     setChatPrompt((current) => `${current ? `${current} ` : ""}${text}`),
   );
+  const importedGeneratedThings = (value: unknown): WorldGeneratedThing[] => {
+    const source = Array.isArray(value)
+      ? value
+      : isRecord(value) && Array.isArray(value.generated)
+        ? value.generated
+        : [];
+    return source
+      .map((item): WorldGeneratedThing | null => {
+        if (isWorldGeneratedThing(item)) return item;
+        if (!isRecord(item) || !isRecord(item.position)) return null;
+        const { position } = item;
+        if (
+          typeof item.id !== "string" ||
+          typeof item.prompt !== "string" ||
+          typeof position.x !== "number" ||
+          typeof position.y !== "number" ||
+          typeof position.z !== "number"
+        ) {
+          return null;
+        }
+        const kind = inferGeneratedKind(
+          typeof item.kind === "string" ? item.kind : item.prompt,
+          "visitor",
+        );
+        return {
+          id: item.id,
+          kind,
+          prompt: item.prompt,
+          creatorId:
+            typeof item.creatorId === "string" ? item.creatorId : "visitor",
+          ownerUserId:
+            typeof item.ownerUserId === "string" ? item.ownerUserId : undefined,
+          position: {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+          },
+          rotationX:
+            typeof item.rotationX === "number" ? item.rotationX : undefined,
+          rotationY:
+            typeof item.rotationY === "number" ? item.rotationY : 0,
+          rotationZ:
+            typeof item.rotationZ === "number" ? item.rotationZ : undefined,
+          scale:
+            typeof item.scale === "number" && Number.isFinite(item.scale)
+              ? item.scale
+              : 1,
+          color:
+            typeof item.color === "number" && Number.isFinite(item.color)
+              ? item.color
+              : kindColor(kind, item.prompt),
+          modelUrl:
+            typeof item.modelUrl === "string"
+              ? absoluteTellusApiUrl(item.modelUrl)
+              : undefined,
+          pipelineId:
+            typeof item.pipelineId === "string" ? item.pipelineId : undefined,
+          generationStatus:
+            item.generationStatus === "local" ||
+            item.generationStatus === "queued" ||
+            item.generationStatus === "generating" ||
+            item.generationStatus === "ready" ||
+            item.generationStatus === "failed"
+              ? item.generationStatus
+              : "ready",
+          updatedAt:
+            typeof item.updatedAt === "string"
+              ? item.updatedAt
+              : new Date().toISOString(),
+        };
+      })
+      .filter((thing): thing is WorldGeneratedThing => thing !== null);
+  };
+
+  useEffect(() => {
+    window.__tellusSnapshot = () => snapshot;
+    window.__tellusImportGenerated = (value: unknown) => {
+      const things = importedGeneratedThings(value);
+      worldRef.current?.importGeneratedThings(things);
+      return things.length;
+    };
+    window.__tellusImportSnapshot = (value: unknown) =>
+      window.__tellusImportGenerated?.(value) ?? 0;
+    window.__tellusSaveGeneratedPlacements = () => {
+      const things = importedGeneratedThings(snapshot);
+      window.localStorage.setItem(
+        `tellus.generated.${runtimeConfig.worldId}`,
+        JSON.stringify({
+          version: 1,
+          savedAt: new Date().toISOString(),
+          generated: things,
+        }),
+      );
+      return things.length;
+    };
+    return () => {
+      delete window.__tellusSnapshot;
+      delete window.__tellusImportGenerated;
+      delete window.__tellusImportSnapshot;
+      delete window.__tellusSaveGeneratedPlacements;
+    };
+  }, [snapshot]);
+
+  useEffect(() => {
+    const things = importedGeneratedThings(snapshot);
+    if (things.length === 0) return;
+    try {
+      window.localStorage.setItem(
+        `tellus.generated.${runtimeConfig.worldId}`,
+        JSON.stringify({
+          version: 1,
+          savedAt: new Date().toISOString(),
+          generated: things,
+        }),
+      );
+    } catch (error) {
+      console.warn("Tellus generated placement autosave failed", error);
+    }
+  }, [snapshot.generated]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -5413,9 +5913,10 @@ function App(): React.ReactElement {
       snapshot.generated[snapshot.generated.length - 1],
     [snapshot.generated, snapshot.selectedThingId],
   );
+  const activeSelectedThing = snapshot.selectedThingId ? selectedThing : null;
   const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
   const selectedThingIsMount = selectedThing ? isMountThing(selectedThing) : false;
-  const mapRadius = OCEAN_RADIUS;
+  const mapRadius = OCEAN_RADIUS * 0.42;
   const mapPointStyle = (position: Vec3): React.CSSProperties => ({
     left: `${clamp(((position.x / (mapRadius * 2)) + 0.5) * 100, 0, 100)}%`,
     top: `${clamp(((position.z / (mapRadius * 2)) + 0.5) * 100, 0, 100)}%`,
@@ -5434,6 +5935,10 @@ function App(): React.ReactElement {
     setPrompt("");
   };
 
+  const focusCreatePrompt = () => {
+    promptRef.current?.focus();
+  };
+
   const askSelectedAgent = () => {
     if (!chatPrompt.trim() || !selected) return;
     worldRef.current?.talkToAgent(selected.id, chatPrompt);
@@ -5444,8 +5949,14 @@ function App(): React.ReactElement {
     const textarea = promptRef.current;
     if (!textarea) return;
     textarea.style.height = "0px";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
+    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 36), 116)}px`;
   }, [prompt]);
+
+  useEffect(() => {
+    if (!snapshot.selectedThingId) {
+      setMeshToolsOpen(false);
+    }
+  }, [snapshot.selectedThingId]);
 
   const recentLogs = snapshot.logs.slice(-10).reverse();
   const repeatTimerRef = useRef<number | undefined>(undefined);
@@ -5482,173 +5993,507 @@ function App(): React.ReactElement {
         <div ref={containerRef} className="world-canvas" />
         <div className="world-top-bar">
           <div className="top-left-cluster">
-            <button
-              type="button"
-              className="icon-button top-menu-button"
-              title={meshToolsOpen ? "Hide tools" : "Show tools"}
-              aria-label={meshToolsOpen ? "Hide tools" : "Show tools"}
-              onClick={() => setMeshToolsOpen((open) => !open)}
-            >
-              <Menu size={18} />
-            </button>
+            <details className="main-menu">
+              <summary className="icon-button top-menu-button" title="Main menu" aria-label="Main menu">
+                <Menu size={18} />
+              </summary>
+              <nav className="main-menu-list" aria-label="Main menu">
+                <button type="button"><Home size={15} /><span>Home</span></button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setToolMenu("terrain");
+                    setMeshToolsOpen(true);
+                  }}
+                >
+                  <Mountain size={15} />
+                  <span>Terrain</span>
+                </button>
+                <button type="button" onClick={focusCreatePrompt}><Sparkles size={15} /><span>Creation</span></button>
+                <button type="button" onClick={() => setMeshToolsOpen(true)}><Hammer size={15} /><span>Mesh Tools</span></button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setToolMenu("ai");
+                    setMeshToolsOpen(true);
+                  }}
+                >
+                  <Bot size={15} />
+                  <span>AI</span>
+                </button>
+                <details className="settings-menu">
+                  <summary>
+                    <Settings size={15} />
+                    <span>Settings</span>
+                  </summary>
+                  <div className="settings-menu-panel">
+                    <label>
+                      <span>Generation</span>
+                      <select
+                        className="asset-select"
+                        value={snapshot.generationProvider}
+                        onChange={(event) =>
+                          worldRef.current?.setGenerationProvider(
+                            event.target.value as GenerationProvider,
+                          )
+                        }
+                      >
+                        <option value="pixal3d-gradio">High quality</option>
+                        <option value="instantmesh-gradio">Fast asset</option>
+                        <option value="anigen-gradio">Animated</option>
+                        <option value="asset-forge">Asset Forge</option>
+                        <option value="local">Local fallback</option>
+                      </select>
+                    </label>
+                    {snapshot.generationProvider === "instantmesh-gradio" && (
+                      <label>
+                        <span>InstantMesh</span>
+                        <select
+                          className="asset-select"
+                          value={snapshot.instantMeshTarget}
+                          onChange={(event) =>
+                            worldRef.current?.setInstantMeshTarget(
+                              event.target.value as InstantMeshTarget,
+                            )
+                          }
+                        >
+                          <option value="dgx">DGX</option>
+                          <option value="local">Local</option>
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                </details>
+                <button type="button"><LogOut size={15} /><span>Exit</span></button>
+              </nav>
+            </details>
             <div className="brand-mark">
+              <span className="brand-sigil">T</span>
               <span>Tellus</span>
-              <small>AI terrarium</small>
+              <small>World Weaver</small>
             </div>
           </div>
-          <div className="stat-row" aria-label="World selectors">
-            <details className="stat-menu">
-              <summary>
-                <Box size={15} />
-                <strong>{snapshot.generated.length}</strong>
-                <span>generated</span>
+          <div aria-hidden="true" />
+          <div className="top-right-cluster">
+            <details className="world-help">
+              <summary title="Controls" aria-label="Controls">
+                <CircleHelp size={16} />
               </summary>
-              <div className="stat-menu-list">
-                {snapshot.generated.length > 0 ? (
-                  snapshot.generated.map((thing) => (
-                    <button
-                      key={thing.id}
-                      type="button"
-                      className={
-                        thing.id === selectedThing?.id
-                          ? "stat-menu-item active"
-                          : "stat-menu-item"
-                      }
-                      onClick={() => worldRef.current?.selectGenerated(thing.id)}
-                    >
-                      <Box size={14} />
-                      <span>
-                        <strong>{thing.kind}</strong>
-                        <small>{thing.prompt.slice(0, 34)}</small>
-                      </span>
-                    </button>
-                  ))
-                ) : (
-                  <span className="stat-empty">No generated assets</span>
+              <div className="world-help-list">
+                <span>
+                  <strong>Move</strong>
+                  <small>WASD / arrows</small>
+                </span>
+                <span>
+                  <strong>Look</strong>
+                  <small>drag</small>
+                </span>
+                <span>
+                  <strong>Zoom</strong>
+                  <small>scroll</small>
+                </span>
+                {snapshot.sailingThingId && (
+                  <span>
+                    <strong>Pilot</strong>
+                    <small>active</small>
+                  </span>
                 )}
               </div>
             </details>
-            <details className="stat-menu">
-              <summary>
-                <Bot size={15} />
-                <strong>{snapshot.agents.length}</strong>
-                <span>agents</span>
-              </summary>
-              <div className="stat-menu-list">
-                {snapshot.agents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    className={
-                      agent.id === selectedAgent
-                        ? "stat-menu-item active"
-                        : "stat-menu-item"
-                    }
-                    onClick={() => setSelectedAgent(agent.id)}
-                  >
-                    <span
-                      className="agent-dot"
-                      style={{
-                        backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                      }}
-                    />
-                    <span>
-                      <strong>{agent.name}</strong>
-                      <small>{agent.epithet}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </details>
-            <details className="stat-menu">
-              <summary>
-                <Mountain size={15} />
-                <strong>1</strong>
-                <span>disc</span>
-              </summary>
-              <div className="stat-menu-list">
-                <button type="button" className="stat-menu-item active">
-                  <Mountain size={14} />
-                  <span>
-                    <strong>Tellus disc</strong>
-                    <small>active terrain</small>
-                  </span>
-                </button>
-              </div>
-            </details>
-            <button
-              type="button"
-              className="icon-button stat-pause-button"
-              title={snapshot.paused ? "Resume agents" : "Pause agents"}
-              onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
-            >
-              {snapshot.paused ? <Play size={18} /> : <Pause size={18} />}
-            </button>
           </div>
+        </div>
+        <div className="bottom-control-cluster" aria-label="World controls">
           <button
             type="button"
-            className="icon-button top-menu-button top-log-button"
-            title={worldLogOpen ? "Hide world chat" : "Show world chat"}
-            aria-label={worldLogOpen ? "Hide world chat" : "Show world chat"}
-            onClick={() => setWorldLogOpen((open) => !open)}
+            className="icon-button stat-pause-button"
+            title={snapshot.paused ? "Resume agents" : "Pause agents"}
+            onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
+          >
+            {snapshot.paused ? <Play size={18} /> : <Pause size={18} />}
+          </button>
+        </div>
+        <aside className="world-left-toolbelt" aria-label="Toolbelt">
+          <button type="button" className="toolbelt-button" title="Undo">
+            <Undo2 size={18} />
+            <span>Undo</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Redo">
+            <Redo2 size={18} />
+            <span>Redo</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Grid">
+            <Grid3X3 size={18} />
+            <span>Grid</span>
+          </button>
+          <button type="button" className="toolbelt-button" title="Brush size">
+            <Wrench size={18} />
+            <span>Brush</span>
+          </button>
+          <button
+            type="button"
+            className="toolbelt-button"
+            title="Open creation tools"
+            onClick={() => setMeshToolsOpen(true)}
+          >
+            <Hammer size={18} />
+            <span>Build</span>
+          </button>
+        </aside>
+        <aside className="world-right-hud" aria-label="World systems">
+          <section className="world-map" aria-label="World map">
+            <div className="world-map-disc" />
+            {snapshot.visitorPosition && (
+              <span
+                className="map-marker player"
+                style={mapPointStyle(snapshot.visitorPosition)}
+                title="You"
+              />
+            )}
+            {snapshot.remoteVisitors.map((visitor) =>
+              visitor.position ? (
+                <span
+                  key={visitor.visitorId}
+                  className="map-marker remote-player"
+                  style={mapPointStyle(visitor.position)}
+                  title="Remote player"
+                />
+              ) : null,
+            )}
+            {snapshot.agents.map((agent) => (
+              <span
+                key={agent.id}
+                className="map-marker agent"
+                style={{
+                  ...mapPointStyle(agent.position),
+                  backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
+                }}
+                title={`${agent.name} - ${agent.epithet}`}
+              />
+            ))}
+            {snapshot.generated.map((thing) => (
+              <span
+                key={thing.id}
+                className={[
+                  "map-marker",
+                  "asset",
+                  thing.id === selectedThing?.id ? "selected" : "",
+                  thing.generationStatus === "queued" ||
+                  thing.generationStatus === "generating"
+                    ? "pending"
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                style={mapPointStyle(thing.position)}
+                title={`${thing.kind}: ${thing.prompt}`}
+              />
+            ))}
+            {pendingGenerated.length > 0 && (
+              <span className="world-map-status">
+                {pendingGenerated.length} building
+              </span>
+            )}
+            <section className="world-info-panel mini" aria-label="World info">
+              <dl>
+                <div><dt>Generated</dt><dd>{snapshot.generated.length}</dd></div>
+                <div><dt>Agents</dt><dd>{snapshot.agents.length}</dd></div>
+                <div><dt>Players</dt><dd>{snapshot.remoteVisitors.length + 1}</dd></div>
+                <div><dt>AI</dt><dd>{snapshot.paused ? "Paused" : "Active"}</dd></div>
+              </dl>
+            </section>
+          </section>
+          <section className="creation-panel" aria-label="Creation panel">
+            <header>
+              <h2>Creation Panel</h2>
+              <button
+                type="button"
+                className="panel-mini-button"
+                onClick={() => setMeshToolsOpen(true)}
+              >
+                Mesh
+              </button>
+            </header>
+            <div className="creation-tabs" aria-label="Creation types">
+              <button type="button" className="active">Assets</button>
+              <button type="button">Terrain</button>
+              <button type="button">Flora</button>
+              <button type="button">AI</button>
+            </div>
+            <div className="creation-grid">
+              {assetLibrary.slice(0, 6).map((model) => (
+                <button
+                  key={model.id}
+                  type="button"
+                  className="creation-tile"
+                  onClick={() => worldRef.current?.addLibraryAsset(model)}
+                >
+                  <Box size={21} />
+                  <span>{model.name.slice(0, 18)}</span>
+                </button>
+              ))}
+              {assetLibrary.length === 0 && (
+                <>
+                  <button type="button" className="creation-tile" onClick={() => setPrompt("stone arch")}>
+                    <Mountain size={21} />
+                    <span>Stone Arch</span>
+                  </button>
+                  <button type="button" className="creation-tile" onClick={() => setPrompt("pine tree")}>
+                    <Sprout size={21} />
+                    <span>Pine Tree</span>
+                  </button>
+                  <button type="button" className="creation-tile" onClick={() => setPrompt("deer")}>
+                    <Leaf size={21} />
+                    <span>Deer</span>
+                  </button>
+                  <button type="button" className="creation-tile" onClick={() => setPrompt("small cottage")}>
+                    <Home size={21} />
+                    <span>House</span>
+                  </button>
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              className="primary-button wide-button"
+              onClick={submitPrompt}
+              disabled={!prompt.trim()}
+            >
+              <Send size={15} />
+              <span>Place</span>
+            </button>
+          </section>
+          <section className="ai-monitor-panel" aria-label="AI monitor">
+            <h2>AI Monitor</h2>
+            <p><strong>Tellus AI</strong> {snapshot.paused ? "standing by" : "weaving world actions"}</p>
+            <div className="monitor-meter">
+              <span style={{ width: `${Math.min(100, pendingGenerated.length * 33)}%` }} />
+            </div>
+            <small>{pendingGenerated.length} generation tasks queued</small>
+          </section>
+        </aside>
+        {worldLogOpen && (
+          <section className="world-mini-chat" aria-label="World chat">
+            <header>
+              <strong>World Chat</strong>
+              <button
+                type="button"
+                title="Hide world chat"
+                aria-label="Hide world chat"
+                onClick={() => setWorldLogOpen(false)}
+              >
+                x
+              </button>
+            </header>
+            <div className="mini-chat-log">
+              {recentLogs.slice(0, 4).map((log) => (
+                <article key={log.id} className={`mini-chat-entry ${log.tool}`}>
+                  <strong>{log.agentName}</strong>
+                  <p>{log.text}</p>
+                </article>
+              ))}
+            </div>
+            <textarea
+              className="mini-chat-input"
+              value={chatPrompt}
+              rows={2}
+              placeholder={selected ? `Ask ${selected.name}...` : "Ask an agent..."}
+              onChange={(event) => setChatPrompt(event.target.value)}
+            />
+            <div className="mini-chat-actions">
+              <button
+                type="button"
+                className="secondary-button prompt-icon-button"
+                title={chatListening ? "Listening" : "Speak to chat"}
+                aria-label={chatListening ? "Listening" : "Speak to chat"}
+                disabled={!chatSupported || chatListening}
+                onClick={startChatVoice}
+              >
+                <Mic size={16} />
+              </button>
+              <button
+                type="button"
+                className="secondary-button wide-button mini-chat-submit"
+                disabled={!chatPrompt.trim() || !selected}
+                onClick={askSelectedAgent}
+                title={selected ? `Ask ${selected.name}` : "Ask"}
+                aria-label={selected ? `Ask ${selected.name}` : "Ask"}
+              >
+                <MessageCircle size={16} />
+              </button>
+            </div>
+          </section>
+        )}
+        {!worldLogOpen && (
+          <button
+            type="button"
+            className="chat-reopen-button"
+            title="Show world chat"
+            aria-label="Show world chat"
+            onClick={() => setWorldLogOpen(true)}
           >
             <MessageCircle size={18} />
           </button>
-        </div>
-        <section className="world-map" aria-label="World map">
-          <div className="world-map-disc" />
-          {snapshot.visitorPosition && (
-            <span
-              className="map-marker player"
-              style={mapPointStyle(snapshot.visitorPosition)}
-              title="You"
-            />
-          )}
-          {snapshot.remoteVisitors.map((visitor) =>
-            visitor.position ? (
-              <span
-                key={visitor.visitorId}
-                className="map-marker remote-player"
-                style={mapPointStyle(visitor.position)}
-                title="Remote player"
-              />
-            ) : null,
-          )}
-          {snapshot.agents.map((agent) => (
-            <span
-              key={agent.id}
-              className="map-marker agent"
-              style={{
-                ...mapPointStyle(agent.position),
-                backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-              }}
-              title={`${agent.name} - ${agent.epithet}`}
-            />
-          ))}
-          {snapshot.generated.map((thing) => (
-            <span
-              key={thing.id}
-              className={[
-                "map-marker",
-                "asset",
-                thing.id === selectedThing?.id ? "selected" : "",
-                thing.generationStatus === "queued" ||
-                thing.generationStatus === "generating"
-                  ? "pending"
-                  : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              style={mapPointStyle(thing.position)}
-              title={`${thing.kind}: ${thing.prompt}`}
-            />
-          ))}
-          {pendingGenerated.length > 0 && (
-            <span className="world-map-status">
-              {pendingGenerated.length} building
-            </span>
-          )}
-        </section>
+        )}
+        {activeSelectedThing && (
+          <div className="selected-transform-hud" aria-label="Selected asset controls">
+            <div className="selected-transform-label">
+              <Box size={15} />
+              <span>{activeSelectedThing.prompt}</span>
+            </div>
+            <div className="selected-nudge-pad" aria-label="Position controls">
+              <button
+                type="button"
+                className="icon-button nudge-up"
+                title="Move forward"
+                aria-label="Move asset forward"
+                onClick={() =>
+                  worldRef.current?.moveGenerated(activeSelectedThing.id, 0, -2)
+                }
+              >
+                <ArrowUp size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-button nudge-left"
+                title="Move left"
+                aria-label="Move asset left"
+                onClick={() =>
+                  worldRef.current?.moveGenerated(activeSelectedThing.id, -2, 0)
+                }
+              >
+                <ArrowLeft size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-button nudge-right"
+                title="Move right"
+                aria-label="Move asset right"
+                onClick={() =>
+                  worldRef.current?.moveGenerated(activeSelectedThing.id, 2, 0)
+                }
+              >
+                <ArrowRight size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-button nudge-down"
+                title="Move backward"
+                aria-label="Move asset backward"
+                onClick={() =>
+                  worldRef.current?.moveGenerated(activeSelectedThing.id, 0, 2)
+                }
+              >
+                <ArrowDown size={16} />
+              </button>
+            </div>
+            <div className="selected-place-actions" aria-label="Placement controls">
+              <button
+                type="button"
+                className="icon-button selected-water-button"
+                title="Move to water"
+                aria-label="Move asset to water"
+                onClick={() =>
+                  worldRef.current?.moveGeneratedToWater(activeSelectedThing.id)
+                }
+              >
+                <Ship size={17} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                title="Ground asset"
+                aria-label="Ground asset"
+                onClick={() =>
+                  worldRef.current?.groundGenerated(activeSelectedThing.id)
+                }
+              >
+                <Mountain size={17} />
+              </button>
+            </div>
+            <div className="selected-transform-stack" aria-label="Height controls">
+              <button
+                type="button"
+                className="icon-button"
+                title="Raise asset"
+                aria-label="Raise asset"
+                onClick={() =>
+                  worldRef.current?.liftGenerated(activeSelectedThing.id, 1)
+                }
+              >
+                <ArrowUp size={17} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                title="Lower asset"
+                aria-label="Lower asset"
+                onClick={() =>
+                  worldRef.current?.liftGenerated(activeSelectedThing.id, -1)
+                }
+              >
+                <ArrowDown size={17} />
+              </button>
+            </div>
+            <div className="selected-transform-stack" aria-label="Scale controls">
+              <button
+                type="button"
+                className="icon-button"
+                title="Scale up"
+                aria-label="Scale up"
+                onClick={() =>
+                  worldRef.current?.scaleGenerated(activeSelectedThing.id, 1.16)
+                }
+              >
+                <Plus size={17} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                title="Scale down"
+                aria-label="Scale down"
+                onClick={() =>
+                  worldRef.current?.scaleGenerated(activeSelectedThing.id, 0.86)
+                }
+              >
+                <Minus size={17} />
+              </button>
+            </div>
+          </div>
+        )}
+        <nav className="quick-action-bar" aria-label="Quick action bar">
+          <button type="button" onClick={() => setMeshToolsOpen(true)}>
+            <Hammer size={18} />
+            <span>Build</span>
+          </button>
+          <button type="button" onClick={() => setMeshToolsOpen(true)}>
+            <Mountain size={18} />
+            <span>Terrain</span>
+          </button>
+          <button type="button" onClick={() => setPrompt("wildflowers and moss")}>
+            <Flower2 size={18} />
+            <span>Flora</span>
+          </button>
+          <button type="button" onClick={() => setPrompt("gentle forest animal")}>
+            <Leaf size={18} />
+            <span>Fauna</span>
+          </button>
+          <button type="button" onClick={() => setMeshToolsOpen(true)}>
+            <Layers size={18} />
+            <span>Objects</span>
+          </button>
+          <button type="button" onClick={() => setMeshToolsOpen(true)}>
+            <Backpack size={18} />
+            <span>Inventory</span>
+          </button>
+          <button type="button" onClick={() => setWorldLogOpen(true)}>
+            <MessageCircle size={18} />
+            <span>Chat</span>
+          </button>
+          <button type="button">
+            <MapIcon size={18} />
+            <span>Map</span>
+          </button>
+        </nav>
         <section className="prompt-card world-prompt-card">
           <label htmlFor="tellus-prompt">Create</label>
           <textarea
@@ -5670,21 +6515,6 @@ function App(): React.ReactElement {
             >
               <Mic size={16} />
             </button>
-            <select
-              className="asset-select prompt-provider"
-              title="Generation quality"
-              aria-label="Generation quality"
-              value={snapshot.generationProvider}
-              onChange={(event) =>
-                worldRef.current?.setGenerationProvider(
-                  event.target.value as GenerationProvider,
-                )
-              }
-            >
-              <option value="pixal3d-gradio">High quality</option>
-              <option value="instantmesh-gradio">Fast asset</option>
-              <option value="anigen-gradio">Animated</option>
-            </select>
             <button
               type="button"
               className="primary-button"
@@ -5695,37 +6525,21 @@ function App(): React.ReactElement {
             </button>
           </div>
         </section>
-        <details className="world-help">
-          <summary>
-            <CircleHelp size={16} />
-            <span>Controls</span>
-          </summary>
-          <div className="world-help-list">
-            <span>
-              <strong>Move</strong>
-              <small>WASD / arrows</small>
-            </span>
-            <span>
-              <strong>Look</strong>
-              <small>drag</small>
-            </span>
-            <span>
-              <strong>Zoom</strong>
-              <small>scroll</small>
-            </span>
-            {snapshot.sailingThingId && (
-              <span>
-                <strong>Pilot</strong>
-                <small>active</small>
-              </span>
-            )}
-          </div>
-        </details>
       </section>
 
-      <aside className="tool-panel" aria-label="World editing tools">
+      <aside className="tool-panel" aria-label="Mesh tools">
         <div className="panel-strip">
-          <span>Tools</span>
+          <span>
+            {toolMenu === "mesh"
+              ? "Mesh Tools"
+              : toolMenu === "inventory"
+                ? "Inventory"
+                : toolMenu === "world-assets"
+                  ? "World Assets"
+                  : toolMenu === "terrain"
+                    ? "Terrain"
+                    : "AI"}
+          </span>
           <button
             type="button"
             className="icon-button"
@@ -5736,6 +6550,49 @@ function App(): React.ReactElement {
             <ArrowLeft size={17} />
           </button>
         </div>
+        <nav className="tool-panel-tabs" aria-label="Tool menus">
+          <button
+            type="button"
+            className={toolMenu === "mesh" ? "active" : ""}
+            onClick={() => setToolMenu("mesh")}
+          >
+            <Box size={15} />
+            <span>Mesh</span>
+          </button>
+          <button
+            type="button"
+            className={toolMenu === "inventory" ? "active" : ""}
+            onClick={() => setToolMenu("inventory")}
+          >
+            <Backpack size={15} />
+            <span>Inventory</span>
+          </button>
+          <button
+            type="button"
+            className={toolMenu === "world-assets" ? "active" : ""}
+            onClick={() => setToolMenu("world-assets")}
+          >
+            <Sparkles size={15} />
+            <span>Assets</span>
+          </button>
+          <button
+            type="button"
+            className={toolMenu === "terrain" ? "active" : ""}
+            onClick={() => setToolMenu("terrain")}
+          >
+            <Mountain size={15} />
+            <span>Terrain</span>
+          </button>
+          <button
+            type="button"
+            className={toolMenu === "ai" ? "active" : ""}
+            onClick={() => setToolMenu("ai")}
+          >
+            <Bot size={15} />
+            <span>AI</span>
+          </button>
+        </nav>
+        {toolMenu === "mesh" && (
         <section className="asset-card">
           <div className="section-heading">
             <Box size={16} />
@@ -5828,26 +6685,28 @@ function App(): React.ReactElement {
               <ArrowDown size={17} />
             </button>
           </div>
-          <div className="transform-actions">
+          <div className="height-actions">
             <button
               type="button"
               className="secondary-button"
-              title="Rotate left"
-              aria-label="Rotate left"
+              title="Raise height"
+              aria-label="Raise height"
               disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 8)}
+              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, 1)}
             >
-              <RotateCcw size={17} />
+              <ArrowUp size={17} />
+              <span>Up</span>
             </button>
             <button
               type="button"
               className="secondary-button"
-              title="Rotate right"
-              aria-label="Rotate right"
+              title="Lower height"
+              aria-label="Lower height"
               disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 8)}
+              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, -1)}
             >
-              <RotateCw size={17} />
+              <ArrowDown size={17} />
+              <span>Down</span>
             </button>
             <button
               type="button"
@@ -5856,28 +6715,95 @@ function App(): React.ReactElement {
               disabled={!selectedThing}
               onClick={() => selectedThing && worldRef.current?.groundGenerated(selectedThing.id)}
             >
+              <Mountain size={17} />
               <span>Ground</span>
             </button>
+          </div>
+          <div className="rotation-orb-control" aria-label="Asset rotation">
             <button
               type="button"
-              className="secondary-button"
-              title="Lift"
+              className="rotation-orb-button rotation-pitch-up"
+              title="Pitch up"
+              aria-label="Pitch up"
               disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, 3)}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 12, "x")}
             >
-              <ArrowUp size={17} />
-              <span>Lift</span>
+              <ArrowUp size={16} />
             </button>
             <button
               type="button"
-              className="secondary-button"
-              title="Lift higher"
+              className="rotation-orb-button rotation-roll-left"
+              title="Roll left"
+              aria-label="Roll left"
               disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, 8)}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 12, "z")}
             >
-              <ArrowUp size={17} />
-              <span>Higher</span>
+              <RotateCcw size={16} />
             </button>
+            <button
+              type="button"
+              className="rotation-orb-button rotation-level"
+              title="Level asset"
+              aria-label="Level asset"
+              disabled={!selectedThing}
+              onClick={() => {
+                if (!selectedThing) return;
+                worldRef.current?.rotateGenerated(
+                  selectedThing.id,
+                  -(selectedThing.rotationX ?? 0),
+                  "x",
+                );
+                worldRef.current?.rotateGenerated(
+                  selectedThing.id,
+                  -(selectedThing.rotationZ ?? 0),
+                  "z",
+                );
+              }}
+            >
+              <span>Level</span>
+            </button>
+            <button
+              type="button"
+              className="rotation-orb-button rotation-roll-right"
+              title="Roll right"
+              aria-label="Roll right"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 12, "z")}
+            >
+              <RotateCw size={16} />
+            </button>
+            <button
+              type="button"
+              className="rotation-orb-button rotation-pitch-down"
+              title="Pitch down"
+              aria-label="Pitch down"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 12, "x")}
+            >
+              <ArrowDown size={16} />
+            </button>
+            <button
+              type="button"
+              className="rotation-orb-button rotation-yaw-left"
+              title="Yaw left"
+              aria-label="Yaw left"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 12, "y")}
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <button
+              type="button"
+              className="rotation-orb-button rotation-yaw-right"
+              title="Yaw right"
+              aria-label="Yaw right"
+              disabled={!selectedThing}
+              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 12, "y")}
+            >
+              <ArrowRight size={16} />
+            </button>
+          </div>
+          <div className="transform-actions">
             <button
               type="button"
               className="secondary-button"
@@ -5955,7 +6881,9 @@ function App(): React.ReactElement {
             </button>
           )}
         </section>
+        )}
 
+        {toolMenu === "inventory" && (
         <section className="tool-card inventory-card">
           <div className="tool-title">
             <Box size={16} />
@@ -5989,7 +6917,9 @@ function App(): React.ReactElement {
             )}
           </div>
         </section>
+        )}
 
+        {toolMenu === "world-assets" && (
         <section className="tool-card inventory-card">
           <div className="tool-title">
             <Sparkles size={16} />
@@ -6020,7 +6950,81 @@ function App(): React.ReactElement {
             )}
           </div>
         </section>
+        )}
 
+        {toolMenu === "ai" && (
+          <section className="tool-card ai-card">
+            <div className="tool-title">
+              <Bot size={16} />
+              <span>AI Agents</span>
+            </div>
+            <div className="agent-list compact">
+              {snapshot.agents.map((agent) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className={
+                    agent.id === selectedAgent
+                      ? "agent-row active"
+                      : "agent-row"
+                  }
+                  onClick={() => setSelectedAgent(agent.id)}
+                >
+                  <span
+                    className="agent-dot"
+                    style={{
+                      backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
+                    }}
+                  />
+                  <span>
+                    <strong>{agent.name}</strong>
+                    <small>{agent.epithet || "Tellus agent"}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+            {selected && (
+              <div className="ai-agent-editor">
+                <div className="ai-avatar-card">
+                  <div
+                    className="ai-avatar-orb"
+                    style={{
+                      backgroundColor: `#${selected.color.toString(16).padStart(6, "0")}`,
+                    }}
+                  >
+                    {selected.name.slice(0, 1)}
+                  </div>
+                  <span>
+                    <strong>{selected.name}</strong>
+                    <small>{selected.avatarUrl ? "Avatar loaded" : "Fallback avatar"}</small>
+                  </span>
+                </div>
+                <label className="ai-prompt-field">
+                  <span>Agent prompt</span>
+                  <textarea
+                    value={selected.goal}
+                    rows={7}
+                    onChange={(event) =>
+                      worldRef.current?.updateAgentGoal(
+                        selected.id,
+                        event.target.value,
+                      )
+                    }
+                  />
+                </label>
+                <div className="asset-meta">
+                  <span>
+                    x {selected.position.x.toFixed(1)} z{" "}
+                    {selected.position.z.toFixed(1)}
+                  </span>
+                  <span>{selected.epithet || "agent"}</span>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {toolMenu === "terrain" && (
         <section className="tool-card">
           <div className="tool-title">
             <Mountain size={16} />
@@ -6089,114 +7093,10 @@ function App(): React.ReactElement {
             </button>
           </div>
         </section>
+        )}
 
       </aside>
 
-      <aside className="control-panel">
-        <header className="panel-header">
-          <div>
-            <p>World</p>
-            <h1>Chat Log</h1>
-          </div>
-          <button
-            type="button"
-            className="icon-button"
-            title="Hide world log"
-            aria-label="Hide world log"
-            onClick={() => setWorldLogOpen(false)}
-          >
-            <ArrowRight size={17} />
-          </button>
-        </header>
-
-        <section className="chat-card">
-          <div className="section-heading">
-            <MessageCircle size={16} />
-            <span>Discuss</span>
-          </div>
-          <textarea
-            className="chat-input"
-            value={chatPrompt}
-            rows={3}
-            placeholder={selected ? `Ask ${selected.name}...` : "Ask an agent..."}
-            onChange={(event) => setChatPrompt(event.target.value)}
-          />
-          <div className="chat-actions">
-            <button
-              type="button"
-              className="secondary-button prompt-icon-button"
-              title={chatListening ? "Listening" : "Speak to chat"}
-              aria-label={chatListening ? "Listening" : "Speak to chat"}
-              disabled={!chatSupported || chatListening}
-              onClick={startChatVoice}
-            >
-              <Mic size={16} />
-            </button>
-            <button
-              type="button"
-              className="secondary-button wide-button"
-              disabled={!chatPrompt.trim() || !selected}
-              onClick={askSelectedAgent}
-            >
-              <MessageCircle size={16} />
-              <span>{selected ? `Ask ${selected.name}` : "Ask agent"}</span>
-            </button>
-          </div>
-        </section>
-
-        <section className="agents-card">
-          <div className="section-heading">
-            <Sparkles size={16} />
-            <span>Enabled AI</span>
-          </div>
-          <div className="agent-list">
-            {snapshot.agents.map((agent) => (
-              <button
-                key={agent.id}
-                type="button"
-                className={
-                  agent.id === selectedAgent ? "agent-row active" : "agent-row"
-                }
-                onClick={() => setSelectedAgent(agent.id)}
-              >
-                <span
-                  className="agent-dot"
-                  style={{
-                    backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                  }}
-                />
-                <span>
-                  <strong>{agent.name}</strong>
-                  <small>{agent.epithet}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-          {selected && <p className="agent-goal">{selected.goal}</p>}
-        </section>
-
-        <section className="log-card">
-          <div className="section-heading">
-            <Leaf size={16} />
-            <span>World log</span>
-          </div>
-          <div className="log-list">
-            {recentLogs.map((log) => (
-              <article key={log.id} className={`log-entry ${log.tool}`}>
-                <strong>{log.tool}</strong>
-                <p>{log.text}</p>
-                {log.screenshotUrl && (
-                  <img
-                    className="log-screenshot"
-                    src={log.screenshotUrl}
-                    alt={`${log.agentName} world feedback screenshot`}
-                  />
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
-      </aside>
     </main>
   );
 }

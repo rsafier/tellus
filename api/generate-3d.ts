@@ -14,6 +14,7 @@ interface Generate3DRequest {
   sampleSteps?: number;
   seed?: number;
   provider?: Generation3DProvider;
+  instantMeshBaseUrl?: string;
 }
 
 type Generation3DProvider =
@@ -49,6 +50,14 @@ interface GenerationJob {
 interface LegacyPredictResponse {
   data?: unknown[];
   error?: string;
+}
+
+interface GradioConfig {
+  dependencies?: Array<{
+    inputs?: number[];
+    outputs?: number[];
+    backend_fn?: boolean;
+  }>;
 }
 
 interface GradioCallResponse {
@@ -429,6 +438,22 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
     throw new Error(cleanUpstreamError(response.status, body));
   }
   return response.arrayBuffer();
+}
+
+async function instantMeshPredictFnIndex(baseUrl: string): Promise<number> {
+  const response = await fetch(`${baseUrl}/config`);
+  if (!response.ok) return 1;
+  const config = (await response.json()) as GradioConfig;
+  const index = config.dependencies?.findIndex((dependency) => {
+    const inputs = dependency.inputs ?? [];
+    const outputs = dependency.outputs ?? [];
+    return (
+      dependency.backend_fn &&
+      inputs.length === 4 &&
+      outputs.length >= 5
+    );
+  });
+  return index !== undefined && index >= 0 ? index : 1;
 }
 
 async function fetchBytes(url: string): Promise<{ bytes: Buffer; mime: string }> {
@@ -1268,6 +1293,31 @@ function providerBaseUrl(provider: Generation3DProvider): string | undefined {
   return process.env.INSTANTMESH_GRADIO_BASE_URL;
 }
 
+function knownInstantMeshBaseUrls(): Set<string> {
+  const urls = new Set([
+    "http://127.0.0.1:43839",
+    "http://localhost:43839",
+    "http://192.168.1.177:43839",
+  ]);
+  for (const value of [
+    process.env.INSTANTMESH_GRADIO_BASE_URL,
+    ...(process.env.INSTANTMESH_GRADIO_BASE_URLS?.split(",") ?? []),
+  ]) {
+    const trimmed = value?.trim();
+    if (trimmed) urls.add(trimmed.replace(/\/+$/, ""));
+  }
+  return urls;
+}
+
+function instantMeshBaseUrlFromPayload(payload: Generate3DRequest): string | undefined {
+  const requested = payload.instantMeshBaseUrl?.trim().replace(/\/+$/, "");
+  if (!requested) return providerBaseUrl("instantmesh-gradio");
+  if (!knownInstantMeshBaseUrls().has(requested)) {
+    throw new Error(`InstantMesh target is not allowed: ${requested}`);
+  }
+  return requested;
+}
+
 function missingProviderConfigMessage(provider: Generation3DProvider): string {
   if (provider === "pixal3d-gradio") return "PIXAL3D_GRADIO_BASE_URL is not configured";
   if (provider === "anigen-gradio") return "ANIGEN_GRADIO_BASE_URL is not configured";
@@ -1366,6 +1416,7 @@ async function executeGeneration(params: {
     };
   }
 
+  const fnIndex = await instantMeshPredictFnIndex(baseUrl);
   const response = await fetch(`${baseUrl}/run/predict`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1376,7 +1427,7 @@ async function executeGeneration(params: {
         sampleSteps,
         seed,
       ],
-      fn_index: 1,
+      fn_index: fnIndex,
     }),
   });
 
@@ -1388,7 +1439,7 @@ async function executeGeneration(params: {
   const body = (await response.json()) as LegacyPredictResponse;
   if (body.error) throw new Error(body.error);
 
-  const candidate = collectCandidates(body.data?.[4]).find((value) =>
+  const candidate = collectCandidates(body.data).find((value) =>
     /\.(glb|gltf)(\?|$)/i.test(value),
   );
   if (!candidate) {
@@ -1510,9 +1561,22 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   if (disabledProvider) {
     return Response.json({ error: disabledProvider }, { status: 503 });
   }
-  const baseUrl = providerBaseUrl(provider)
-    ?.trim()
-    .replace(/\/+$/, "");
+  let baseUrl: string | undefined;
+  try {
+    baseUrl = (provider === "instantmesh-gradio"
+      ? instantMeshBaseUrlFromPayload(payload)
+      : providerBaseUrl(provider))
+      ?.trim()
+      .replace(/\/+$/, "");
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof Error ? error.message : "InstantMesh target is not allowed",
+      },
+      { status: 400 },
+    );
+  }
   if (!baseUrl) {
     return Response.json(
       { error: missingProviderConfigMessage(provider) },

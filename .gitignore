@@ -1,5 +1,7 @@
 dist
 node_modules
+benchmarks/*.json
+external/
 .env
 .env.local
 public/tellus-config.local.json

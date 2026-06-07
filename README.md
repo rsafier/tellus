@@ -151,6 +151,44 @@ or mount that drive as `/mnt/z/3d/assets/tellus` on a Linux host or container.
 Tellus also translates Windows drive syntax such as `Z:\3d\assets\tellus` to
 `/mnt/z/3d/assets/tellus` when it is running on Linux.
 
+## Local InstantMesh Benchmark
+
+Tellus can run the official TencentARC/InstantMesh Gradio app locally and
+benchmark either the raw Gradio API or the full Tellus `/api/generate-3d` path.
+The setup script clones InstantMesh into ignored `external/InstantMesh` and
+builds a Docker image when Docker is available:
+
+```bash
+bun run instantmesh:setup
+bun run instantmesh:start
+```
+
+The InstantMesh Gradio service listens at <http://127.0.0.1:43839>. In another
+terminal, start Tellus' API server with matching environment:
+
+```bash
+INSTANTMESH_GRADIO_BASE_URL=http://127.0.0.1:43839 \
+INSTANTMESH_SAMPLE_STEPS=30 \
+TELLUS_GENERATED_ASSET_DIR=/root/tellus-generated-assets \
+bun run start
+```
+
+Then benchmark the full app path:
+
+```bash
+bun run bench:instantmesh -- --target=tellus --runs=3 --warmup=1 --steps=30
+```
+
+Or benchmark the Gradio `/run/predict` API directly:
+
+```bash
+bun run bench:instantmesh -- --target=gradio --runs=3 --warmup=1 --steps=30
+```
+
+Benchmark reports are written to `benchmarks/instantmesh-*.json` and include
+latency summary, per-run timings, GPU snapshots from `nvidia-smi`, generated
+model URLs or file paths, and output sizes when Tellus persists the GLB.
+
 For Asset Forge / Pixel3D, configure the browser-visible API base URL:
 
 ```bash

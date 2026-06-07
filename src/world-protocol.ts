@@ -39,7 +39,9 @@ export interface WorldGeneratedThing {
   creatorId: string;
   ownerUserId?: string;
   position: Vec3;
+  rotationX?: number;
   rotationY: number;
+  rotationZ?: number;
   scale: number;
   color: number;
   modelUrl?: string;
@@ -165,8 +167,14 @@ export function isWorldGeneratedThing(value: unknown): value is WorldGeneratedTh
     typeof value.creatorId !== "string" ||
     (value.ownerUserId !== undefined && typeof value.ownerUserId !== "string") ||
     !isVec3(value.position) ||
+    (value.rotationX !== undefined &&
+      (typeof value.rotationX !== "number" ||
+        !Number.isFinite(value.rotationX))) ||
     typeof value.rotationY !== "number" ||
     !Number.isFinite(value.rotationY) ||
+    (value.rotationZ !== undefined &&
+      (typeof value.rotationZ !== "number" ||
+        !Number.isFinite(value.rotationZ))) ||
     typeof value.scale !== "number" ||
     !Number.isFinite(value.scale) ||
     typeof value.color !== "number" ||

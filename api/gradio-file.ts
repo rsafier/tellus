@@ -1,14 +1,26 @@
 const ALLOWED_GRADIO_HOSTS = new Set([
-  "192.168.1.177:43839",
   "localhost:43839",
   "127.0.0.1:43839",
+  "192.168.1.177:43839",
 ]);
 
 function allowedGradioHosts(): Set<string> {
   const hosts = new Set(ALLOWED_GRADIO_HOSTS);
   const configuredBaseUrl = process.env.INSTANTMESH_GRADIO_BASE_URL?.trim();
-  if (configuredBaseUrl) {
-    hosts.add(new URL(configuredBaseUrl).host);
+  const configuredBaseUrls = [
+    configuredBaseUrl,
+    ...(process.env.INSTANTMESH_GRADIO_BASE_URLS?.split(",") ?? []),
+  ].filter((value): value is string => Boolean(value?.trim()));
+  for (const configuredBase of configuredBaseUrls) {
+    const configured = new URL(configuredBase.trim());
+    hosts.add(configured.host);
+
+    const port = configured.port || (configured.protocol === "https:" ? "443" : "80");
+    const publicHost = process.env.TELLUS_PUBLIC_HOST?.trim();
+    if (publicHost) hosts.add(`${publicHost}:${port}`);
+
+    const publicBaseUrl = process.env.TELLUS_PUBLIC_BASE_URL?.trim();
+    if (publicBaseUrl) hosts.add(`${new URL(publicBaseUrl).hostname}:${port}`);
   }
   return hosts;
 }
