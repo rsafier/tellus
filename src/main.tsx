@@ -6364,8 +6364,8 @@ function App(): React.ReactElement {
   const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
   const [meshToolsOpen, setMeshToolsOpen] = useState(false);
   const [toolMenu, setToolMenu] = useState<
-    "mesh" | "inventory" | "world-assets" | "terrain" | "ai"
-  >("mesh");
+    "inventory" | "world-assets" | "terrain" | "ai"
+  >("terrain");
   const [worldLogOpen, setWorldLogOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const { listening, supported, start } = useSpeechInput((text) =>
@@ -6582,6 +6582,20 @@ function App(): React.ReactElement {
     promptRef.current?.focus();
   };
 
+  const showMeshToolbar = () => {
+    if (snapshot.generated.length === 0) {
+      setToolMenu("world-assets");
+      setMeshToolsOpen(true);
+      return;
+    }
+    if (!snapshot.selectedThingId) {
+      worldRef.current?.selectGenerated(
+        snapshot.generated[snapshot.generated.length - 1].id,
+      );
+    }
+    setMeshToolsOpen(false);
+  };
+
   const askSelectedAgent = () => {
     if (!chatPrompt.trim() || !selected) return;
     worldRef.current?.talkToAgent(selected.id, chatPrompt);
@@ -6653,7 +6667,7 @@ function App(): React.ReactElement {
                   <span>Terrain</span>
                 </button>
                 <button type="button" onClick={focusCreatePrompt}><Sparkles size={15} /><span>Creation</span></button>
-                <button type="button" onClick={() => setMeshToolsOpen(true)}><Hammer size={15} /><span>Mesh Tools</span></button>
+                <button type="button" onClick={showMeshToolbar}><Hammer size={15} /><span>Mesh Tools</span></button>
                 <button
                   type="button"
                   onClick={() => {
@@ -6899,7 +6913,7 @@ function App(): React.ReactElement {
               <button
                 type="button"
                 className="panel-mini-button"
-                onClick={() => setMeshToolsOpen(true)}
+                onClick={showMeshToolbar}
               >
                 Mesh
               </button>
@@ -7229,12 +7243,10 @@ function App(): React.ReactElement {
         </section>
       </section>
 
-      <aside className="tool-panel" aria-label="Mesh tools">
+      <aside className="tool-panel" aria-label="Tool panel">
         <div className="panel-strip">
           <span>
-            {toolMenu === "mesh"
-              ? "Mesh Tools"
-              : toolMenu === "inventory"
+            {toolMenu === "inventory"
                 ? "Inventory"
                 : toolMenu === "world-assets"
                   ? "World Assets"
@@ -7245,22 +7257,14 @@ function App(): React.ReactElement {
           <button
             type="button"
             className="icon-button"
-            title="Hide mesh tools"
-            aria-label="Hide mesh tools"
+            title="Hide tools"
+            aria-label="Hide tools"
             onClick={() => setMeshToolsOpen(false)}
           >
             <ArrowLeft size={17} />
           </button>
         </div>
         <nav className="tool-panel-tabs" aria-label="Tool menus">
-          <button
-            type="button"
-            className={toolMenu === "mesh" ? "active" : ""}
-            onClick={() => setToolMenu("mesh")}
-          >
-            <Box size={15} />
-            <span>Mesh</span>
-          </button>
           <button
             type="button"
             className={toolMenu === "inventory" ? "active" : ""}
@@ -7294,293 +7298,6 @@ function App(): React.ReactElement {
             <span>AI</span>
           </button>
         </nav>
-        {toolMenu === "mesh" && (
-        <section className="asset-card">
-          <div className="section-heading">
-            <Box size={16} />
-            <span>Mesh Tools</span>
-          </div>
-          <select
-            className="asset-select"
-            value={selectedThing?.id ?? ""}
-            disabled={snapshot.generated.length === 0}
-            onChange={(event) =>
-              worldRef.current?.selectGenerated(event.target.value)
-            }
-          >
-            {snapshot.generated.length === 0 && (
-              <option value="">No generated meshes</option>
-            )}
-            {snapshot.generated.map((thing) => (
-              <option key={thing.id} value={thing.id}>
-                {thing.kind}: {thing.prompt.slice(0, 42)}
-              </option>
-            ))}
-          </select>
-          <div className="asset-meta">
-            {selectedThing ? (
-              <>
-                <span>{selectedThing.generationStatus ?? "local"}</span>
-                <span>
-                  x {selectedThing.position.x.toFixed(1)} y{" "}
-                  {selectedThing.position.y.toFixed(1)} z{" "}
-                  {selectedThing.position.z.toFixed(1)}
-                </span>
-                <span>{selectedThing.scale.toFixed(2)}x</span>
-              </>
-            ) : (
-              <>
-                <span>no mesh selected</span>
-                <span>generate or choose an asset</span>
-              </>
-            )}
-          </div>
-          <div className="asset-orb-control" aria-label="Asset position">
-            <button
-              type="button"
-              className="orb-button orb-up"
-              title="Move forward"
-              aria-label="Move forward"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, 0, -2)}
-            >
-              <ArrowUp size={17} />
-            </button>
-            <button
-              type="button"
-              className="orb-button orb-left"
-              title="Move left"
-              aria-label="Move left"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, -2, 0)}
-            >
-              <ArrowLeft size={17} />
-            </button>
-            <button
-              type="button"
-              className="orb-button orb-center"
-              title="Ground asset"
-              aria-label="Ground asset"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.groundGenerated(selectedThing.id)}
-            >
-              <Mountain size={17} />
-            </button>
-            <button
-              type="button"
-              className="orb-button orb-right"
-              title="Move right"
-              aria-label="Move right"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, 2, 0)}
-            >
-              <ArrowRight size={17} />
-            </button>
-            <button
-              type="button"
-              className="orb-button orb-down"
-              title="Move backward"
-              aria-label="Move backward"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.moveGenerated(selectedThing.id, 0, 2)}
-            >
-              <ArrowDown size={17} />
-            </button>
-          </div>
-          <div className="height-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              title="Raise height"
-              aria-label="Raise height"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, 1)}
-            >
-              <ArrowUp size={17} />
-              <span>Up</span>
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              title="Lower height"
-              aria-label="Lower height"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.liftGenerated(selectedThing.id, -1)}
-            >
-              <ArrowDown size={17} />
-              <span>Down</span>
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              title="Ground"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.groundGenerated(selectedThing.id)}
-            >
-              <Mountain size={17} />
-              <span>Ground</span>
-            </button>
-          </div>
-          <div className="rotation-orb-control" aria-label="Asset rotation">
-            <button
-              type="button"
-              className="rotation-orb-button rotation-pitch-up"
-              title="Pitch up"
-              aria-label="Pitch up"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 12, "x")}
-            >
-              <ArrowUp size={16} />
-            </button>
-            <button
-              type="button"
-              className="rotation-orb-button rotation-roll-left"
-              title="Roll left"
-              aria-label="Roll left"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 12, "z")}
-            >
-              <RotateCcw size={16} />
-            </button>
-            <button
-              type="button"
-              className="rotation-orb-button rotation-level"
-              title="Level asset"
-              aria-label="Level asset"
-              disabled={!selectedThing}
-              onClick={() => {
-                if (!selectedThing) return;
-                worldRef.current?.rotateGenerated(
-                  selectedThing.id,
-                  -(selectedThing.rotationX ?? 0),
-                  "x",
-                );
-                worldRef.current?.rotateGenerated(
-                  selectedThing.id,
-                  -(selectedThing.rotationZ ?? 0),
-                  "z",
-                );
-              }}
-            >
-              <span>Level</span>
-            </button>
-            <button
-              type="button"
-              className="rotation-orb-button rotation-roll-right"
-              title="Roll right"
-              aria-label="Roll right"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 12, "z")}
-            >
-              <RotateCw size={16} />
-            </button>
-            <button
-              type="button"
-              className="rotation-orb-button rotation-pitch-down"
-              title="Pitch down"
-              aria-label="Pitch down"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 12, "x")}
-            >
-              <ArrowDown size={16} />
-            </button>
-            <button
-              type="button"
-              className="rotation-orb-button rotation-yaw-left"
-              title="Yaw left"
-              aria-label="Yaw left"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, -Math.PI / 12, "y")}
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <button
-              type="button"
-              className="rotation-orb-button rotation-yaw-right"
-              title="Yaw right"
-              aria-label="Yaw right"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.rotateGenerated(selectedThing.id, Math.PI / 12, "y")}
-            >
-              <ArrowRight size={16} />
-            </button>
-          </div>
-          <div className="transform-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              title="Move to water"
-              aria-label="Move asset to water"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.moveGeneratedToWater(selectedThing.id)}
-            >
-              <Waves size={17} />
-              <span>Water</span>
-            </button>
-          </div>
-          <div className="scale-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              title="Scale down"
-              aria-label="Scale down"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.scaleGenerated(selectedThing.id, 0.72)}
-            >
-              <Minus size={17} />
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              title="Reset scale"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.resetGeneratedScale(selectedThing.id)}
-            >
-              <span>1x</span>
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              title="Scale up"
-              aria-label="Scale up"
-              disabled={!selectedThing}
-              onClick={() => selectedThing && worldRef.current?.scaleGenerated(selectedThing.id, 1.38)}
-            >
-              <Plus size={17} />
-            </button>
-          </div>
-          <button
-            type="button"
-            className="danger-button wide-button"
-            disabled={!selectedThing}
-            onClick={() => selectedThing && worldRef.current?.deleteGenerated(selectedThing.id)}
-          >
-            <Trash2 size={16} />
-            <span>Delete Asset</span>
-          </button>
-          {selectedThing && selectedThingVehicleMode && (
-            <button
-              type="button"
-              className="primary-button wide-button"
-              onClick={() =>
-                snapshot.sailingThingId === selectedThing.id
-                  ? worldRef.current?.disembark()
-                  : worldRef.current?.boardGenerated(selectedThing.id)
-              }
-            >
-              <Ship size={16} />
-              <span>
-                {snapshot.sailingThingId === selectedThing.id
-                  ? "Disembark"
-                  : selectedThingIsMount
-                    ? "Mount and Ride"
-                    : "Board and Pilot"}
-              </span>
-            </button>
-          )}
-        </section>
-        )}
-
         {toolMenu === "inventory" && (
         <section className="tool-card inventory-card">
           <div className="tool-title">
@@ -7730,7 +7447,8 @@ function App(): React.ReactElement {
             <Mountain size={16} />
             <span>Terrain</span>
           </div>
-          <div className="terrain-actions compact">
+          <div className="terrain-subtitle">Height</div>
+          <div className="terrain-actions compact terrain-height-actions">
             <button
               type="button"
               className="secondary-button terrain-hold"
@@ -7745,7 +7463,7 @@ function App(): React.ReactElement {
               className="secondary-button"
               onClick={() => worldRef.current?.sculptTerrain("flatten")}
             >
-              <span>Flat</span>
+              <span>Flatten</span>
             </button>
             <button
               type="button"
@@ -7756,6 +7474,9 @@ function App(): React.ReactElement {
             >
               <ArrowDown size={18} />
             </button>
+          </div>
+          <div className="terrain-subtitle with-rule">Materials</div>
+          <div className="terrain-actions compact terrain-material-actions">
             <button
               type="button"
               className="secondary-button"

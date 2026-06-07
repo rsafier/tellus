@@ -1450,6 +1450,29 @@ textarea::placeholder {
   min-height: 54px;
 }
 
+.terrain-subtitle {
+  color: var(--hud-gold-bright);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.terrain-subtitle.with-rule {
+  border-top: 1px solid var(--hud-border-soft);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+
+.terrain-height-actions {
+  margin-bottom: 2px;
+}
+
+.terrain-material-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .prompt-card {
   display: grid;
   gap: 10px;
