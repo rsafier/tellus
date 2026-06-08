@@ -836,6 +836,33 @@ textarea::placeholder {
   cursor: pointer;
 }
 
+.dismount-button {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  z-index: 32;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  border: 1px solid rgb(255 226 154 / 66%);
+  background: rgb(36 76 40 / 90%);
+  color: var(--hud-gold-bright);
+  box-shadow: var(--hud-shadow), var(--hud-inset);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.dismount-button:hover {
+  border-color: var(--hud-gold-bright);
+  background: rgb(54 102 49 / 94%);
+}
+
 .selected-transform-hud {
   position: absolute;
   left: 50%;

@@ -7066,6 +7066,18 @@ function App(): React.ReactElement {
             </section>
           </aside>
         )}
+        {snapshot.sailingThingId && (
+          <button
+            type="button"
+            className="dismount-button"
+            title="Dismount"
+            aria-label="Dismount"
+            onClick={() => worldRef.current?.disembark()}
+          >
+            <Ship size={17} />
+            <span>Dismount</span>
+          </button>
+        )}
         {worldLogOpen && (
           <section className="world-mini-chat" aria-label="World chat">
             <header>
@@ -7156,7 +7168,9 @@ function App(): React.ReactElement {
                     worldRef.current?.boardGenerated(activeSelectedThing.id);
                   }}
                 >
-                  Ride
+                  {snapshot.sailingThingId === activeSelectedThing.id
+                    ? "Dismount"
+                    : "Ride"}
                 </button>
                 <button
                   type="button"
