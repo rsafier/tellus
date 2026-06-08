@@ -368,6 +368,7 @@ const AGENT_SPEED = 5.2;
 const PLAYER_SPEED = 13;
 const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
 const AUTONOMOUS_REFLECTION_OFFSET_MS = AUTONOMOUS_ASSET_INTERVAL_MS / 2;
+const AUTONOMOUS_AGENT_GENERATION_ENABLED = false;
 const PENDING_GENERATION_FALLBACK_MS = 3 * 60 * 1000;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
@@ -5465,34 +5466,37 @@ function createTellusWorld(
         });
       }
       if (runAgentWorldAction(agent, decision)) return;
-      const thing = generate({
-        prompt: decision.prompt,
-        location: chooseAgentLocation(agent, decision.prompt),
-        creatorId: agent.id,
-      });
-      if (decision.intent) {
-        if (paused) return;
-        interact({
-          targetId: thing.id,
-          actorId: agent.id,
-          intent: decision.intent,
+      if (AUTONOMOUS_AGENT_GENERATION_ENABLED) {
+        const thing = generate({
+          prompt: decision.prompt,
+          location: chooseAgentLocation(agent, decision.prompt),
+          creatorId: agent.id,
         });
+        if (decision.intent) {
+          if (paused) return;
+          interact({
+            targetId: thing.id,
+            actorId: agent.id,
+            intent: decision.intent,
+          });
+        }
+        return;
       }
+      addLog({
+        agentId: agent.id,
+        agentName: agent.name,
+        tool: "interact",
+        text: `${agent.name} wanted to generate "${decision.prompt}", but autonomous asset generation is disabled.`,
+      });
     } catch (error) {
       if (destroyed || paused) return;
       addLog({
         agentId: "world",
         agentName: "Hyades",
         tool: "interact",
-        text: `Agent model unavailable; using local behavior (${
+        text: `Agent model unavailable; autonomous fallback asset generation is disabled (${
           error instanceof Error ? error.message : "unknown error"
         })`,
-      });
-      const fallbackPrompt = chooseAgentPrompt(agent, generated);
-      generate({
-        prompt: fallbackPrompt,
-        location: chooseAgentLocation(agent, fallbackPrompt),
-        creatorId: agent.id,
       });
     } finally {
       pendingAgentDecisions.delete(agent.id);
@@ -7066,6 +7070,18 @@ function App(): React.ReactElement {
             </section>
           </aside>
         )}
+        {snapshot.sailingThingId && (
+          <button
+            type="button"
+            className="dismount-button"
+            title="Dismount"
+            aria-label="Dismount"
+            onClick={() => worldRef.current?.disembark()}
+          >
+            <Ship size={17} />
+            <span>Dismount</span>
+          </button>
+        )}
         {worldLogOpen && (
           <section className="world-mini-chat" aria-label="World chat">
             <header>
@@ -7156,7 +7172,9 @@ function App(): React.ReactElement {
                     worldRef.current?.boardGenerated(activeSelectedThing.id);
                   }}
                 >
-                  Ride
+                  {snapshot.sailingThingId === activeSelectedThing.id
+                    ? "Dismount"
+                    : "Ride"}
                 </button>
                 <button
                   type="button"
