@@ -368,6 +368,7 @@ const AGENT_SPEED = 5.2;
 const PLAYER_SPEED = 13;
 const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
 const AUTONOMOUS_REFLECTION_OFFSET_MS = AUTONOMOUS_ASSET_INTERVAL_MS / 2;
+const PENDING_GENERATION_FALLBACK_MS = 3 * 60 * 1000;
 const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 const POND_RADIUS = 7.4;
 const TERRAIN_VERTEX_COUNT = TERRAIN_SEGMENTS + 1;
@@ -1817,6 +1818,21 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
     throw new Error(`${response.status}${message ? ` ${message}` : ""}`);
   }
   return (await response.json()) as T;
+}
+
+function isStalePendingGeneratedThing(thing: WorldGeneratedThing): boolean {
+  if (thing.modelUrl) return false;
+  if (
+    thing.generationStatus !== "queued" &&
+    thing.generationStatus !== "generating"
+  ) {
+    return false;
+  }
+  const updatedAt = Date.parse(thing.updatedAt);
+  return (
+    Number.isFinite(updatedAt) &&
+    Date.now() - updatedAt > PENDING_GENERATION_FALLBACK_MS
+  );
 }
 
 function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
@@ -4154,12 +4170,44 @@ function createTellusWorld(
       : thing.modelUrl
         ? absoluteTellusApiUrl(thing.modelUrl)
         : undefined;
+    const stalePending = isStalePendingGeneratedThing(thing);
     return {
       ...thing,
       modelUrl,
-      pipelineId: modelUrl ? undefined : thing.pipelineId,
-      generationStatus: modelUrl ? "ready" : thing.generationStatus,
+      pipelineId: modelUrl || stalePending ? undefined : thing.pipelineId,
+      generationStatus: modelUrl
+        ? "ready"
+        : stalePending
+          ? "local"
+          : thing.generationStatus,
     };
+  };
+
+  const isPendingGenerationStatus = (
+    status: GeneratedThing["generationStatus"],
+  ) => status === "queued" || status === "generating";
+
+  const applyGenerationState = (
+    existing: GeneratedThing,
+    normalized: WorldGeneratedThing,
+  ) => {
+    const remoteIsPendingWithoutModel =
+      !normalized.modelUrl &&
+      isPendingGenerationStatus(normalized.generationStatus);
+    const existingIsResolved =
+      Boolean(existing.modelUrl) ||
+      existing.generationStatus === "ready" ||
+      existing.generationStatus === "local";
+
+    if (remoteIsPendingWithoutModel && existingIsResolved) {
+      return;
+    }
+
+    existing.modelUrl = normalized.modelUrl;
+    existing.pipelineId = normalized.modelUrl ? undefined : normalized.pipelineId;
+    existing.generationStatus = normalized.modelUrl
+      ? "ready"
+      : normalized.generationStatus;
   };
 
   const generatedPlacementStorageKey = () =>
@@ -4315,6 +4363,7 @@ function createTellusWorld(
   };
 
   const applyRemoteGeneratedThing = (remote: WorldGeneratedThing) => {
+    const healedPending = isStalePendingGeneratedThing(remote);
     const normalized = normalizeGeneratedThing(remote);
     const existing = thingById(normalized.id);
     if (existing) {
@@ -4328,13 +4377,14 @@ function createTellusWorld(
       existing.rotationZ = normalized.rotationZ ?? 0;
       existing.scale = normalized.scale;
       existing.color = normalized.color;
-      existing.modelUrl = normalized.modelUrl;
-      existing.pipelineId = normalized.pipelineId;
-      existing.generationStatus = normalized.generationStatus;
+      applyGenerationState(existing, normalized);
       ensureGeneratedVisual(existing);
       updateThingMeshPosition(existing);
       loadRemoteGeneratedModel(existing);
       reconcileRemoteGeneratedManifest(existing);
+      if (healedPending) {
+        publishGeneratedThing(existing);
+      }
       return;
     }
     const thing: GeneratedThing = {
@@ -4363,6 +4413,9 @@ function createTellusWorld(
     updateThingMeshPosition(thing);
     loadRemoteGeneratedModel(thing);
     reconcileRemoteGeneratedManifest(thing);
+    if (healedPending) {
+      publishGeneratedThing(thing);
+    }
   };
 
   const applyRemoteGeneratedThings = (remoteThings: WorldGeneratedThing[]) => {
