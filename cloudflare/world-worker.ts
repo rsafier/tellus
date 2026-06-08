@@ -84,6 +84,27 @@ const defaultTerrainState = (): TellusTerrainState => ({
   savedAt: new Date(0).toISOString(),
 });
 
+function terrainHasEdits(terrain: TellusTerrainState): boolean {
+  return (
+    terrain.terrainSculptOffsets.some((value) => value !== 0) ||
+    terrain.terrainPaint.some((value) => value !== 0) ||
+    Object.values(terrain.distantIslandSculptOffsets).some((values) =>
+      values.some((value) => value !== 0),
+    ) ||
+    Object.values(terrain.distantIslandPaint).some((values) =>
+      values.some((value) => value !== 0),
+    )
+  );
+}
+
+function shouldKeepExistingTerrain(
+  existing: TellusTerrainState,
+  incoming: TellusTerrainState,
+): boolean {
+  if (existing.revision > incoming.revision) return true;
+  return terrainHasEdits(existing) && !terrainHasEdits(incoming);
+}
+
 function jsonResponse(value: unknown, init?: ResponseInit): Response {
   return Response.json(value, {
     ...init,
@@ -263,7 +284,6 @@ export class TellusWorld extends DurableObject<Env> {
   private generated = new Map<string, WorldGeneratedThing>();
   private queuedGenerationJobs = new Map<string, QueuedGenerationJob>();
   private storageWritesAvailable = true;
-  private externalPersistenceAvailable = true;
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -369,6 +389,25 @@ export class TellusWorld extends DurableObject<Env> {
     }
 
     if (action.type === "terrain.replace") {
+      const externalState = await this.loadExternalWorldState();
+      if (externalState && shouldKeepExistingTerrain(externalState.terrain, action.terrain)) {
+        this.applyPersistedState(externalState);
+        return {
+          type: "action.rejected",
+          actionType: action.type,
+          reason: "Refusing to overwrite newer persisted Tellus terrain.",
+        };
+      }
+      if (
+        this.terrain &&
+        shouldKeepExistingTerrain(this.terrain, action.terrain)
+      ) {
+        return {
+          type: "action.rejected",
+          actionType: action.type,
+          reason: "Refusing to overwrite existing Tellus terrain with an older or empty snapshot.",
+        };
+      }
       this.terrain = {
         ...action.terrain,
         revision: Math.max((this.terrain?.revision ?? 0) + 1, action.terrain.revision),
@@ -524,20 +563,18 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async loadExternalWorldState(): Promise<PersistedWorldState | null> {
     const url = this.externalPersistenceUrl();
-    if (!url || !this.externalPersistenceAvailable) return null;
+    if (!url) return null;
     try {
       const response = await fetch(url, {
         headers: this.externalPersistenceHeaders(),
       });
       if (response.status === 404) return null;
       if (!response.ok) {
-        this.externalPersistenceAvailable = false;
         console.warn(`Tellus external world load failed: ${response.status}`);
         return null;
       }
       return persistedStateFrom(await response.json(), this.worldId);
     } catch (error) {
-      this.externalPersistenceAvailable = false;
       console.warn("Tellus external world load failed", error);
       return null;
     }
@@ -545,21 +582,26 @@ export class TellusWorld extends DurableObject<Env> {
 
   private async saveExternalWorldState(): Promise<boolean> {
     const url = this.externalPersistenceUrl();
-    if (!url || !this.externalPersistenceAvailable) return false;
+    if (!url) return false;
+    const state = this.persistedWorldState();
+    const externalState = await this.loadExternalWorldState();
+    if (externalState && shouldKeepExistingTerrain(externalState.terrain, state.terrain)) {
+      this.applyPersistedState(externalState);
+      console.warn("Tellus external world save skipped to preserve newer persisted terrain");
+      return true;
+    }
     try {
       const response = await fetch(url, {
         method: "PUT",
         headers: this.externalPersistenceHeaders(),
-        body: JSON.stringify(this.persistedWorldState()),
+        body: JSON.stringify(state),
       });
       if (!response.ok) {
-        this.externalPersistenceAvailable = false;
         console.warn(`Tellus external world save failed: ${response.status}`);
         return false;
       }
       return true;
     } catch (error) {
-      this.externalPersistenceAvailable = false;
       console.warn("Tellus external world save failed", error);
       return false;
     }
