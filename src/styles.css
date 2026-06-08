@@ -88,10 +88,9 @@ textarea::placeholder {
   position: absolute;
   top: 18px;
   left: 22px;
-  right: 270px;
+  right: auto;
   z-index: 30;
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto minmax(56px, 1fr);
+  display: flex;
   align-items: start;
   pointer-events: none;
 }
@@ -141,6 +140,15 @@ textarea::placeholder {
   box-shadow: var(--hud-shadow), var(--hud-inset);
   transform: translateX(50%);
   padding: 6px;
+}
+
+.world-prompt-card.active {
+  z-index: 36;
+  border-color: var(--hud-border);
+  box-shadow:
+    0 0 0 1px rgb(255 232 132 / 22%),
+    var(--hud-shadow),
+    var(--hud-inset);
 }
 
 .world-map {
@@ -551,13 +559,17 @@ textarea::placeholder {
 }
 
 .world-left-toolbelt {
-  position: absolute;
-  top: 146px;
-  left: 22px;
+  position: fixed;
+  left: 20px;
+  bottom: 18px;
   z-index: 26;
-  display: grid;
+  display: flex;
   gap: 5px;
-  padding: 8px 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   pointer-events: auto;
 }
 
@@ -565,8 +577,8 @@ textarea::placeholder {
   display: grid;
   justify-items: center;
   gap: 3px;
-  width: 54px;
-  min-height: 52px;
+  width: 50px;
+  min-height: 46px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--hud-text);
@@ -1003,10 +1015,11 @@ textarea::placeholder {
 
 .tool-panel {
   position: absolute;
-  top: 78px;
-  bottom: 18px;
+  top: 104px;
+  bottom: auto;
+  left: 20px;
   z-index: 34;
-  width: min(330px, calc(100vw - 36px));
+  width: min(330px, calc(100vw - 40px));
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -1016,12 +1029,21 @@ textarea::placeholder {
   scrollbar-gutter: stable;
   background: linear-gradient(180deg, var(--hud-bg-strong), rgb(9 16 10 / 96%));
   padding: 18px;
-}
-
-.tool-panel {
-  left: 18px;
   border: 1px solid var(--hud-border);
   box-shadow: var(--hud-shadow);
+}
+
+.compact-tool-panel {
+  max-height: min(560px, calc(100dvh - 126px));
+}
+
+.asset-tool-panel {
+  top: 258px;
+  right: 20px;
+  bottom: 18px;
+  left: auto;
+  width: min(330px, calc(100vw - 40px));
+  max-height: none;
 }
 
 .mesh-tools-hidden .tool-panel,
@@ -1091,6 +1113,14 @@ textarea::placeholder {
   gap: 10px;
 }
 
+.ai-character-creator {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--hud-border-soft);
+  background: rgb(0 0 0 / 18%);
+  padding: 10px;
+}
+
 .agent-list.compact {
   max-height: 160px;
   overflow-y: auto;
@@ -1156,6 +1186,23 @@ textarea::placeholder {
 
 .ai-prompt-field textarea:focus {
   border-color: var(--hud-border);
+}
+
+.ai-character-creator .ai-prompt-field textarea {
+  min-height: 66px;
+  max-height: 112px;
+}
+
+.ai-create-character-button {
+  min-height: 38px;
+  gap: 8px;
+}
+
+.ai-pause-button {
+  justify-content: flex-start;
+  min-height: 38px;
+  gap: 8px;
+  padding-inline: 10px;
 }
 
 .panel-header {
@@ -2144,6 +2191,12 @@ textarea::placeholder {
     padding: 14px;
   }
 
+  .asset-tool-panel {
+    top: 190px;
+    right: 12px;
+    width: min(300px, calc(100vw - 24px));
+  }
+
   .panel-header h1 {
     font-size: 26px;
   }
@@ -2197,10 +2250,18 @@ textarea::placeholder {
 
 @media (max-width: 720px) {
   .tool-panel {
-    top: 64px;
+    top: 84px;
+    bottom: auto;
+    left: 86px;
+    width: min(292px, calc(100vw - 98px));
+  }
+
+  .asset-tool-panel {
+    top: 132px;
+    right: 8px;
     bottom: 10px;
-    left: 10px;
-    width: min(292px, calc(100vw - 20px));
+    left: auto;
+    width: min(292px, calc(100vw - 98px));
   }
 
   .brand-mark {
@@ -2210,8 +2271,7 @@ textarea::placeholder {
   .world-top-bar {
     top: 12px;
     left: 12px;
-    right: 132px;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    right: auto;
     gap: 10px;
   }
 
@@ -2510,5 +2570,202 @@ textarea::placeholder {
     bottom: 60px;
     justify-content: center;
     grid-template-columns: minmax(82px, 1fr) auto auto auto auto;
+  }
+}
+
+/* Sparse HUD bottom navigation overrides */
+.world-left-toolbelt {
+  left: 50% !important;
+  right: auto !important;
+  bottom: 14px !important;
+  top: auto !important;
+  z-index: 50;
+  display: flex !important;
+  align-items: end;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  max-width: calc(100vw - 112px);
+  transform: translateX(-50%);
+}
+
+.toolbelt-button {
+  width: 46px;
+  min-height: 42px;
+  border-color: var(--hud-border-soft);
+  background: rgb(14 46 25 / 88%);
+  box-shadow: var(--hud-shadow), var(--hud-inset);
+  padding: 4px 3px;
+}
+
+.toolbelt-button:hover,
+.toolbelt-button.active {
+  border-color: var(--hud-border);
+  background: rgb(28 70 36 / 92%);
+}
+
+.toolbelt-button span {
+  font-size: 9px;
+}
+
+.asset-tool-panel {
+  bottom: 72px;
+}
+
+.world-prompt-card {
+  bottom: 72px;
+  width: min(680px, calc(100vw - 220px));
+}
+
+.world-mini-chat {
+  bottom: 72px;
+}
+
+.selected-transform-hud {
+  bottom: 128px;
+}
+
+.bottom-control-cluster {
+  display: none !important;
+}
+
+.compact-tool-panel {
+  left: 20px !important;
+  right: auto !important;
+  top: 118px;
+  bottom: auto;
+  width: auto;
+  max-width: min(360px, calc(100vw - 40px));
+  max-height: min(640px, calc(100dvh - 196px));
+}
+
+.terrain-card {
+  width: 292px;
+  max-width: calc(100vw - 40px);
+  padding: 10px;
+}
+
+.terrain-card .panel-strip {
+  margin-bottom: 2px;
+}
+
+.terrain-card .terrain-actions {
+  gap: 6px;
+}
+
+.terrain-card .terrain-hold,
+.terrain-card .terrain-actions.compact button:not(.terrain-hold) {
+  min-height: 34px;
+}
+
+.terrain-card .terrain-material-swatches {
+  gap: 6px;
+}
+
+.terrain-card .terrain-swatch {
+  min-height: 74px;
+  padding: 7px;
+}
+
+.terrain-card .terrain-swatch-preview {
+  height: 38px;
+}
+
+.ai-card {
+  width: min(340px, calc(100vw - 40px));
+}
+
+@media (max-width: 720px) {
+  .world-left-toolbelt {
+    bottom: 8px !important;
+    max-width: calc(100vw - 16px);
+    width: auto;
+  }
+
+  .toolbelt-button {
+    width: 42px;
+    min-height: 38px;
+  }
+
+  .asset-tool-panel {
+    bottom: 56px !important;
+  }
+
+  .compact-tool-panel {
+    left: 8px !important;
+    top: 86px;
+    max-width: calc(100vw - 16px);
+    max-height: min(560px, calc(100dvh - 150px));
+  }
+
+  .terrain-card {
+    width: min(276px, calc(100vw - 16px));
+  }
+
+  .ai-card {
+    width: min(320px, calc(100vw - 16px));
+  }
+
+  .toolbelt-button span {
+    font-size: 8px;
+  }
+
+  .world-prompt-card {
+    left: 8px !important;
+    right: 8px !important;
+    bottom: 56px !important;
+    width: auto !important;
+  }
+
+  .world-mini-chat {
+    left: 8px !important;
+    bottom: 56px !important;
+    width: min(320px, calc(100vw - 16px)) !important;
+    min-width: 0;
+    max-height: min(260px, calc(100dvh - 128px));
+  }
+
+  .selected-transform-hud {
+    left: 8px !important;
+    right: 8px !important;
+    bottom: 108px !important;
+    display: grid;
+    grid-template-columns: minmax(88px, 1fr) auto auto auto auto;
+    gap: 5px;
+    max-width: none;
+    transform: none;
+  }
+
+  .selected-transform-stack,
+  .selected-place-actions {
+    grid-template-rows: repeat(2, 28px);
+    gap: 4px;
+  }
+
+  .selected-transform-stack .icon-button,
+  .selected-place-actions .icon-button,
+  .selected-water-button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .selected-nudge-pad {
+    grid-template-columns: repeat(3, 24px);
+    grid-template-rows: repeat(3, 24px);
+  }
+
+  .selected-nudge-pad .icon-button {
+    width: 24px;
+    height: 24px;
+  }
+
+  .selected-name-actions {
+    display: grid;
+    gap: 4px;
+  }
+
+  .selected-name-action {
+    height: 24px;
+    font-size: 10px;
   }
 }

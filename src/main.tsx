@@ -9,12 +9,8 @@ import {
   Bot,
   Box,
   CircleHelp,
-  Hammer,
-  Home,
   Layers,
-  LogOut,
   Map as MapIcon,
-  Menu,
   MessageCircle,
   Mic,
   Minus,
@@ -26,9 +22,7 @@ import {
   RotateCw,
   Search,
   Send,
-  Settings,
   Ship,
-  Sparkles,
   Trash2,
   Waves,
 } from "lucide-react";
@@ -98,7 +92,7 @@ type GeneratedKind =
 
 type ToolName = "generate" | "interact";
 type AssetPanelTab = "search" | "world-assets" | "inventory";
-type ToolMenu = "terrain" | "ai" | "settings";
+type ToolMenu = "terrain" | "ai";
 
 interface Vec3 {
   x: number;
@@ -6516,11 +6510,15 @@ function App(): React.ReactElement {
   });
   const [prompt, setPrompt] = useState("");
   const [chatPrompt, setChatPrompt] = useState("");
+  const [characterBodyPrompt, setCharacterBodyPrompt] = useState("");
+  const [characterPersonalityPrompt, setCharacterPersonalityPrompt] = useState("");
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
   const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
   const [openToolMenus, setOpenToolMenus] = useState<ToolMenu[]>([]);
+  const [createPromptOpen, setCreatePromptOpen] = useState(false);
+  const [createPromptFocused, setCreatePromptFocused] = useState(false);
   const [worldMapOpen, setWorldMapOpen] = useState(true);
   const [worldLogOpen, setWorldLogOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -6732,19 +6730,38 @@ function App(): React.ReactElement {
   const submitPrompt = () => {
     worldRef.current?.submitVisitorPrompt(prompt);
     setPrompt("");
+    setCreatePromptOpen(false);
+  };
+
+  const createCharacter = () => {
+    const body = characterBodyPrompt.trim();
+    const personality = characterPersonalityPrompt.trim();
+    if (!body && !personality) return;
+    const characterPrompt = [
+      "create a friendly Tellus character avatar",
+      body ? `body: ${body}` : "",
+      personality ? `personality: ${personality}` : "",
+      "game-ready low poly 3D character, readable silhouette",
+    ]
+      .filter(Boolean)
+      .join("; ");
+    worldRef.current?.submitVisitorPrompt(characterPrompt);
+    setCharacterBodyPrompt("");
+    setCharacterPersonalityPrompt("");
   };
 
   const focusCreatePrompt = () => {
-    promptRef.current?.focus();
+    setCreatePromptOpen((open) => {
+      if (open) return false;
+      window.requestAnimationFrame(() => promptRef.current?.focus());
+      return true;
+    });
   };
 
   const isToolOpen = (menu: ToolMenu): boolean => openToolMenus.includes(menu);
-  const isAssetPanelTabOpen = (tab: AssetPanelTab): boolean =>
-    assetPanelOpen && assetPanelTab === tab;
 
-  const toggleAssetPanel = (tab: AssetPanelTab) => {
-    setAssetPanelOpen((open) => !(open && assetPanelTab === tab));
-    setAssetPanelTab(tab);
+  const toggleAssetDrawer = () => {
+    setAssetPanelOpen((open) => !open);
   };
 
   const openToolPanel = (menu: ToolMenu) => {
@@ -6766,6 +6783,10 @@ function App(): React.ReactElement {
   };
 
   const showMeshToolbar = () => {
+    if (snapshot.selectedThingId) {
+      worldRef.current?.selectGenerated(undefined);
+      return;
+    }
     if (snapshot.generated.length === 0) {
       setAssetPanelOpen(true);
       setAssetPanelTab("world-assets");
@@ -6826,91 +6847,6 @@ function App(): React.ReactElement {
         <div ref={containerRef} className="world-canvas" />
         <div className="world-top-bar">
           <div className="top-left-cluster">
-            <details className="main-menu">
-              <summary className="icon-button top-menu-button" title="Main menu" aria-label="Main menu">
-                <Menu size={18} />
-              </summary>
-              <nav className="main-menu-list" aria-label="Main menu">
-                <button type="button"><Home size={15} /><span>Home</span></button>
-                <button
-                  type="button"
-                  onClick={() => toggleToolPanel("terrain")}
-                >
-                  <Mountain size={15} />
-                  <span>Terrain</span>
-                </button>
-                <button type="button" onClick={focusCreatePrompt}><Sparkles size={15} /><span>Creation</span></button>
-                <button type="button" onClick={showMeshToolbar}><Hammer size={15} /><span>Mesh Tools</span></button>
-                <button
-                  type="button"
-                  onClick={() => toggleToolPanel("ai")}
-                >
-                  <Bot size={15} />
-                  <span>AI</span>
-                </button>
-                <details className="settings-menu">
-                  <summary>
-                    <Settings size={15} />
-                    <span>Settings</span>
-                  </summary>
-                  <div className="settings-menu-panel">
-                    <label>
-                      <span>Players</span>
-                      <select
-                        className="asset-select"
-                        value={snapshot.playerGenerationProvider}
-                        onChange={(event) =>
-                          worldRef.current?.setPlayerGenerationProvider(
-                            event.target.value as RoleGenerationProvider,
-                          )
-                        }
-                      >
-                        <option value="instantmesh-gradio">Fast asset</option>
-                        <option value="pixal3d-gradio">High quality</option>
-                        <option value="anigen-gradio">Animated</option>
-                        <option value="local">Local fallback</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Agents</span>
-                      <select
-                        className="asset-select"
-                        value={snapshot.agentGenerationProvider}
-                        onChange={(event) =>
-                          worldRef.current?.setAgentGenerationProvider(
-                            event.target.value as RoleGenerationProvider,
-                          )
-                        }
-                      >
-                        <option value="pixal3d-gradio">High quality</option>
-                        <option value="instantmesh-gradio">Fast asset</option>
-                        <option value="anigen-gradio">Animated</option>
-                        <option value="local">Local fallback</option>
-                      </select>
-                    </label>
-                    {(snapshot.playerGenerationProvider === "instantmesh-gradio" ||
-                      snapshot.agentGenerationProvider === "instantmesh-gradio") && (
-                      <label>
-                        <span>InstantMesh</span>
-                        <select
-                          className="asset-select"
-                          value={snapshot.instantMeshTarget}
-                          onChange={(event) =>
-                            worldRef.current?.setInstantMeshTarget(
-                              event.target.value as InstantMeshTarget,
-                            )
-                          }
-                        >
-                          <option value="dgx">DGX</option>
-                          <option value="local">Local</option>
-                        </select>
-                      </label>
-                    )}
-                  </div>
-                </details>
-                <button type="button"><LogOut size={15} /><span>Exit</span></button>
-              </nav>
-            </details>
             <div className="brand-mark">
               <span className="brand-sigil">T</span>
               <span>Tellus</span>
@@ -6946,38 +6882,24 @@ function App(): React.ReactElement {
             </details>
           </div>
         </div>
-        <div className="bottom-control-cluster" aria-label="World controls">
+        <aside className="world-left-toolbelt" aria-label="Toolbelt">
           <button
             type="button"
-            className="icon-button stat-pause-button"
-            title={snapshot.paused ? "Resume agents" : "Pause agents"}
-            onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
+            className={createPromptOpen ? "toolbelt-button primary active" : "toolbelt-button primary"}
+            title={createPromptOpen ? "Hide create prompt" : "Create"}
+            onClick={focusCreatePrompt}
           >
-            {snapshot.paused ? <Play size={18} /> : <Pause size={18} />}
-          </button>
-        </div>
-        <aside className="world-left-toolbelt" aria-label="Toolbelt">
-          <button type="button" className="toolbelt-button primary" title="Create" onClick={focusCreatePrompt}>
             <Send size={18} />
             <span>Create</span>
           </button>
           <button
             type="button"
-            className={isToolOpen("settings") ? "toolbelt-button active" : "toolbelt-button"}
-            title="Settings"
-            onClick={() => toggleToolPanel("settings")}
+            className={assetPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Assets"
+            onClick={toggleAssetDrawer}
           >
-            <Settings size={18} />
-            <span>Settings</span>
-          </button>
-          <button
-            type="button"
-            className={isAssetPanelTabOpen("search") ? "toolbelt-button active" : "toolbelt-button"}
-            title="Search assets"
-            onClick={() => toggleAssetPanel("search")}
-          >
-            <Search size={18} />
-            <span>Search</span>
+            <Box size={18} />
+            <span>Assets</span>
           </button>
           <button
             type="button"
@@ -6999,24 +6921,6 @@ function App(): React.ReactElement {
           </button>
           <button
             type="button"
-            className={isAssetPanelTabOpen("world-assets") ? "toolbelt-button active" : "toolbelt-button"}
-            title="Objects"
-            onClick={() => toggleAssetPanel("world-assets")}
-          >
-            <Layers size={18} />
-            <span>Objects</span>
-          </button>
-          <button
-            type="button"
-            className={isAssetPanelTabOpen("inventory") ? "toolbelt-button active" : "toolbelt-button"}
-            title="Inventory"
-            onClick={() => toggleAssetPanel("inventory")}
-          >
-            <Backpack size={18} />
-            <span>Inventory</span>
-          </button>
-          <button
-            type="button"
             className={isToolOpen("terrain") ? "toolbelt-button active" : "toolbelt-button"}
             title="Terrain"
             onClick={() => toggleToolPanel("terrain")}
@@ -7024,7 +6928,12 @@ function App(): React.ReactElement {
             <Mountain size={18} />
             <span>Terrain</span>
           </button>
-          <button type="button" className="toolbelt-button" title="Move selected asset" onClick={showMeshToolbar}>
+          <button
+            type="button"
+            className={activeSelectedThing ? "toolbelt-button active" : "toolbelt-button"}
+            title={activeSelectedThing ? "Hide move controls" : "Move selected asset"}
+            onClick={showMeshToolbar}
+          >
             <RotateCw size={18} />
             <span>Move</span>
           </button>
@@ -7155,17 +7064,6 @@ function App(): React.ReactElement {
               </button>
             </div>
           </section>
-        )}
-        {!worldLogOpen && (
-          <button
-            type="button"
-            className="chat-reopen-button"
-            title="Show world chat"
-            aria-label="Show world chat"
-            onClick={() => setWorldLogOpen(true)}
-          >
-            <MessageCircle size={18} />
-          </button>
         )}
         {activeSelectedThing && (
           <div className="selected-transform-hud" aria-label="Selected asset controls">
@@ -7338,7 +7236,14 @@ function App(): React.ReactElement {
             </div>
           </div>
         )}
-        <section className="prompt-card world-prompt-card">
+        {createPromptOpen && (
+        <section
+          className={
+            createPromptFocused
+              ? "prompt-card world-prompt-card active"
+              : "prompt-card world-prompt-card"
+          }
+        >
           <label htmlFor="tellus-prompt">Create</label>
           <textarea
             id="tellus-prompt"
@@ -7346,6 +7251,8 @@ function App(): React.ReactElement {
             value={prompt}
             rows={1}
             placeholder="make a crooked apple tree with golden moss..."
+            onFocus={() => setCreatePromptFocused(true)}
+            onBlur={() => setCreatePromptFocused(false)}
             onChange={(event) => setPrompt(event.target.value)}
           />
           <div className="prompt-actions">
@@ -7369,10 +7276,11 @@ function App(): React.ReactElement {
             </button>
           </div>
         </section>
+        )}
       </section>
 
-      {(assetPanelOpen || openToolMenus.length > 0) && (
-      <aside className="tool-panel" aria-label="Tool panel">
+      {assetPanelOpen && (
+      <aside className="tool-panel asset-tool-panel" aria-label="Asset panel">
         {assetPanelOpen && (
           <section className="tool-card inventory-card asset-drawer">
             <div className="panel-strip">
@@ -7518,58 +7426,11 @@ function App(): React.ReactElement {
             )}
           </section>
         )}
+      </aside>
+      )}
 
-        {isToolOpen("settings") && (
-          <section className="tool-card settings-card">
-            <div className="panel-strip">
-              <span>Settings</span>
-              <button
-                type="button"
-                className="icon-button"
-                title="Hide settings"
-                aria-label="Hide settings"
-                onClick={() => closeToolPanel("settings")}
-              >
-                <ArrowLeft size={17} />
-              </button>
-            </div>
-            <label>
-              <span>Players</span>
-              <select
-                className="asset-select"
-                value={snapshot.playerGenerationProvider}
-                onChange={(event) =>
-                  worldRef.current?.setPlayerGenerationProvider(
-                    event.target.value as RoleGenerationProvider,
-                  )
-                }
-              >
-                <option value="instantmesh-gradio">Fast asset</option>
-                <option value="pixal3d-gradio">High quality</option>
-                <option value="anigen-gradio">Animated</option>
-                <option value="local">Local fallback</option>
-              </select>
-            </label>
-            <label>
-              <span>Agents</span>
-              <select
-                className="asset-select"
-                value={snapshot.agentGenerationProvider}
-                onChange={(event) =>
-                  worldRef.current?.setAgentGenerationProvider(
-                    event.target.value as RoleGenerationProvider,
-                  )
-                }
-              >
-                <option value="pixal3d-gradio">High quality</option>
-                <option value="instantmesh-gradio">Fast asset</option>
-                <option value="anigen-gradio">Animated</option>
-                <option value="local">Local fallback</option>
-              </select>
-            </label>
-          </section>
-        )}
-
+      {openToolMenus.length > 0 && (
+      <aside className="tool-panel compact-tool-panel" aria-label="Tool panel">
         {isToolOpen("ai") && (
           <section className="tool-card ai-card">
             <div className="panel-strip">
@@ -7608,6 +7469,44 @@ function App(): React.ReactElement {
                   </span>
                 </button>
               ))}
+            </div>
+            <div className="ai-character-creator">
+              <button
+                type="button"
+                className="secondary-button ai-pause-button"
+                onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
+              >
+                {snapshot.paused ? <Play size={16} /> : <Pause size={16} />}
+                <span>{snapshot.paused ? "Resume AI" : "Pause AI"}</span>
+              </button>
+              <div className="terrain-subtitle">Create Character</div>
+              <label className="ai-prompt-field">
+                <span>Body</span>
+                <textarea
+                  value={characterBodyPrompt}
+                  rows={3}
+                  placeholder="small mossy explorer with leaf cloak..."
+                  onChange={(event) => setCharacterBodyPrompt(event.target.value)}
+                />
+              </label>
+              <label className="ai-prompt-field">
+                <span>Personality</span>
+                <textarea
+                  value={characterPersonalityPrompt}
+                  rows={3}
+                  placeholder="curious, brave, protects ponds..."
+                  onChange={(event) => setCharacterPersonalityPrompt(event.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="primary-button ai-create-character-button"
+                disabled={!characterBodyPrompt.trim() && !characterPersonalityPrompt.trim()}
+                onClick={createCharacter}
+              >
+                <Send size={16} />
+                <span>Create Character</span>
+              </button>
             </div>
             {selected && (
               <div className="ai-agent-editor">
@@ -7651,7 +7550,7 @@ function App(): React.ReactElement {
         )}
 
         {isToolOpen("terrain") && (
-        <section className="tool-card">
+        <section className="tool-card terrain-card">
           <div className="panel-strip">
             <span>Terrain</span>
             <button
