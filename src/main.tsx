@@ -4334,7 +4334,16 @@ function createTellusWorld(
   const ensureGeneratedVisual = (thing: GeneratedThing) => {
     const wantsSwirl = shouldShowGenerationSwirl(thing);
     const currentMesh = generatedMeshes.get(thing.id);
-    if (currentMesh && Boolean(currentMesh.userData.generatingSwirl) === wantsSwirl) {
+    // If the correct GLB is already mounted, never tear it down. Without this, every move/scale/rotate/mount
+    // echoed back as a `generated.updated` patch would dispose the loaded model and re-download it: a ready
+    // asset reports wantsSwirl=true (it has a modelUrl), but the loaded mesh carries no `generatingSwirl`
+    // flag, so the state-compare below mismatched → dispose + re-fetch the GLB on every transform.
+    const alreadyLoaded =
+      Boolean(thing.modelUrl) && currentMesh?.userData.loadedModelUrl === thing.modelUrl;
+    if (
+      currentMesh &&
+      (alreadyLoaded || Boolean(currentMesh.userData.generatingSwirl) === wantsSwirl)
+    ) {
       return;
     }
     if (currentMesh) {
