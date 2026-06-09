@@ -5,7 +5,7 @@
   "playerGenerationProvider": "instantmesh-gradio",
   "agentGenerationProvider": "pixal3d-gradio",
   "agentModel": "GLM-5.1",
-  "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
+  "worldApiBase": "https://hyades.gnostr.cloud",
   "worldId": "main",
   "skyboxUrl": "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
   "dayNightCycleMs": 600000,
