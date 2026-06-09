@@ -1,0 +1,87 @@
+# Tellus frontend (the Bun server.ts: static SPA from dist/ + the /api/* proxy routes) on k3s,
+# fronted publicly at https://tellus.gnostr.cloud via the SHARED cloudflared tunnel (see
+# deploy/cloudflare-tellus-hostname.sh). The WORLD itself talks straight from the browser to
+# https://hyades.gnostr.cloud (baked into public/tellus-config.json: worldApiBase); this Service only
+# serves the SPA + the server-side /api/* endpoints (chat, generate-3d proxy, tellus-state, ...).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tellus
+---
+# Server-side secrets for the /api/* routes. The WORLD needs none of these (browser -> hyades direct);
+# they gate generation/chat. HYADES_API_KEY must be a bearer with the 'generate3d' capability
+# (the `lisa-tellus` gateway key already has it). Seed/replace with:
+#   kubectl -n tellus create secret generic tellus-secrets \
+#     --from-literal=hyadesApiKey='<lisa-tellus key>' --dry-run=client -o yaml | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tellus-secrets
+  namespace: tellus
+type: Opaque
+stringData:
+  hyadesApiKey: ""   # <- set to a generate3d-capable key to enable server-side 3D generation
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tellus
+  namespace: tellus
+  labels: { app: tellus }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tellus }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: tellus }
+    spec:
+      containers:
+        - name: tellus
+          image: 192.168.1.187:30500/tellus:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: production
+            # Route 3D generation through the Hyades cluster (PR: feat/route-generation-to-hyades).
+            - name: TELLUS_3D_BACKEND
+              value: hyades
+            - name: HYADES_3D_API_BASE
+              value: https://hyades.gnostr.cloud
+            - name: HYADES_BASE_URL
+              value: https://hyades.gnostr.cloud
+            - name: HYADES_API_KEY
+              valueFrom:
+                secretKeyRef: { name: tellus-secrets, key: hyadesApiKey }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tellus
+  namespace: tellus
+  labels: { app: tellus }
+spec:
+  type: ClusterIP
+  selector: { app: tellus }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
