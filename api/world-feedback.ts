@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import sharp from "sharp";
 import { generatedAssetRoot } from "./generated-assets";
 
 interface McpToolContent {
@@ -206,6 +207,51 @@ async function analyzeImageWithMcp(
   return text;
 }
 
+// ── Hyades vision ─────────────────────────────────────────────────────────────
+// Opt-in (TELLUS_VISION_BACKEND=hyades): replace the Z.ai vision MCP with a direct multimodal call to the
+// Hyades OpenAI-compatible gateway (/v1/chat/completions: an image_url data URI + the prompt). Hyades
+// normalizes provider output. Model via HYADES_VISION_MODEL (default holo3.1).
+function hyadesVisionEnabled(): boolean {
+  return (process.env.TELLUS_VISION_BACKEND ?? "").trim().toLowerCase() === "hyades";
+}
+
+async function analyzeImageWithHyades(imageDataUrl: string, prompt: string): Promise<string> {
+  const apiKey = process.env.HYADES_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("HYADES_API_KEY is required for Tellus world feedback (TELLUS_VISION_BACKEND=hyades)");
+  }
+  const base = (process.env.HYADES_LLM_BASE?.trim() || "https://hyades.gnostr.cloud/v1").replace(/\/+$/, "");
+  const model = process.env.HYADES_VISION_MODEL?.trim() || "holo3.1";
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      max_tokens: Number(process.env.HYADES_VISION_MAX_TOKENS || 400),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+    }),
+  });
+  const body = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string } | string;
+  };
+  if (!res.ok) {
+    const msg = typeof body.error === "string" ? body.error : body.error?.message;
+    throw new Error(msg || `Hyades vision failed (${res.status})`);
+  }
+  const text = body.choices?.[0]?.message?.content?.trim();
+  if (!text) throw new Error("Hyades vision returned no summary");
+  return text;
+}
+
 export async function worldFeedbackHandler(request: Request): Promise<Response> {
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -217,15 +263,30 @@ export async function worldFeedbackHandler(request: Request): Promise<Response> 
       imageDataUrl?: unknown;
       prompt?: unknown;
     };
+    // Validate format/size regardless of backend.
     const image = parseImageDataUrl(payload.imageDataUrl);
-    const root = join(await generatedAssetRoot(), "world-feedback");
-    await mkdir(root, { recursive: true });
-    imagePath = join(root, `${Date.now()}-${randomUUID()}.${image.extension}`);
-    await writeFile(imagePath, image.bytes);
     const prompt =
       typeof payload.prompt === "string" && payload.prompt.trim()
         ? payload.prompt.trim()
         : "Describe the visible Tellus world in 4-6 concise bullet points for an autonomous in-world agent. Focus on visible terrain, water, generated objects, spatial relationships, and anything that looks unfinished or surprising.";
+
+    // Hyades vision path: downscale (vision models choke on multi-MB data URIs), then a single multimodal
+    // call — no temp file / MCP subprocess.
+    if (hyadesVisionEnabled()) {
+      const small = await sharp(image.bytes)
+        .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      const dataUrl = `data:image/jpeg;base64,${small.toString("base64")}`;
+      const summary = await analyzeImageWithHyades(dataUrl, prompt);
+      return Response.json({ summary });
+    }
+
+    // Legacy Z.ai vision MCP path (writes a temp file the MCP reads).
+    const root = join(await generatedAssetRoot(), "world-feedback");
+    await mkdir(root, { recursive: true });
+    imagePath = join(root, `${Date.now()}-${randomUUID()}.${image.extension}`);
+    await writeFile(imagePath, image.bytes);
     const summary = await analyzeImageWithMcp(imagePath, prompt);
     return Response.json({ summary });
   } catch (error) {
