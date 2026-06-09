@@ -1494,6 +1494,113 @@ function disabledProviderMessage(provider: Generation3DProvider): string | null 
   return disabled.has(provider) ? `${provider} is temporarily disabled` : null;
 }
 
+// ── Hyades 3D backend ────────────────────────────────────────────────────────
+// Opt-in (TELLUS_3D_BACKEND=hyades): route generation through the Hyades cluster's durable /3d/jobs
+// (concept image via Z Image -> image->3D -> push to the asset store) instead of driving the Gradio
+// backends directly here. The browser flow is unchanged; only this server-side dispatch changes. The key
+// stays server-side (same seam the TTS proxy uses). The existing provider choices are preserved:
+// instantmesh-gradio -> Hyades "instantmesh" (fast), pixal3d-gradio -> Hyades "pixal3d" (HQ). Anything else
+// (e.g. anigen-gradio) falls through to the legacy direct-Gradio path even when this is enabled.
+function hyadesBackendEnabled(): boolean {
+  return (process.env.TELLUS_3D_BACKEND ?? "").trim().toLowerCase() === "hyades";
+}
+
+function hyadesApiBase(): string {
+  return (process.env.HYADES_3D_API_BASE?.trim() || "https://hyades.gnostr.cloud").replace(/\/+$/, "");
+}
+
+function hyadesApiKey(): string | undefined {
+  return process.env.HYADES_3D_API_KEY?.trim() || process.env.HYADES_API_KEY?.trim();
+}
+
+// Tellus provider -> Hyades /3d/jobs backend; null = not handled by Hyades (stay on the legacy path).
+function hyadesBackendFor(provider: Generation3DProvider): "instantmesh" | "pixal3d" | null {
+  if (provider === "instantmesh-gradio") return "instantmesh";
+  if (provider === "pixal3d-gradio") return "pixal3d";
+  return null;
+}
+
+interface HyadesJobBody {
+  jobId?: string;
+  status?: string; // submitted | working | completed | failed | cancelled
+  models?: Array<{ url?: string; seed?: number; b64_json?: string }>;
+  error?: string;
+}
+
+async function executeHyadesGeneration(params: {
+  payload: Generate3DRequest;
+  provider: Generation3DProvider;
+  generationId: string;
+}): Promise<Generate3DResponse> {
+  const { payload, provider, generationId } = params;
+  const backend = hyadesBackendFor(provider);
+  if (!backend) throw new Error(`${provider} is not supported by the Hyades 3D backend`);
+  const key = hyadesApiKey();
+  if (!key) throw new Error("HYADES_3D_API_KEY (or HYADES_API_KEY) is not configured");
+  const base = hyadesApiBase();
+  const prompt = payload.prompt?.trim() || "tiny Tellus world object";
+  const imageUrl = payload.imageUrl?.trim();
+
+  const submitBody: Record<string, unknown> = { prompt, provider: backend };
+  if (imageUrl) submitBody.image_url = imageUrl;
+  if (typeof payload.sampleSteps === "number" && payload.sampleSteps > 0) {
+    submitBody.sample_steps = payload.sampleSteps;
+  }
+  if (typeof payload.seed === "number") submitBody.seed = payload.seed;
+  if (typeof payload.removeBackground === "boolean") {
+    submitBody.remove_background = payload.removeBackground;
+  }
+
+  const submit = await fetch(`${base}/3d/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify(submitBody),
+  });
+  if (!submit.ok && submit.status !== 202) {
+    throw new Error(cleanUpstreamError(submit.status, await submit.text()));
+  }
+  const submitJson = (await submit.json()) as HyadesJobBody;
+  const hyadesJobId = submitJson.jobId;
+  if (!hyadesJobId) throw new Error("Hyades 3D submit returned no jobId");
+
+  // Poll Hyades until terminal. The outer withGenerationTimeout bounds this; keep an inner safety cap too.
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let modelUrl: string | undefined =
+    submitJson.status === "completed" ? submitJson.models?.[0]?.url : undefined;
+  let lastStatus = submitJson.status ?? "submitted";
+  while (!modelUrl && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 4000));
+    const poll = await fetch(`${base}/3d/jobs/${encodeURIComponent(hyadesJobId)}`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (!poll.ok) continue; // transient poll error: keep trying until the deadline
+    const pj = (await poll.json()) as HyadesJobBody;
+    lastStatus = pj.status ?? lastStatus;
+    if (pj.status === "failed" || pj.status === "cancelled") {
+      throw new Error(pj.error || `Hyades 3D generation ${pj.status}`);
+    }
+    if (pj.status === "completed") {
+      modelUrl = pj.models?.[0]?.url;
+      break;
+    }
+  }
+  if (!modelUrl) {
+    throw new Error(`Hyades 3D generation did not finish (last status: ${lastStatus})`);
+  }
+
+  return {
+    jobId: generationId,
+    status: "completed",
+    modelUrl,
+    provider,
+    rawModelUrl: modelUrl,
+    assetStoreModelUrl: modelUrl,
+    assetStoreDownloadUrl: modelUrl,
+    textImageProvider: "hyades-zimage",
+    manifestUrl: "/generated-assets/manifest.json",
+  };
+}
+
 async function executeGeneration(params: {
   payload: Generate3DRequest;
   provider: Generation3DProvider;
@@ -1501,6 +1608,10 @@ async function executeGeneration(params: {
   generationId: string;
 }): Promise<Generate3DResponse> {
   const { payload, provider, baseUrl, generationId } = params;
+  // Route through the Hyades cluster when enabled (instantmesh-gradio / pixal3d-gradio only).
+  if (hyadesBackendEnabled() && hyadesBackendFor(provider)) {
+    return executeHyadesGeneration({ payload, provider, generationId });
+  }
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
   const kind = payload.kind?.trim() || "object";
   const createdAt = new Date().toISOString();
@@ -1730,13 +1841,18 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   if (disabledProvider) {
     return Response.json({ error: disabledProvider }, { status: 503 });
   }
+  // When routing through Hyades, the per-provider Gradio base + the InstantMesh-target allowlist don't
+  // apply — generation hits the Hyades /3d/jobs surface instead.
+  const viaHyades = hyadesBackendEnabled() && hyadesBackendFor(provider) !== null;
   let baseUrl: string | undefined;
   try {
-    baseUrl = (provider === "instantmesh-gradio"
-      ? instantMeshBaseUrlFromPayload(payload)
-      : providerBaseUrl(provider))
-      ?.trim()
-      .replace(/\/+$/, "");
+    baseUrl = viaHyades
+      ? hyadesApiBase()
+      : (provider === "instantmesh-gradio"
+        ? instantMeshBaseUrlFromPayload(payload)
+        : providerBaseUrl(provider))
+        ?.trim()
+        .replace(/\/+$/, "");
   } catch (error) {
     return Response.json(
       {
@@ -1754,7 +1870,11 @@ export async function generate3DHandler(request: Request): Promise<Response> {
   }
 
   const generationId = payload.id || `${provider}-${Date.now()}`;
-  if (provider === "pixal3d-gradio" || provider === "anigen-gradio") {
+  // pixal3d/anigen are always async; when routing through Hyades, instantmesh is async too (the job can
+  // outlast a serverless request, and the client already polls). Sync inline only for direct instantmesh.
+  const useAsyncJob =
+    provider === "pixal3d-gradio" || provider === "anigen-gradio" || viaHyades;
+  if (useAsyncJob) {
     const job = startGenerationJob({ payload, provider, baseUrl, generationId });
     return Response.json(
       {
