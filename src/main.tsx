@@ -29,6 +29,8 @@ import {
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import {
   MeshBasicNodeMaterial,
   WebGPURenderer,
@@ -471,6 +473,16 @@ const runtimeConfig: TellusRuntimeConfig = {
   },
 };
 const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
+const dracoLoader = new DRACOLoader().setDecoderPath(
+  "https://www.gstatic.com/draco/versioned/decoders/1.5.7/",
+);
+
+function createGltfLoader(): GLTFLoader {
+  return new GLTFLoader()
+    .setDRACOLoader(dracoLoader)
+    .setMeshoptDecoder(MeshoptDecoder);
+}
+
 const generationProviderLabels: Record<GenerationProvider, string> = {
   local: "Local placeholder",
   "asset-forge": "Pixel3D legacy",
@@ -2458,7 +2470,7 @@ function placeObjectAboveGround(
 async function loadGltfObject(url: string): Promise<THREE.Object3D> {
   const cached =
     gltfObjectCache.get(url) ??
-    new GLTFLoader().loadAsync(url).then((gltf) => gltf.scene);
+    createGltfLoader().loadAsync(url).then((gltf) => gltf.scene);
   gltfObjectCache.set(url, cached);
   return (await cached).clone(true);
 }
@@ -2466,7 +2478,7 @@ async function loadGltfObject(url: string): Promise<THREE.Object3D> {
 async function loadGeneratedGltfObject(
   url: string,
 ): Promise<{ model: THREE.Object3D; animations: THREE.AnimationClip[] }> {
-  const gltf = await new GLTFLoader().loadAsync(url);
+  const gltf = await createGltfLoader().loadAsync(url);
   return { model: gltf.scene, animations: gltf.animations };
 }
 
