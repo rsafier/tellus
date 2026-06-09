@@ -14,8 +14,10 @@ set -euo pipefail
 
 ACCOUNT_ID="d401d9ab54fed2ee0ca8f3b36dc6622a"
 TUNNEL_ID="ff0a3600-cfb7-419c-b76a-2c4fe4f83b27"
-ZONE_NAME="gnostr.cloud"
-HOSTNAME="tellus.gnostr.cloud"
+# Override HOSTNAME/ZONE to front the same Tellus deployment under another domain (e.g. the apex
+# tellus.garden once its zone is on this Cloudflare account): TELLUS_HOSTNAME=tellus.garden TELLUS_ZONE=tellus.garden
+ZONE_NAME="${TELLUS_ZONE:-gnostr.cloud}"
+HOSTNAME="${TELLUS_HOSTNAME:-tellus.gnostr.cloud}"
 ORIGIN_SERVICE="http://tellus.tellus.svc.cluster.local:80"
 API="https://api.cloudflare.com/client/v4"
 
