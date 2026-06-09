@@ -1527,6 +1527,25 @@ interface HyadesJobBody {
   error?: string;
 }
 
+// e.g. holo3.1 — render the 3D concept image via the Hyades /v1/images endpoint instead of letting the
+// 3D backend make its own. Unset ⇒ /3d/jobs generates its own concept image internally.
+function hyadesImageModel(): string | undefined {
+  return process.env.HYADES_IMAGE_MODEL?.trim() || undefined;
+}
+
+async function hyadesConceptImage(base: string, key: string, prompt: string, model: string): Promise<string> {
+  const res = await fetch(`${base}/v1/images/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model, prompt, n: 1 }),
+  });
+  if (!res.ok) throw new Error(cleanUpstreamError(res.status, await res.text()));
+  const j = (await res.json()) as { data?: Array<{ url?: string }> };
+  const url = j.data?.[0]?.url;
+  if (!url) throw new Error("Hyades image returned no url");
+  return url;
+}
+
 async function executeHyadesGeneration(params: {
   payload: Generate3DRequest;
   provider: Generation3DProvider;
@@ -1539,7 +1558,19 @@ async function executeHyadesGeneration(params: {
   if (!key) throw new Error("HYADES_3D_API_KEY (or HYADES_API_KEY) is not configured");
   const base = hyadesApiBase();
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
-  const imageUrl = payload.imageUrl?.trim();
+  let imageUrl = payload.imageUrl?.trim();
+
+  // Concept image: if the caller didn't supply one and a Hyades image model is configured (e.g. holo3.1),
+  // render it via the Hyades /v1/images endpoint and feed it to image->3D. Non-fatal — on any failure we
+  // fall back to the 3D backend's own built-in concept step.
+  const imageModel = hyadesImageModel();
+  if (!imageUrl && imageModel) {
+    try {
+      imageUrl = await hyadesConceptImage(base, key, prompt, imageModel);
+    } catch {
+      imageUrl = undefined;
+    }
+  }
 
   const submitBody: Record<string, unknown> = { prompt, provider: backend };
   if (imageUrl) submitBody.image_url = imageUrl;

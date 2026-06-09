@@ -75,6 +75,16 @@ spec:
               value: https://hyades.gnostr.cloud
             - name: HYADES_BASE_URL
               value: https://hyades.gnostr.cloud
+            # LLM (the /api/chat agent) -> Hyades OpenAI-compatible gateway, model glm-5.1.
+            - name: TELLUS_LLM_BACKEND
+              value: hyades
+            - name: HYADES_LLM_BASE
+              value: https://hyades.gnostr.cloud/v1
+            - name: HYADES_LLM_MODEL
+              value: glm-5.1
+            # 3D concept image -> Hyades /v1/images (holo3.1).
+            - name: HYADES_IMAGE_MODEL
+              value: holo3.1
             - name: HYADES_API_KEY
               valueFrom:
                 secretKeyRef: { name: tellus-secrets, key: hyadesApiKey }
