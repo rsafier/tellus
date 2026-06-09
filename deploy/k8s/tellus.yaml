@@ -8,19 +8,37 @@ kind: Namespace
 metadata:
   name: tellus
 ---
-# Server-side secrets for the /api/* routes. The WORLD needs none of these (browser -> hyades direct);
-# they gate generation/chat. HYADES_API_KEY must be a bearer with the 'generate3d' capability
-# (the `lisa-tellus` gateway key already has it). Seed/replace with:
+# Server-side secret for the /api/* routes (the WORLD needs none of these — browser -> hyades direct).
+# HYADES_API_KEY must be a bearer with the 'generate3d' capability. It is MANAGED OUT-OF-BAND (NOT in this
+# file) so `kubectl apply -f` never clobbers it. Create/rotate it once:
 #   kubectl -n tellus create secret generic tellus-secrets \
-#     --from-literal=hyadesApiKey='<lisa-tellus key>' --dry-run=client -o yaml | kubectl apply -f -
+#     --from-literal=hyadesApiKey='<generate3d-capable key>' --dry-run=client -o yaml | kubectl apply -f -
+# (then: kubectl -n tellus rollout restart deploy/tellus)
+# Deployment-specific runtime config, mounted over the image's baked public/tellus-config.json. This
+# deployment serves its OWN /api/* (so apiBase = same-origin ""), and the world points at Hyades. Keeping
+# this here (not in the image) lets the config differ per deployment without a rebuild.
 apiVersion: v1
-kind: Secret
+kind: ConfigMap
 metadata:
-  name: tellus-secrets
+  name: tellus-runtime-config
   namespace: tellus
-type: Opaque
-stringData:
-  hyadesApiKey: ""   # <- set to a generate3d-capable key to enable server-side 3D generation
+data:
+  tellus-config.json: |
+    {
+      "assetForgeApiBase": "",
+      "apiBase": "",
+      "generationProvider": "pixal3d-gradio",
+      "playerGenerationProvider": "instantmesh-gradio",
+      "agentGenerationProvider": "pixal3d-gradio",
+      "agentModel": "GLM-5.1",
+      "worldApiBase": "https://hyades.gnostr.cloud",
+      "worldId": "main",
+      "skyboxUrl": "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
+      "dayNightCycleMs": 600000,
+      "dayNightStart": 0.18,
+      "enabledAgents": ["johnny"],
+      "avatars": {}
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -71,6 +89,14 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - name: runtime-config
+              mountPath: /app/dist/tellus-config.json
+              subPath: tellus-config.json
+      volumes:
+        - name: runtime-config
+          configMap:
+            name: tellus-runtime-config
 ---
 apiVersion: v1
 kind: Service
