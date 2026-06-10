@@ -7425,13 +7425,16 @@ function App(): React.ReactElement {
         const models = await loadAssetLibraryModels().catch(() => []);
         if (cancelled) return;
         setAssetLibrary(models);
-        let initial = runtimeConfig.worldId;
+        const configDefault = runtimeConfig.worldId; // typically "main" — always keep it reachable
+        rememberWorld(configDefault);
+        let initial = configDefault;
         try {
           const saved = window.localStorage.getItem(ACTIVE_WORLD_KEY);
           if (saved && saved.trim()) initial = saved.trim();
         } catch {
           /* ignore */
         }
+        rememberWorld(initial);
         runtimeConfig.worldId = initial;
         setActiveWorldId(initial);
         void refreshWorldList(initial);
