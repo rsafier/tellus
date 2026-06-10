@@ -17,19 +17,13 @@ export const DISTANT_TERRAIN_SEGMENTS = 32;
 export const DISTANT_TERRAIN_VERTEX_COUNT = DISTANT_TERRAIN_SEGMENTS + 1;
 export const CENTRAL_WALK_RADIUS = WORLD_RADIUS - 0.5;
 export const DISTANT_WALK_LOCAL_RADIUS = 1.02;
-export const AGENT_SPEED = 5.2;
 export const PLAYER_SPEED = 13;
-export const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
-export const AUTONOMOUS_REFLECTION_OFFSET_MS = AUTONOMOUS_ASSET_INTERVAL_MS / 2;
-export const AUTONOMOUS_AGENT_GENERATION_ENABLED = false;
 export const PENDING_GENERATION_FALLBACK_MS = 3 * 60 * 1000;
 export const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
 export const POND_RADIUS = 7.4;
 export const TERRAIN_VERTEX_COUNT = TERRAIN_SEGMENTS + 1;
 export const TERRAIN_SCULPT_RADIUS = 6.2;
 export const TERRAIN_SCULPT_STEP = 0.72;
-export const WORLD_FEEDBACK_INTERVAL_MS = 75_000;
-export const WORLD_FEEDBACK_START_DELAY_MS = 14_000;
 export const SKYBOX_FALLBACK_URLS = [
   "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
   "/skybox/free_-_skybox_in_the_cloud.glb",
@@ -59,8 +53,6 @@ export const instantMeshTargetLabels: Record<InstantMeshTarget, string> = {
   dgx: "DGX",
   local: "Local",
 };
-export const allAgentIds = ["johnny", "mira", "sol", "atlas"] as const;
-
 export const terrainColors: Record<TerrainKind, THREE.Color> = {
   meadow: new THREE.Color(0x5fa22e),
   rock: new THREE.Color(0x6f7467),
@@ -114,29 +106,3 @@ export const groundMountTerms = [
   "rideable",
 ];
 
-export const johnnyFallbackIdeas = [
-  "a sunlit footbridge made of pale cedar crossing a small stream",
-  "a tiny workshop hut with mossy shingles and brass tools outside",
-  "a gentle stone creature curled beside a patch of blue flowers",
-  "a hot air balloon moored beside a garden path",
-  "a clear pond with lilies, stepping stones, and a little wooden dock",
-  "a spiral lantern tower that glows softly near the mountain",
-  "a weathered sailboat with a folded cream canvas sail",
-  "a copper rain collector shaped like a broad leaf",
-  "a carved stone waygate with glowing moss in its grooves",
-  "a tiny apiary box painted yellow beside wildflowers",
-  "a driftwood fishing pier with rope-wrapped posts",
-  "a round observatory hut with a brass telescope on top",
-  "a blue ceramic fountain shaped like a moon shell",
-  "a small windmill pump with white wooden blades",
-  "a low stone bridge with fern-filled cracks",
-  "a mossy outdoor workbench covered with clay pots",
-  "a floating lantern buoy tethered to a wooden stake",
-  "a red berry tree with a hollow doorway in its trunk",
-  "a tiny clay kiln with stacked firewood beside it",
-  "a curved boardwalk segment made from dark wet planks",
-  "a one-seat glider with leaf-shaped green wings",
-  "a crystal marker obelisk set into a grassy mound",
-  "a striped canvas market awning on two cedar poles",
-  "a little stone well with a wooden crank and bucket",
-];

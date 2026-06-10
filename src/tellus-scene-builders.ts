@@ -19,7 +19,6 @@ import type {
   GeneratedKind,
   GeneratedThing,
   MaterialWithTextureMaps,
-  TellusAgent,
   Vec3,
 } from "./tellus-types";
 import {
@@ -652,13 +651,6 @@ export async function loadSkyboxModel(): Promise<
   return null;
 }
 
-export async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | null> {
-  if (!agent.avatarUrl) return null;
-  const avatar = await loadGltfObject(agent.avatarUrl);
-  avatar.name = `avatar-${agent.id}`;
-  return fitModelToHeight(avatar, 2.45);
-}
-
 export function assetTargetHeight(thing: GeneratedThing): number {
   const lower = thing.prompt.toLowerCase();
   const variation = clamp(thing.scale, 0.25, 12);
@@ -769,38 +761,6 @@ export function createPondWater(): THREE.Group {
   group.add(shore, water, ripples);
   return group;
 }
-
-export function createAgentMesh(agent: TellusAgent): THREE.Group {
-  const group = new THREE.Group();
-  group.name = `agent-${agent.id}`;
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: agent.color,
-    roughness: 0.72,
-  });
-  const darkMaterial = new THREE.MeshStandardMaterial({
-    color: 0x182018,
-    roughness: 0.8,
-  });
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.55, 1.25, 6, 12),
-    bodyMaterial,
-  );
-  body.position.y = 1.15;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.48, 16, 12),
-    bodyMaterial,
-  );
-  head.position.y = 2.25;
-  const halo = new THREE.Mesh(
-    new THREE.TorusGeometry(0.7, 0.035, 8, 32),
-    darkMaterial,
-  );
-  halo.position.y = 2.8;
-  halo.rotation.x = Math.PI / 2;
-  group.add(body, head, halo);
-  return group;
-}
-
 
 export function inferGeneratedKind(
   prompt: string,

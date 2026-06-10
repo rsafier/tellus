@@ -40,25 +40,12 @@ export type GeneratedKind =
 
 export type ToolName = "generate" | "interact";
 export type AssetPanelTab = "search" | "world-assets" | "inventory";
-export type ToolMenu = "terrain" | "ai";
+export type ToolMenu = "terrain";
 
 export interface Vec3 {
   x: number;
   y: number;
   z: number;
-}
-
-export interface TellusAgent {
-  id: AgentId;
-  name: string;
-  epithet: string;
-  color: number;
-  goal: string;
-  avatarUrl?: string;
-  position: Vec3;
-  target: Vec3;
-  nextActionAt: number;
-  nextReflectionAt: number;
 }
 
 export interface GeneratedThing {
@@ -134,10 +121,8 @@ export interface InteractRequest {
 }
 
 export interface TellusSnapshot {
-  agents: TellusAgent[];
   generated: GeneratedThing[];
   logs: TellusLog[];
-  paused: boolean;
   generationProvider: GenerationProvider;
   playerGenerationProvider: RoleGenerationProvider;
   agentGenerationProvider: RoleGenerationProvider;
@@ -167,14 +152,11 @@ export interface TellusWorldApi {
   boardGenerated(id: string): void;
   disembark(): void;
   sculptTerrain(mode: TerrainEditMode): void;
-  talkToAgent(agentId: AgentId, message: string): void;
-  updateAgentGoal(agentId: AgentId, goal: string): void;
   importGeneratedThings(things: WorldGeneratedThing[]): void;
   setGenerationProvider(provider: GenerationProvider): void;
   setPlayerGenerationProvider(provider: RoleGenerationProvider): void;
   setAgentGenerationProvider(provider: RoleGenerationProvider): void;
   setInstantMeshTarget(target: InstantMeshTarget): void;
-  setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
   snapshot(): TellusSnapshot;
   getFps(): number;
@@ -201,39 +183,10 @@ export interface TellusRuntimeConfig {
   skyboxUrl: string;
   dayNightCycleMs: number;
   dayNightStart: number;
-  enabledAgents: AgentId[];
-  avatars: Partial<Record<AgentId, string>>;
   // When true, fold non-selected static (no-animation) duplicate generated placements that share a modelUrl
   // into a shared THREE.InstancedMesh per sub-mesh to cut draw calls. Default OFF — opt in via
   // VITE_TELLUS_INSTANCE_STATIC=true or a runtime-config `instanceStaticDuplicates: true`.
   instanceStaticDuplicates: boolean;
-}
-
-export interface AgentDecision {
-  action?: "generate" | "moveSelf" | "sculptTerrain" | "moveAsset" | "rotateAsset" | "scaleAsset" | "moveAssetToWater";
-  prompt: string;
-  intent?: string;
-  speech?: string;
-  terrainMode?: TerrainEditMode;
-  targetId?: string;
-  dx?: number;
-  dz?: number;
-  rotation?: number;
-  scaleMultiplier?: number;
-}
-
-export interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-      reasoning_content?: string;
-    };
-  }>;
-}
-
-export interface WorldFeedbackResponse {
-  summary?: string;
-  error?: string;
 }
 
 export interface AssetForgePipelineStart {

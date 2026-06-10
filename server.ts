@@ -1,9 +1,7 @@
-import chatHandler from "./api/chat";
 import generate3DHandler from "./api/generate-3d";
 import generatedAssetsHandler from "./api/generated-assets";
 import gradioFileHandler from "./api/gradio-file";
 import tellusStateHandler from "./api/tellus-state";
-import worldFeedbackHandler from "./api/world-feedback";
 
 const distRoot = new URL("./dist/", import.meta.url);
 
@@ -86,9 +84,6 @@ Bun.serve({
     if (url.pathname === "/health") {
       return withCors(Response.json({ ok: true, service: "tellus" }));
     }
-    if (url.pathname.startsWith("/api/chat")) {
-      return withCors(await chatHandler(request));
-    }
     if (url.pathname.startsWith("/api/generate-3d")) {
       return withCors(await generate3DHandler(request));
     }
@@ -97,9 +92,6 @@ Bun.serve({
     }
     if (url.pathname.startsWith("/api/tellus-state")) {
       return withCors(await tellusStateHandler(request));
-    }
-    if (url.pathname.startsWith("/api/world-feedback")) {
-      return withCors(await worldFeedbackHandler(request));
     }
     if (url.pathname.startsWith("/generated-assets/")) {
       return withCors(await generatedAssetsHandler(request));

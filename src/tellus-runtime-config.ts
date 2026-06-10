@@ -1,11 +1,9 @@
 import type {
-  AgentId,
   InstantMeshTarget,
   RoleGenerationProvider,
   TellusRuntimeConfig,
 } from "./tellus-types";
 import {
-  allAgentIds,
   DEFAULT_DAY_NIGHT_CYCLE_MS,
   DEFAULT_DAY_NIGHT_START,
   MIN_DAY_NIGHT_CYCLE_MS,
@@ -59,12 +57,6 @@ export const runtimeConfig: TellusRuntimeConfig = {
     0,
     1,
   ),
-  enabledAgents: ["johnny"],
-  avatars: {
-    johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
-    mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
-    sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
-  },
   instanceStaticDuplicates:
     import.meta.env.VITE_TELLUS_INSTANCE_STATIC === "true",
 };
@@ -192,18 +184,6 @@ export function applyRuntimeConfig(config: unknown): void {
     runtimeConfig.worldId = worldId.trim();
   }
 
-  const enabledAgents = config.enabledAgents;
-  if (Array.isArray(enabledAgents)) {
-    const configuredAgentIds = enabledAgents.filter(
-      (agentId): agentId is AgentId =>
-        typeof agentId === "string" &&
-        allAgentIds.includes(agentId as AgentId),
-    );
-    if (configuredAgentIds.length > 0) {
-      runtimeConfig.enabledAgents = [...new Set(configuredAgentIds)];
-    }
-  }
-
   // Only honour a runtime-config boolean when the VITE build var is unset (mirrors worldApiBase et al.).
   const instanceStaticDuplicates = config.instanceStaticDuplicates;
   if (
@@ -211,16 +191,6 @@ export function applyRuntimeConfig(config: unknown): void {
     typeof instanceStaticDuplicates === "boolean"
   ) {
     runtimeConfig.instanceStaticDuplicates = instanceStaticDuplicates;
-  }
-
-  const avatars = config.avatars;
-  if (!isRecord(avatars)) return;
-
-  for (const agentId of allAgentIds) {
-    const avatarUrl = avatars[agentId];
-    if (typeof avatarUrl === "string" && avatarUrl.trim()) {
-      runtimeConfig.avatars[agentId] = avatarUrl.trim();
-    }
   }
 }
 

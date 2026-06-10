@@ -12,7 +12,6 @@ import type {
   GeneratedAssetManifestEntry,
   GeneratedThing,
   GenerationProvider,
-  WorldFeedbackResponse,
 } from "./tellus-types";
 import { PIXEL3D_PROVIDER } from "./tellus-constants";
 import { extractErrorMessage, readJsonResponse } from "./tellus-utils";
@@ -118,55 +117,6 @@ export async function generatedAssetManifestModelUrls(): Promise<Map<string, str
   await generatedAssetManifestEntries();
   const byId = generatedAssetManifestCache?.byId ?? new Map<string, string>();
   return byId;
-}
-
-export function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
-  const maxSide = 768;
-  const sourceWidth = Math.max(1, canvas.width);
-  const sourceHeight = Math.max(1, canvas.height);
-  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
-  const width = Math.max(1, Math.floor(sourceWidth * scale));
-  const height = Math.max(1, Math.floor(sourceHeight * scale));
-  const output = document.createElement("canvas");
-  output.width = width;
-  output.height = height;
-  const context = output.getContext("2d");
-  if (!context) throw new Error("Could not create image capture context");
-  context.drawImage(canvas, 0, 0, width, height);
-  return output.toDataURL("image/jpeg", 0.72);
-}
-
-export async function requestWorldFeedback(imageDataUrl: string): Promise<string> {
-  const response = await fetch(tellusApiUrl("/api/world-feedback"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      imageDataUrl,
-      prompt:
-        "Describe the visible Tellus world in 4-6 concise bullet points for an autonomous in-world agent. Focus on visible terrain, water, generated objects, agent/avatar positions, spatial relationships, and anything that looks unfinished or surprising.",
-    }),
-  });
-  const contentType = response.headers.get("Content-Type") ?? "";
-  if (!contentType.includes("application/json")) {
-    throw new Error(
-      `World feedback service returned ${response.status} ${
-        response.statusText || "non-JSON response"
-      }`.trim(),
-    );
-  }
-  const payload = (await response.json()) as WorldFeedbackResponse;
-  if (!response.ok) {
-    throw new Error(
-      payload.error ||
-        `World feedback service returned ${response.status} ${
-          response.statusText || "error"
-        }`.trim(),
-    );
-  }
-  if (!payload.summary?.trim()) {
-    throw new Error(payload.error || "World feedback returned no summary");
-  }
-  return payload.summary.trim().slice(0, 1600);
 }
 
 export async function startPixel3DGeneration(

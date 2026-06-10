@@ -11,12 +11,9 @@ import {
   CircleHelp,
   Layers,
   Map as MapIcon,
-  MessageCircle,
   Mic,
   Minus,
   Mountain,
-  Pause,
-  Play,
   Plus,
   RotateCcw,
   RotateCw,
@@ -69,15 +66,14 @@ import {
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
-import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, TellusAgent, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AgentDecision, ChatCompletionResponse, WorldFeedbackResponse, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps } from "./tellus-types";
-import { WORLD_RADIUS, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, AGENT_SPEED, PLAYER_SPEED, AUTONOMOUS_ASSET_INTERVAL_MS, AUTONOMOUS_REFLECTION_OFFSET_MS, AUTONOMOUS_AGENT_GENERATION_ENABLED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, WORLD_FEEDBACK_INTERVAL_MS, WORLD_FEEDBACK_START_DELAY_MS, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, allAgentIds, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms, johnnyFallbackIdeas } from "./tellus-constants";
+import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps } from "./tellus-types";
+import { WORLD_RADIUS, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
-import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId, speakTellusText } from "./tellus-urls-identity";
+import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
 import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
-import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, captureCanvasDataUrl, requestWorldFeedback, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
-import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, loadAgentAvatar, assetTargetHeight, loadGeneratedModel, createPondWater, createAgentMesh, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
-import { createAgentSeeds, normalizeAssetPrompt, promptAlreadyExists, terrainEditModeFromValue, agentDecisionAction, chooseAgentPrompt, ensureNovelAgentDecision, extractJsonObject, parseAgentDecision, chooseAgentLocation, compassDirection, describeAgentPerception, chatContent, askAgentForDecision, askAgentForReply } from "./tellus-agent-llm";
+import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
+import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import "./styles.css";
 
 // Per-user embodied-agent status shape returned by the Hyades world agent endpoints (camelCase).
@@ -104,7 +100,6 @@ function createTellusWorld(
   onSnapshot: (snapshot: TellusSnapshot) => void,
 ): TellusWorldApi {
   let destroyed = false;
-  let paused = true; // AI agents start OFF — the visitor resumes them with the "Resume AI" button.
   let animationId = 0;
   let lastTime = performance.now();
   // Debug FPS counter (sampled every 500ms); surfaced via getFps() for the hidden FPS overlay.
@@ -116,13 +111,6 @@ function createTellusWorld(
   let resizeObserver: ResizeObserver | null = null;
   let renderIssueLogged = false;
 
-  const agents = createAgentSeeds().map((agent) => ({
-    ...agent,
-    position: { ...agent.position },
-    target: { ...agent.target },
-    nextActionAt: performance.now() + AUTONOMOUS_ASSET_INTERVAL_MS,
-    nextReflectionAt: performance.now() + AUTONOMOUS_REFLECTION_OFFSET_MS,
-  }));
   const generated: GeneratedThing[] = [];
   const logs: TellusLog[] = [];
   const generatedMeshes = new Map<string, THREE.Object3D>();
@@ -147,9 +135,7 @@ function createTellusWorld(
   const instancePools = new Map<string, InstancePool>();
   // Model URLs whose instancing hit an error once — never re-attempt for the session (they stay regular).
   const instancingDisabledUrls = new Set<string>();
-  const agentMeshes = new Map<AgentId, THREE.Group>();
   const skyboxTintMaterials = new Set<THREE.MeshBasicMaterial>();
-  const pendingAgentDecisions = new Set<AgentId>();
   const pendingGenerationControllers = new Map<string, AbortController>();
   const pendingManifestReconciliations = new Set<string>();
   const keys = new Set<string>();
@@ -159,12 +145,6 @@ function createTellusWorld(
   let moonModel: THREE.Object3D | null = null;
   const moonMaterials = new Set<THREE.MeshStandardMaterial>();
   const moonCloudVeil = createMoonCloudVeil();
-  let visualFeedback = "";
-  let nextWorldFeedbackAt =
-    performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
-  let worldFeedbackPending = false;
-  let worldFeedbackIssueLogged = false;
-  let worldFeedbackAvailable = true;
   let directGenerationAvailable = true;
   let worldSocket: WebSocket | null = null;
   let worldSocketReconnectTimer: number | undefined;
@@ -350,7 +330,6 @@ function createTellusWorld(
   scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
 
   const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
-  const agentVisionCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 260);
   const fallbackSky = createSkyDome();
   if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
     skyboxTintMaterials.add(fallbackSky.material);
@@ -397,12 +376,6 @@ function createTellusWorld(
   const hemisphere = new THREE.HemisphereLight(0xb6ccff, 0x3d5332, 2.25);
   scene.add(sun, moon, hemisphere);
 
-  for (const agent of agents) {
-    const mesh = createAgentMesh(agent);
-    agentMeshes.set(agent.id, mesh);
-    scene.add(mesh);
-  }
-
   const visitor = createVisitorMesh(useWebGPU);
   let visitorPosition = normalizedDiscPosition(-20, 20);
   scene.add(visitor);
@@ -418,17 +391,11 @@ function createTellusWorld(
   const raycaster = new THREE.Raycaster();
 
   const snapshot = (): TellusSnapshot => ({
-    agents: agents.map((agent) => ({
-      ...agent,
-      position: { ...agent.position },
-      target: { ...agent.target },
-    })),
     generated: generated.map((thing) => ({
       ...thing,
       position: { ...thing.position },
     })),
     logs: logs.slice(-80),
-    paused,
     generationProvider: runtimeConfig.generationProvider,
     playerGenerationProvider: runtimeConfig.playerGenerationProvider,
     agentGenerationProvider: runtimeConfig.agentGenerationProvider,
@@ -857,8 +824,8 @@ function createTellusWorld(
     sculptTerrainAt(mode, visitorPosition, "visitor", "Visitor");
   };
 
-  const generationPausedForThing = (thing: GeneratedThing) =>
-    paused && thing.creatorId !== "visitor";
+  // The browser-NPC "pause AI" gate is gone; visitor-driven generation is never paused.
+  const generationPausedForThing = (_thing: GeneratedThing) => false;
 
   const abortPendingGeneration = (
     shouldAbort: (thing: GeneratedThing) => boolean = () => true,
@@ -2042,8 +2009,7 @@ function createTellusWorld(
         15 + rand(tick) * 8,
         -15 + rand(tick + 1) * 7,
       );
-    const agent = agents.find((item) => item.id === request.creatorId);
-    const origin = agent?.position ?? visitorPosition;
+    const origin = visitorPosition;
     const angle = rand(tick + generated.length * 17) * Math.PI * 2;
     const radius = 3 + rand(tick + 33) * 7;
     return normalizedDiscPosition(
@@ -2080,12 +2046,11 @@ function createTellusWorld(
     scene.add(mesh);
     syncTransformControls();
 
-    const actor = agents.find((agent) => agent.id === request.creatorId);
     addLog({
       agentId: request.creatorId,
-      agentName: actor?.name ?? "Visitor",
+      agentName: "Visitor",
       tool: "generate",
-      text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
+      text: `Visitor generated ${thing.kind}: ${request.prompt}`,
     });
     publishGeneratedThing(thing);
 
@@ -2395,59 +2360,13 @@ function createTellusWorld(
   };
 
   const interact = (request: InteractRequest): TellusLog => {
-    const actor = agents.find((agent) => agent.id === request.actorId);
     const target = generated.find((thing) => thing.id === request.targetId);
     return addLog({
       agentId: request.actorId,
-      agentName: actor?.name ?? "Visitor",
-      tool: "interact",
-      text: `${actor?.name ?? "Visitor"} interacts with ${target?.kind ?? "the world"}: ${request.intent}`,
-    });
-  };
-
-  const talkToAgent = (agentId: AgentId, message: string) => {
-    const trimmed = message.trim();
-    const agent = agents.find((candidate) => candidate.id === agentId);
-    if (!trimmed || !agent) return;
-    if (paused) {
-      addLog({
-        agentId: "world",
-        agentName: "Tellus",
-        tool: "interact",
-        text: "Paused: agent chatter is stopped.",
-      });
-      return;
-    }
-
-    addLog({
-      agentId: "visitor",
       agentName: "Visitor",
       tool: "interact",
-      text: `asks ${agent.name}: ${trimmed}`,
+      text: `Visitor interacts with ${target?.kind ?? "the world"}: ${request.intent}`,
     });
-
-    void askAgentForReply(agent, trimmed, generated, logs, visualFeedback)
-      .then((reply) => {
-        if (destroyed || paused) return;
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} says: ${reply}`,
-        });
-        speakTellusText(reply);
-      })
-      .catch((error) => {
-        if (destroyed || paused) return;
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} tries to answer, but the voice link is quiet (${
-            error instanceof Error ? error.message : "unknown error"
-          })`,
-        });
-      });
   };
 
   const submitVisitorPrompt = (prompt: string) => {
@@ -2533,235 +2452,12 @@ function createTellusWorld(
     publish();
   };
 
-  const updateAgentGoal = (agentId: AgentId, goal: string) => {
-    const agent = agents.find((candidate) => candidate.id === agentId);
-    if (!agent) return;
-    agent.goal = goal;
-    publish();
-  };
-
-  const setPaused = (nextPaused: boolean) => {
-    if (paused === nextPaused) return;
-    paused = nextPaused;
-    if (paused) {
-      abortPendingGeneration((thing) => thing.creatorId !== "visitor");
-      for (const thing of generated) {
-        if (
-          thing.creatorId !== "visitor" &&
-          (thing.generationStatus === "queued" ||
-            thing.generationStatus === "generating")
-        ) {
-          cancelDirectGeneration(thing.pipelineId);
-          thing.generationStatus = "local";
-          thing.pipelineId = undefined;
-        }
-      }
-    }
-    if (!paused) {
-      const now = performance.now();
-      nextWorldFeedbackAt = now + 4_000;
-      for (const agent of agents) {
-        agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-        agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
-      }
-    }
-    addLog({
-      agentId: "world",
-      agentName: "Tellus",
-      tool: "interact",
-      text: paused
-        ? "Paused: agent chatter and generation are stopped."
-        : "Resumed: agents may talk and generate again.",
-    });
-    publish();
-  };
-
-  const agentActionTarget = (
-    agent: TellusAgent,
-    decision: AgentDecision,
-  ): GeneratedThing | undefined => {
-    if (decision.targetId) {
-      const explicit = thingById(decision.targetId);
-      if (explicit) return explicit;
-    }
-    return (
-      [...generated].reverse().find((thing) => thing.creatorId === agent.id) ??
-      generated[generated.length - 1]
-    );
-  };
-
-  const runAgentWorldAction = (
-    agent: TellusAgent,
-    decision: AgentDecision,
-  ): boolean => {
-    const action = decision.action ?? "generate";
-    if (action === "generate") return false;
-
-    if (action === "moveSelf") {
-      const dx = clamp(decision.dx ?? 0, -8, 8);
-      const dz = clamp(decision.dz ?? 4, -8, 8);
-      agent.target = groundedPosition(
-        agent.position.x + dx,
-        agent.position.z + dz,
-        agent.position,
-      );
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} walks toward x ${agent.target.x.toFixed(1)}, z ${agent.target.z.toFixed(1)} for a steadier look`,
-      });
-      return true;
-    }
-
-    if (action === "sculptTerrain") {
-      const mode = decision.terrainMode ?? "flatten";
-      sculptTerrainAt(mode, agent.position, agent.id, agent.name);
-      return true;
-    }
-
-    const target = agentActionTarget(agent, decision);
-    if (!target) return false;
-    const previousSelectedId = selectedThingId;
-    selectedThingId = target.id;
-    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
-
-    if (action === "moveAsset") {
-      const dx = clamp(decision.dx ?? 0, -4, 4);
-      const dz = clamp(decision.dz ?? -2, -4, 4);
-      moveGenerated(target.id, dx, dz);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} moved ${target.kind} "${target.prompt}" by x ${dx.toFixed(1)}, z ${dz.toFixed(1)}`,
-      });
-      return true;
-    }
-
-    if (action === "rotateAsset") {
-      const radians = clamp(decision.rotation ?? Math.PI / 8, -1, 1);
-      rotateGenerated(target.id, radians);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} rotated ${target.kind} "${target.prompt}" ${radians.toFixed(2)} radians`,
-      });
-      return true;
-    }
-
-    if (action === "scaleAsset") {
-      const multiplier = clamp(decision.scaleMultiplier ?? 1.15, 0.65, 1.5);
-      scaleGenerated(target.id, multiplier);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} scaled ${target.kind} "${target.prompt}" to ${target.scale.toFixed(2)}x`,
-      });
-      return true;
-    }
-
-    if (action === "moveAssetToWater") {
-      moveGeneratedToWater(target.id);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} repositioned ${target.kind} "${target.prompt}" toward the water or island edge`,
-      });
-      return true;
-    }
-
-    return false;
-  };
-
-  const runAgentTurn = async (agent: TellusAgent): Promise<void> => {
-    if (paused) return;
-    if (pendingAgentDecisions.has(agent.id)) return;
-    pendingAgentDecisions.add(agent.id);
-    try {
-      if (paused) return;
-      const decision = await askAgentForDecision(
-        agent,
-        generated,
-        logs,
-        visualFeedback,
-      );
-      if (destroyed || paused) return;
-      if (decision.speech) {
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} says: ${decision.speech}`,
-        });
-      }
-      if (runAgentWorldAction(agent, decision)) return;
-      if (AUTONOMOUS_AGENT_GENERATION_ENABLED) {
-        const thing = generate({
-          prompt: decision.prompt,
-          location: chooseAgentLocation(agent, decision.prompt),
-          creatorId: agent.id,
-        });
-        if (decision.intent) {
-          if (paused) return;
-          interact({
-            targetId: thing.id,
-            actorId: agent.id,
-            intent: decision.intent,
-          });
-        }
-        return;
-      }
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} wanted to generate "${decision.prompt}", but autonomous asset generation is disabled.`,
-      });
-    } catch (error) {
-      if (destroyed || paused) return;
-      addLog({
-        agentId: "world",
-        agentName: "Hyades",
-        tool: "interact",
-        text: `Agent model unavailable; autonomous fallback asset generation is disabled (${
-          error instanceof Error ? error.message : "unknown error"
-        })`,
-      });
-    } finally {
-      pendingAgentDecisions.delete(agent.id);
-    }
-  };
-
-  const runAgentReflection = (agent: TellusAgent): void => {
-    if (paused || generated.length === 0) return;
-    const target =
-      generated[
-        Math.floor(rand(performance.now() + agent.position.x) * generated.length)
-      ];
-    interact({
-      targetId: target.id,
-      actorId: agent.id,
-      intent:
-        agent.id === "johnny"
-          ? "study what should live near here next and how this asset changes the world"
-          : agent.id === "mira"
-            ? "study what should live near here next and how this asset changes the local habitat"
-            : "study what should live near here next and whether it belongs in the mountain pattern",
-    });
-  };
-
   const resize = () => {
     const rect = container.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
     const height = Math.max(1, Math.floor(rect.height));
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    agentVisionCamera.aspect = width / height;
-    agentVisionCamera.updateProjectionMatrix();
     renderer?.setSize(width, height, false);
   };
 
@@ -2809,52 +2505,6 @@ function createTellusWorld(
     sendPresenceUpdate();
   };
 
-  const moveAgents = (now: number, delta: number) => {
-    for (const agent of agents) {
-      if (distance2D(agent.position, agent.target) < 1.2) {
-        if (agent.id === "johnny") {
-          agent.target = { ...agent.position };
-        } else {
-          const angle = rand(now * 0.001 + agent.position.x) * Math.PI * 2;
-          const radius = 7 + rand(now * 0.002 + agent.position.z) * 22;
-          agent.target = normalizedDiscPosition(
-            Math.cos(angle) * radius,
-            Math.sin(angle) * radius,
-          );
-        }
-      }
-      const direction = new THREE.Vector3(
-        agent.target.x - agent.position.x,
-        0,
-        agent.target.z - agent.position.z,
-      );
-      if (direction.lengthSq() > 0.001) {
-        direction.normalize().multiplyScalar(AGENT_SPEED * delta);
-        agent.position = normalizedDiscPosition(
-          agent.position.x + direction.x,
-          agent.position.z + direction.z,
-        );
-      }
-
-      if (!paused && now >= agent.nextActionAt) {
-        if (hasPendingGeneratedAsset(agent.id)) {
-          agent.nextActionAt = now + 15_000;
-          if (now >= agent.nextReflectionAt) {
-            runAgentReflection(agent);
-            agent.nextReflectionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-          }
-          continue;
-        }
-        void runAgentTurn(agent);
-        agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-        agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
-      } else if (!paused && now >= agent.nextReflectionAt) {
-        runAgentReflection(agent);
-        agent.nextReflectionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-      }
-    }
-  };
-
   const syncMeshes = (now: number) => {
     visitor.position.set(
       visitorPosition.x,
@@ -2875,14 +2525,6 @@ function createTellusWorld(
           material.opacity = Math.max(0, 0.32 * (1 - phase));
         }
       });
-    }
-
-    for (const agent of agents) {
-      const mesh = agentMeshes.get(agent.id);
-      if (!mesh) continue;
-      mesh.position.set(agent.position.x, agent.position.y, agent.position.z);
-      mesh.lookAt(agent.target.x, agent.position.y, agent.target.z);
-      mesh.position.y += Math.sin(now * 0.004 + agent.color) * 0.08;
     }
 
     let index = 0;
@@ -3108,61 +2750,6 @@ function createTellusWorld(
     }
   };
 
-  const agentVisionLookTarget = (agent: TellusAgent): Vec3 => {
-    if (distance2D(agent.position, agent.target) > 1.2) {
-      return agent.target;
-    }
-    const nearest = generated
-      .map((thing) => ({
-        thing,
-        distance: distance2D(agent.position, thing.position),
-      }))
-      .sort((a, b) => a.distance - b.distance)[0]?.thing;
-    if (nearest) return nearest.position;
-    if (agent.id === "johnny") return POND_CENTER;
-    return normalizedDiscPosition(agent.position.x + 1, agent.position.z + 1);
-  };
-
-  const updateAgentVisionCamera = (agent: TellusAgent) => {
-    const lookTarget = agentVisionLookTarget(agent);
-    const lookDirection = new THREE.Vector3(
-      lookTarget.x - agent.position.x,
-      0,
-      lookTarget.z - agent.position.z,
-    );
-    if (lookDirection.lengthSq() < 0.001) {
-      lookDirection.set(0, 0, 1);
-    }
-    lookDirection.normalize();
-    const eyeHeight = terrainHeight(agent.position.x, agent.position.z) + 2.2;
-    const targetHeight = terrainHeight(lookTarget.x, lookTarget.z) + 1.4;
-    agentVisionCamera.position.set(
-      agent.position.x + lookDirection.x * 0.35,
-      eyeHeight,
-      agent.position.z + lookDirection.z * 0.35,
-    );
-    agentVisionCamera.lookAt(lookTarget.x, targetHeight, lookTarget.z);
-  };
-
-  const captureAgentVisionScreenshot = (agent: TellusAgent): string => {
-    if (!renderer) throw new Error("Renderer is not ready");
-    updateAgentVisionCamera(agent);
-    const agentMesh = agentMeshes.get(agent.id);
-    const wasVisible = agentMesh?.visible;
-    if (agentMesh) agentMesh.visible = false;
-    try {
-      syncExternalSkyboxToCamera(agentVisionCamera.position);
-      renderer.render(scene, agentVisionCamera);
-      return captureCanvasDataUrl(renderer.domElement);
-    } finally {
-      if (agentMesh && wasVisible !== undefined) {
-        agentMesh.visible = wasVisible;
-      }
-      syncExternalSkyboxToCamera(camera.position);
-      renderer.render(scene, camera);
-    }
-  };
-
   const updateCamera = () => {
     const pilotedThing = sailingThingId ? thingById(sailingThingId) : undefined;
     const pilotedMode = pilotedThing ? vehicleMode(pilotedThing) : null;
@@ -3193,77 +2780,6 @@ function createTellusWorld(
     syncExternalSkyboxToCamera(camera.position);
   };
 
-  const refreshWorldFeedback = (now: number) => {
-    if (
-      paused ||
-      !worldFeedbackAvailable ||
-      worldFeedbackPending ||
-      now < nextWorldFeedbackAt ||
-      !renderer
-    ) {
-      return;
-    }
-    nextWorldFeedbackAt = now + WORLD_FEEDBACK_INTERVAL_MS;
-    worldFeedbackPending = true;
-    const feedbackAgent =
-      agents.find((agent) => agent.id === "johnny") ?? agents[0];
-    if (!feedbackAgent) {
-      worldFeedbackPending = false;
-      return;
-    }
-    let screenshotUrl = "";
-    try {
-      screenshotUrl = captureAgentVisionScreenshot(feedbackAgent);
-    } catch (error) {
-      worldFeedbackPending = false;
-      if (!worldFeedbackIssueLogged) {
-        worldFeedbackIssueLogged = true;
-        addLog({
-          agentId: "world",
-          agentName: "Z.ai Vision",
-          tool: "interact",
-          text: `${feedbackAgent.name} vision capture unavailable: ${
-            error instanceof Error ? error.message : "unknown capture error"
-          }`,
-        });
-      }
-      return;
-    }
-    void requestWorldFeedback(screenshotUrl)
-      .then((summary) => {
-        if (destroyed || paused) return;
-        visualFeedback = summary;
-        worldFeedbackIssueLogged = false;
-        addLog({
-          agentId: "world",
-          agentName: "Z.ai Vision",
-          tool: "interact",
-          text: `${feedbackAgent.name} vision updated: ${sanitizeLogText(summary).slice(0, 180)}`,
-          screenshotUrl,
-        });
-      })
-      .catch((error) => {
-        if (destroyed || paused || worldFeedbackIssueLogged) return;
-        if (isMissingApiRouteError(error)) {
-          worldFeedbackAvailable = false;
-          return;
-        }
-        worldFeedbackIssueLogged = true;
-        addLog({
-          agentId: "world",
-          agentName: "Z.ai Vision",
-          tool: "interact",
-          text: `${feedbackAgent.name} vision unavailable: ${
-            error instanceof Error ? error.message : "unknown vision error"
-          }`,
-          screenshotUrl,
-        });
-      })
-      .finally(() => {
-        worldFeedbackPending = false;
-      });
-  };
-
   const animate = async () => {
     if (destroyed || !renderer) return;
     const now = performance.now();
@@ -3277,7 +2793,6 @@ function createTellusWorld(
     lastTime = now;
     tick++;
     moveVisitor(delta);
-    moveAgents(now, delta);
     for (const mixer of generatedAnimationMixers.values()) {
       mixer.update(delta);
     }
@@ -3291,7 +2806,6 @@ function createTellusWorld(
     flushPublish();
     try {
       renderer.render(scene, camera);
-      refreshWorldFeedback(now);
     } catch (error) {
       if (!renderIssueLogged) {
         renderIssueLogged = true;
@@ -3489,35 +3003,6 @@ function createTellusWorld(
       resize();
       requestAnimationFrame(resize);
       publish();
-      for (const agent of agents) {
-        void loadAgentAvatar(agent)
-          .then((avatar) => {
-            if (!avatar || destroyed) return;
-            const agentRoot = agentMeshes.get(agent.id);
-            if (!agentRoot) return;
-            for (const child of [...agentRoot.children]) {
-              agentRoot.remove(child);
-              disposeObject(child);
-            }
-            agentRoot.add(avatar);
-            addLog({
-              agentId: "world",
-              agentName: "Tellus",
-              tool: "interact",
-              text: `Loaded avatar for ${agent.name}`,
-            });
-          })
-          .catch((error) => {
-            addLog({
-              agentId: "world",
-              agentName: "Tellus",
-              tool: "interact",
-              text: `Avatar load failed for ${agent.name}: ${
-                error instanceof Error ? error.message : "unknown avatar error"
-              }`,
-            });
-          });
-      }
       void loadSkyboxModel()
         .then((skyboxResult) => {
           if (!skyboxResult || destroyed) return;
@@ -3581,14 +3066,6 @@ function createTellusWorld(
             }`,
           });
         });
-      for (const agent of agents) {
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} arrives: ${agent.goal}`,
-        });
-      }
       void animate();
     } catch (error) {
       addLog({
@@ -3606,6 +3083,12 @@ function createTellusWorld(
   // sidecar — reads world state and takes actions AS THIS PAGE'S VISITOR through the exact same in-world
   // dispatch functions the built-in autonomous agents use, so an embodied external agent and the native
   // agents share one action path. Verbs mirror the built-in agent decision vocabulary.
+  const compassDirection = (from: Vec3, to: Vec3): string => {
+    const angle = Math.atan2(to.z - from.z, to.x - from.x);
+    const directions = ["east", "southeast", "south", "southwest", "west", "northwest", "north", "northeast"];
+    const index = Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % directions.length;
+    return directions[index];
+  };
   const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
   const nearToLocation = (near: unknown): GenerateRequest["location"] =>
     near === "mountain" ? "near-mountain" : near === "pond" ? "near-pond" : near === "agent" ? "near-agent" : { ...visitorPosition };
@@ -3713,14 +3196,11 @@ function createTellusWorld(
     boardGenerated,
     disembark,
     sculptTerrain,
-    talkToAgent,
-    updateAgentGoal,
     importGeneratedThings,
     setGenerationProvider,
     setPlayerGenerationProvider,
     setAgentGenerationProvider,
     setInstantMeshTarget,
-    setPaused,
     submitVisitorPrompt,
     snapshot,
     getFps: () => fpsValue,
@@ -3847,10 +3327,8 @@ function App(): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<TellusWorldApi | null>(null);
   const [snapshot, setSnapshot] = useState<TellusSnapshot>({
-    agents: createAgentSeeds(),
     generated: [],
     logs: [],
-    paused: true,
     generationProvider: runtimeConfig.generationProvider,
     playerGenerationProvider: runtimeConfig.playerGenerationProvider,
     agentGenerationProvider: runtimeConfig.agentGenerationProvider,
@@ -3859,7 +3337,6 @@ function App(): React.ReactElement {
     remoteVisitors: [],
   });
   const [prompt, setPrompt] = useState("");
-  const [chatPrompt, setChatPrompt] = useState("");
   // Hidden FPS overlay: triple-click the "Tellus World Weaver" brand box to toggle.
   const [showFps, setShowFps] = useState(false);
   const [fps, setFps] = useState(0);
@@ -4146,27 +3623,16 @@ function App(): React.ReactElement {
       enter();
     }
   };
-  const [characterBodyPrompt, setCharacterBodyPrompt] = useState("");
-  const [characterPersonalityPrompt, setCharacterPersonalityPrompt] = useState("");
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
   const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
   const [openToolMenus, setOpenToolMenus] = useState<ToolMenu[]>([]);
   const [createPromptOpen, setCreatePromptOpen] = useState(false);
   const [createPromptFocused, setCreatePromptFocused] = useState(false);
   const [worldMapOpen, setWorldMapOpen] = useState(true);
-  const [worldLogOpen, setWorldLogOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const { listening, supported, start } = useSpeechInput((text) =>
     setPrompt(text),
-  );
-  const {
-    listening: chatListening,
-    supported: chatSupported,
-    start: startChatVoice,
-  } = useSpeechInput((text) =>
-    setChatPrompt((current) => `${current ? `${current} ` : ""}${text}`),
   );
   const importedGeneratedThings = (value: unknown): WorldGeneratedThing[] => {
     const source = Array.isArray(value)
@@ -4369,12 +3835,6 @@ function App(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorldId]);
 
-  const selected = useMemo(
-    () =>
-      snapshot.agents.find((agent) => agent.id === selectedAgent) ??
-      snapshot.agents[0],
-    [selectedAgent, snapshot.agents],
-  );
   const selectedThing = useMemo(
     () =>
       snapshot.generated.find((thing) => thing.id === snapshot.selectedThingId) ??
@@ -4404,23 +3864,6 @@ function App(): React.ReactElement {
     setCreatePromptOpen(false);
   };
 
-  const createCharacter = () => {
-    const body = characterBodyPrompt.trim();
-    const personality = characterPersonalityPrompt.trim();
-    if (!body && !personality) return;
-    const characterPrompt = [
-      "create a friendly Tellus character avatar",
-      body ? `body: ${body}` : "",
-      personality ? `personality: ${personality}` : "",
-      "game-ready low poly 3D character, readable silhouette",
-    ]
-      .filter(Boolean)
-      .join("; ");
-    worldRef.current?.submitVisitorPrompt(characterPrompt);
-    setCharacterBodyPrompt("");
-    setCharacterPersonalityPrompt("");
-  };
-
   const focusCreatePrompt = () => {
     setCreatePromptOpen((open) => {
       if (open) return false;
@@ -4433,12 +3876,6 @@ function App(): React.ReactElement {
 
   const toggleAssetDrawer = () => {
     setAssetPanelOpen((open) => !open);
-  };
-
-  const openToolPanel = (menu: ToolMenu) => {
-    setOpenToolMenus((current) =>
-      current.includes(menu) ? current : [...current, menu],
-    );
   };
 
   const closeToolPanel = (menu: ToolMenu) => {
@@ -4470,12 +3907,6 @@ function App(): React.ReactElement {
     }
   };
 
-  const askSelectedAgent = () => {
-    if (!chatPrompt.trim() || !selected) return;
-    worldRef.current?.talkToAgent(selected.id, chatPrompt);
-    setChatPrompt("");
-  };
-
   useEffect(() => {
     const textarea = promptRef.current;
     if (!textarea) return;
@@ -4483,7 +3914,6 @@ function App(): React.ReactElement {
     textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 36), 116)}px`;
   }, [prompt]);
 
-  const recentLogs = snapshot.logs.slice(-10).reverse();
   const repeatTimerRef = useRef<number | undefined>(undefined);
   const stopRepeating = () => {
     if (repeatTimerRef.current === undefined) return;
@@ -4509,7 +3939,7 @@ function App(): React.ReactElement {
       className={[
         "tellus-shell",
         openToolMenus.length > 0 || assetPanelOpen ? "" : "mesh-tools-hidden",
-        worldLogOpen ? "" : "world-log-hidden",
+        "world-log-hidden",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -4665,15 +4095,6 @@ function App(): React.ReactElement {
           </button>
           <button
             type="button"
-            className={isToolOpen("ai") ? "toolbelt-button active" : "toolbelt-button"}
-            title="AI"
-            onClick={() => toggleToolPanel("ai")}
-          >
-            <Bot size={18} />
-            <span>AI</span>
-          </button>
-          <button
-            type="button"
             className={isToolOpen("terrain") ? "toolbelt-button active" : "toolbelt-button"}
             title="Terrain"
             onClick={() => toggleToolPanel("terrain")}
@@ -4689,15 +4110,6 @@ function App(): React.ReactElement {
           >
             <RotateCw size={18} />
             <span>Move</span>
-          </button>
-          <button
-            type="button"
-            className={worldLogOpen ? "toolbelt-button active" : "toolbelt-button"}
-            title="Chat"
-            onClick={() => setWorldLogOpen((open) => !open)}
-          >
-            <MessageCircle size={18} />
-            <span>Chat</span>
           </button>
           {p2pSupported && (
             <button
@@ -4974,17 +4386,6 @@ function App(): React.ReactElement {
                   />
                 ) : null,
               )}
-              {snapshot.agents.map((agent) => (
-                <span
-                  key={agent.id}
-                  className="map-marker agent"
-                  style={{
-                    ...mapPointStyle(agent.position),
-                    backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                  }}
-                  title={`${agent.name} - ${agent.epithet}`}
-                />
-              ))}
               {snapshot.generated.map((thing) => (
                 <span
                   key={thing.id}
@@ -5011,9 +4412,7 @@ function App(): React.ReactElement {
               <section className="world-info-panel mini" aria-label="World info">
                 <dl>
                   <div><dt>Generated</dt><dd>{snapshot.generated.length}</dd></div>
-                  <div><dt>Agents</dt><dd>{snapshot.agents.length}</dd></div>
                   <div><dt>Players</dt><dd>{snapshot.remoteVisitors.length + 1}</dd></div>
-                  <div><dt>AI</dt><dd>{snapshot.paused ? "Paused" : "Active"}</dd></div>
                 </dl>
               </section>
             </section>
@@ -5030,58 +4429,6 @@ function App(): React.ReactElement {
             <Ship size={17} />
             <span>Dismount</span>
           </button>
-        )}
-        {worldLogOpen && (
-          <section className="world-mini-chat" aria-label="World chat">
-            <header>
-              <strong>World Chat</strong>
-              <button
-                type="button"
-                title="Hide world chat"
-                aria-label="Hide world chat"
-                onClick={() => setWorldLogOpen(false)}
-              >
-                x
-              </button>
-            </header>
-            <div className="mini-chat-log">
-              {recentLogs.slice(0, 4).map((log) => (
-                <article key={log.id} className={`mini-chat-entry ${log.tool}`}>
-                  <strong>{log.agentName}</strong>
-                  <p>{log.text}</p>
-                </article>
-              ))}
-            </div>
-            <textarea
-              className="mini-chat-input"
-              value={chatPrompt}
-              rows={2}
-              placeholder={selected ? `Ask ${selected.name}...` : "Ask an agent..."}
-              onChange={(event) => setChatPrompt(event.target.value)}
-            />
-            <div className="mini-chat-actions">
-              <button
-                type="button"
-                className="secondary-button prompt-icon-button"
-                title={chatListening ? "Listening" : "Speak to chat"}
-                aria-label={chatListening ? "Listening" : "Speak to chat"}
-                disabled={!chatSupported || chatListening}
-                onClick={startChatVoice}
-              >
-                <Mic size={16} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button wide-button mini-chat-submit"
-                disabled={!chatPrompt.trim() || !selected}
-                onClick={askSelectedAgent}
-                title={selected ? `Ask ${selected.name}` : "Ask"}
-                aria-label={selected ? `Ask ${selected.name}` : "Ask"}
-              >
-                <MessageCircle size={16} />
-              </button>
-            </div>
-          </section>
         )}
         {activeSelectedThing && (
           <div className="selected-transform-hud" aria-label="Selected asset controls">
@@ -5461,124 +4808,6 @@ function App(): React.ReactElement {
 
       {openToolMenus.length > 0 && (
       <aside className="tool-panel compact-tool-panel" aria-label="Tool panel">
-        {isToolOpen("ai") && (
-          <section className="tool-card ai-card">
-            <div className="panel-strip">
-              <span>AI Agents</span>
-              <button
-                type="button"
-                className="icon-button"
-                title="Hide AI"
-                aria-label="Hide AI"
-                onClick={() => closeToolPanel("ai")}
-              >
-                <ArrowLeft size={17} />
-              </button>
-            </div>
-            <div className="agent-list compact">
-              {snapshot.agents.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  className={
-                    agent.id === selectedAgent
-                      ? "agent-row active"
-                      : "agent-row"
-                  }
-                  onClick={() => setSelectedAgent(agent.id)}
-                >
-                  <span
-                    className="agent-dot"
-                    style={{
-                      backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                    }}
-                  />
-                  <span>
-                    <strong>{agent.name}</strong>
-                    <small>{agent.epithet || "Tellus agent"}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="ai-character-creator">
-              <button
-                type="button"
-                className="secondary-button ai-pause-button"
-                onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
-              >
-                {snapshot.paused ? <Play size={16} /> : <Pause size={16} />}
-                <span>{snapshot.paused ? "Resume AI" : "Pause AI"}</span>
-              </button>
-              <div className="terrain-subtitle">Create Character</div>
-              <label className="ai-prompt-field">
-                <span>Body</span>
-                <textarea
-                  value={characterBodyPrompt}
-                  rows={3}
-                  placeholder="small mossy explorer with leaf cloak..."
-                  onChange={(event) => setCharacterBodyPrompt(event.target.value)}
-                />
-              </label>
-              <label className="ai-prompt-field">
-                <span>Personality</span>
-                <textarea
-                  value={characterPersonalityPrompt}
-                  rows={3}
-                  placeholder="curious, brave, protects ponds..."
-                  onChange={(event) => setCharacterPersonalityPrompt(event.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                className="primary-button ai-create-character-button"
-                disabled={!characterBodyPrompt.trim() && !characterPersonalityPrompt.trim()}
-                onClick={createCharacter}
-              >
-                <Send size={16} />
-                <span>Create Character</span>
-              </button>
-            </div>
-            {selected && (
-              <div className="ai-agent-editor">
-                <div className="ai-avatar-card">
-                  <div
-                    className="ai-avatar-orb"
-                    style={{
-                      backgroundColor: `#${selected.color.toString(16).padStart(6, "0")}`,
-                    }}
-                  >
-                    {selected.name.slice(0, 1)}
-                  </div>
-                  <span>
-                    <strong>{selected.name}</strong>
-                    <small>{selected.avatarUrl ? "Avatar loaded" : "Fallback avatar"}</small>
-                  </span>
-                </div>
-                <label className="ai-prompt-field">
-                  <span>Agent prompt</span>
-                  <textarea
-                    value={selected.goal}
-                    rows={7}
-                    onChange={(event) =>
-                      worldRef.current?.updateAgentGoal(
-                        selected.id,
-                        event.target.value,
-                      )
-                    }
-                  />
-                </label>
-                <div className="asset-meta">
-                  <span>
-                    x {selected.position.x.toFixed(1)} z{" "}
-                    {selected.position.z.toFixed(1)}
-                  </span>
-                  <span>{selected.epithet || "agent"}</span>
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-
         {isToolOpen("terrain") && (
         <section className="tool-card terrain-card">
           <div className="panel-strip">

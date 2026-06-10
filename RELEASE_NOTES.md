@@ -4,6 +4,15 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.3.0 — 2026-06-10
+- **Removed the in-browser AI (per-user embodied agents, Roll 3).** The legacy browser-run NPCs
+  (johnny/mira/sol) and their whole subsystem are gone — the autonomous decision loop, agent meshes, the
+  agent-vision world-feedback loop, the AI tool panel + World Chat panel, and the server routes `api/chat.ts`
+  + `api/world-feedback.ts`. Players now run their own server-side agent via the "Your Agent" panel (0.2.0);
+  the browser no longer runs AI or spends tokens. Net −1,846 lines (`tellus-agent-llm.ts` deleted); the
+  bundle shrank ~25 KB. All non-AI features (presence/avatars, `/live`, terrain, generation, asset library,
+  P2P video, debug overlay, world switching, the external `window.tellusAgent` driver hook) are untouched.
+
 ## 0.2.0 — 2026-06-10
 - **"Your Agent" panel (per-user embodied agents, Roll 2).** A new toolbelt panel lets each player run their
   own in-cluster Hyades agent instead of the shared browser NPCs: **Start my agent** / **Stop** (opt-in, no
