@@ -247,6 +247,7 @@ interface TellusWorldApi {
   setTxEnabled(on: boolean): Promise<boolean>;
   setP2pDevices(audioDeviceId?: string, videoDeviceId?: string): Promise<void>;
   getP2pStats(): MeshStats | null;
+  getSelfStream(): MediaStream | null;
   destroy(): void;
 }
 
@@ -2832,33 +2833,10 @@ function createAgentMesh(agent: TellusAgent): THREE.Group {
   return group;
 }
 
-function createVisitorMesh(): THREE.Group {
-  const group = new THREE.Group();
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf0d39a,
-    roughness: 0.68,
-  });
-  const robeMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2f5947,
-    roughness: 0.8,
-  });
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.5, 1.2, 6, 12),
-    robeMaterial,
-  );
-  body.position.y = 1.1;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.43, 16, 12),
-    bodyMaterial,
-  );
-  head.position.y = 2.15;
-  const marker = new THREE.Mesh(
-    new THREE.ConeGeometry(0.16, 0.5, 16),
-    bodyMaterial,
-  );
-  marker.position.set(0, 2.72, 0);
-  group.add(body, head, marker);
-  return group;
+// The LOCAL player's avatar — same robot + TV-head as remotes (so self-video renders on it), with a
+// green presence ring to distinguish "you". Delegates to the shared builder (hoisted decl).
+function createVisitorMesh(rendererIsWebGPU: boolean): THREE.Group {
+  return createRemoteVisitorMesh(rendererIsWebGPU, 0x7ec850);
 }
 
 // ── P2P video: robot + TV-head avatar ───────────────────────────────────────
@@ -3021,7 +2999,10 @@ function applyVideoToScreen(screen: THREE.Mesh, stream: MediaStream): void {
   }
 }
 
-function createRemoteVisitorMesh(rendererIsWebGPU: boolean): THREE.Group {
+function createRemoteVisitorMesh(
+  rendererIsWebGPU: boolean,
+  markerColor = 0xf5f0b8,
+): THREE.Group {
   const group = new THREE.Group();
   const bodyMaterial = new THREE.MeshStandardMaterial({
     color: 0x9aa6b8,
@@ -3034,7 +3015,7 @@ function createRemoteVisitorMesh(rendererIsWebGPU: boolean): THREE.Group {
     metalness: 0.4,
   });
   const markerMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf5f0b8,
+    color: markerColor,
     emissive: 0x334466,
     emissiveIntensity: 0.35,
     roughness: 0.55,
@@ -4000,6 +3981,21 @@ function createTellusWorld(
     }
   };
 
+  // Self-view: the local player's OWN camera renders on their own avatar's TV head when TX is on
+  // (and is also exposed to the P2P panel preview via getSelfStream). `visitor` is created later in
+  // this closure but this runs only after TX-on, by which time it exists.
+  let selfStream: MediaStream | null = null;
+  const setSelfVideo = (stream: MediaStream | null): void => {
+    selfStream = stream;
+    const screen = visitor?.userData.tvScreenRef as THREE.Mesh | undefined;
+    if (!screen) return;
+    if (stream) {
+      applyVideoToScreen(screen, stream);
+    } else {
+      applyStaticToScreen(screen, useWebGPU);
+    }
+  };
+
   const feedP2pPresence = (peerIds: string[]): void => {
     if (p2pMesh) {
       p2pMesh.setPresence(peerIds);
@@ -4015,6 +4011,7 @@ function createTellusWorld(
       iceServers: p2pIceServers,
       sendSignal: (to, kind, payload) => sendRtcSignal(to, kind, payload),
       onPeerStream: (peerId, stream) => setPeerVideo(peerId, stream),
+      onLocalStream: (stream) => setSelfVideo(stream),
       onStats: (stats) => {
         latestP2pStats = stats;
       },
@@ -4125,7 +4122,7 @@ function createTellusWorld(
     scene.add(mesh);
   }
 
-  const visitor = createVisitorMesh();
+  const visitor = createVisitorMesh(useWebGPU);
   let visitorPosition = normalizedDiscPosition(-20, 20);
   scene.add(visitor);
 
@@ -6042,9 +6039,13 @@ function createTellusWorld(
   const addLibraryAsset = (model: AssetLibraryModel): GeneratedThing => {
     const prompt = model.description?.trim() || model.name;
     const kind = inferGeneratedKind(prompt, "visitor");
+    // Prefer the game-optimized (meshopt-compressed) variant — typically ~80% smaller, same visual
+    // quality. The store's game-optimized endpoint safely serves the original GLB when no optimized
+    // build exists, so there's no 404 risk and no client-side fallback needed. (MeshoptDecoder is
+    // already wired into the GLTF loader.)
     const modelUrl =
       model.modelUrl ??
-      tellusAssetLibraryUrl(`/api/assets/download/${encodeURIComponent(model.id)}`);
+      tellusAssetLibraryUrl(`/api/assets/model/${encodeURIComponent(model.id)}/game-optimized`);
     const position = chooseLocation({
       prompt,
       creatorId: "visitor",
@@ -7456,6 +7457,7 @@ function createTellusWorld(
       await p2pMesh?.setDevices(audioDeviceId, videoDeviceId);
     },
     getP2pStats: () => latestP2pStats,
+    getSelfStream: () => selfStream,
     destroy: () => {
       destroyed = true;
       // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
@@ -7642,6 +7644,15 @@ function App(): React.ReactElement {
     worldRef.current?.setRxEnabled(next);
   };
 
+  const selfVideoRef = useRef<HTMLVideoElement | null>(null);
+  const attachSelfPreview = () => {
+    const el = selfVideoRef.current;
+    if (!el) return;
+    const stream = worldRef.current?.getSelfStream() ?? null;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    if (stream) void el.play().catch(() => undefined);
+  };
+
   const toggleTx = async () => {
     const next = !txEnabled;
     setP2pError(null);
@@ -7653,17 +7664,24 @@ function App(): React.ReactElement {
       return;
     }
     setTxEnabled(next && ok);
+    attachSelfPreview(); // show (or clear) the local self-view
     if (next && ok) void refreshP2pDevices(); // labels populate after the grant
   };
 
   const onMicChange = (id: string) => {
     setSelectedMic(id);
-    void worldRef.current?.setP2pDevices(id || undefined, selectedCam || undefined);
+    void worldRef.current?.setP2pDevices(id || undefined, selectedCam || undefined).then(attachSelfPreview);
   };
   const onCamChange = (id: string) => {
     setSelectedCam(id);
-    void worldRef.current?.setP2pDevices(selectedMic || undefined, id || undefined);
+    void worldRef.current?.setP2pDevices(selectedMic || undefined, id || undefined).then(attachSelfPreview);
   };
+
+  // Re-attach the self-preview when the panel mounts the <video> (panel open + TX already on).
+  useEffect(() => {
+    if (p2pPanelOpen && txEnabled) attachSelfPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p2pPanelOpen, txEnabled]);
 
   // Sample mesh stats while the P2P panel OR the debug overlay is open (≈1Hz).
   useEffect(() => {
@@ -8397,6 +8415,21 @@ function App(): React.ReactElement {
                 ))}
               </select>
             </label>
+            <video
+              ref={selfVideoRef}
+              muted
+              playsInline
+              autoPlay
+              style={{
+                width: "100%",
+                aspectRatio: "16 / 9",
+                borderRadius: 8,
+                background: "#000",
+                objectFit: "cover",
+                display: txEnabled ? "block" : "none",
+                transform: "scaleX(-1)", // mirror, like a webcam preview
+              }}
+            />
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 type="button"

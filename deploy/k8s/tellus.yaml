@@ -60,7 +60,7 @@ spec:
     spec:
       containers:
         - name: tellus
-          image: 192.168.1.187:30500/tellus:0.1.13
+          image: 192.168.1.187:30500/tellus:0.1.14
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000

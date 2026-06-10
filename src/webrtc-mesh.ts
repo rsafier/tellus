@@ -44,6 +44,8 @@ export interface WebRtcMeshOptions {
   sendSignal: (to: string | null, kind: string, payload: string) => void;
   /** Attach (stream) / detach (null) a peer's remote video. */
   onPeerStream: (peerId: string, stream: MediaStream | null) => void;
+  /** Local capture started (stream) / stopped (null) — for a self-view. */
+  onLocalStream?: (stream: MediaStream | null) => void;
   /** Optional error sink. peerId === null for non-peer-scoped failures. */
   onError?: (peerId: string | null, err: unknown) => void;
   /** Called ~1Hz while there are peers. */
@@ -108,6 +110,7 @@ export class WebRtcMesh {
   private readonly iceServers: RTCIceServer[];
   private readonly sendSignal: WebRtcMeshOptions["sendSignal"];
   private readonly onPeerStream: WebRtcMeshOptions["onPeerStream"];
+  private readonly onLocalStream?: WebRtcMeshOptions["onLocalStream"];
   private readonly onError?: WebRtcMeshOptions["onError"];
   private readonly onStats?: WebRtcMeshOptions["onStats"];
   private readonly maxPeers: number;
@@ -138,6 +141,7 @@ export class WebRtcMesh {
     this.iceServers = opts.iceServers ?? [];
     this.sendSignal = opts.sendSignal;
     this.onPeerStream = opts.onPeerStream;
+    this.onLocalStream = opts.onLocalStream;
     this.onError = opts.onError;
     this.onStats = opts.onStats;
     this.maxPeers = opts.maxPeers ?? 16;
@@ -260,6 +264,7 @@ export class WebRtcMesh {
       this.localStream = newStream;
       const track = newStream.getVideoTracks()[0] ?? null;
       await this.replaceOutgoingTrack(track);
+      this.safeLocalStream(newStream); // refresh self-view to the new device
       // Stop the old stream's tracks now that senders point at the new one.
       this.stopStreamTracks(oldStream);
     } catch (err) {
@@ -367,8 +372,10 @@ export class WebRtcMesh {
     const { pc } = rec;
 
     pc.onnegotiationneeded = () => {
-      // Only the offerer initiates; the polite side waits for an offer.
-      if (!this.isOfferer(rec.id)) return;
+      // EITHER side may initiate (full perfect negotiation) — glare is resolved in
+      // handleDescription (impolite ignores a colliding offer; polite rolls back). Gating this to
+      // the offerer would wedge renegotiation when the POLITE peer flips TX on (its sendrecv change
+      // would never reach the wire), so its camera would never flow. Let it fire; collisions are safe.
       void this.doNegotiate(rec);
     };
 
@@ -600,6 +607,7 @@ export class WebRtcMesh {
     this.localStream = stream;
     this.tx = true;
     const track = stream.getVideoTracks()[0] ?? null;
+    this.safeLocalStream(stream); // self-view
 
     // Flip every transceiver to sendrecv and attach the track.
     for (const rec of this.peers.values()) {
@@ -630,6 +638,15 @@ export class WebRtcMesh {
     // Stop and release local capture.
     this.stopStreamTracks(this.localStream);
     this.localStream = null;
+    this.safeLocalStream(null); // clear self-view
+  }
+
+  private safeLocalStream(stream: MediaStream | null): void {
+    try {
+      this.onLocalStream?.(stream);
+    } catch (err) {
+      this.reportError(null, err);
+    }
   }
 
   /** getUserMedia for 480p video only (audio muted/none for v1). Throws on failure. */
