@@ -4,6 +4,14 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.4.0 — 2026-06-10
+- **P2P audio + mute/unmute.** The WebRTC mesh now captures the mic alongside 480p video (echo-cancel /
+  noise-suppress / auto-gain), sends it on an audio transceiver, and accumulates a peer's audio+video into
+  one remote stream. Two new P2P-panel controls: **🔊 Listen** (hear other players — off by default since
+  browsers block autoplay audio without a gesture) and **🎤 Mic** (mute/unmute your own mic while TX is on).
+- **Fix: the P2P and "Your Agent" panels no longer overlap** — they now sit side-by-side (P2P just left of
+  center, agent just right) instead of both centered on top of each other.
+
 ## 0.3.0 — 2026-06-10
 - **Removed the in-browser AI (per-user embodied agents, Roll 3).** The legacy browser-run NPCs
   (johnny/mira/sol) and their whole subsystem are gone — the autonomous decision loop, agent meshes, the

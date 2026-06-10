@@ -208,6 +208,13 @@ function createTellusWorld(
     }
   };
 
+  // P2P audio: remote TV-head <video>s start muted (autoplay-safe); the "Listen" toggle unmutes them all.
+  let remoteAudioOn = false;
+  const applyRemoteAudio = (screen: THREE.Mesh): void => {
+    const vid = (screen.userData.tvScreen as { videoEl?: HTMLVideoElement } | undefined)?.videoEl;
+    if (vid) vid.muted = !remoteAudioOn;
+  };
+
   // Swap a remote avatar's TV screen to a live stream (or back to static when stream === null).
   const setPeerVideo = (peerId: string, stream: MediaStream | null): void => {
     const mesh = remoteVisitorMeshes.get(peerId);
@@ -220,8 +227,18 @@ function createTellusWorld(
     if (!screen) return;
     if (stream) {
       applyVideoToScreen(screen, stream);
+      applyRemoteAudio(screen); // honor the current Listen state for the new <video>
     } else {
       applyStaticToScreen(screen, useWebGPU);
+    }
+  };
+
+  // Unmute/mute every peer's TV-head audio (RX audio). Click is the user gesture browsers require.
+  const setRemoteAudioEnabled = (on: boolean): void => {
+    remoteAudioOn = on;
+    for (const mesh of remoteVisitorMeshes.values()) {
+      const screen = mesh.userData.tvScreenRef as THREE.Mesh | undefined;
+      if (screen) applyRemoteAudio(screen);
     }
   };
 
@@ -3218,6 +3235,11 @@ function createTellusWorld(
       ensureP2pMesh();
       await p2pMesh?.setDevices(audioDeviceId, videoDeviceId);
     },
+    setRemoteAudioEnabled,
+    setMicEnabled: (on: boolean) => {
+      ensureP2pMesh();
+      p2pMesh?.setMicEnabled(on);
+    },
     getP2pStats: () => latestP2pStats,
     getSelfStream: () => selfStream,
     destroy: () => {
@@ -3355,6 +3377,8 @@ function App(): React.ReactElement {
   const [p2pPanelOpen, setP2pPanelOpen] = useState(false);
   const [rxEnabled, setRxEnabled] = useState(true);
   const [txEnabled, setTxEnabled] = useState(false);
+  const [audioListen, setAudioListen] = useState(false); // hear peers (RX audio) — off by default (autoplay)
+  const [micOn, setMicOn] = useState(true); // your mic (TX audio) active while TX is on
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedMic, setSelectedMic] = useState<string>("");
@@ -3407,6 +3431,18 @@ function App(): React.ReactElement {
     const next = !rxEnabled;
     setRxEnabled(next);
     worldRef.current?.setRxEnabled(next);
+  };
+
+  const toggleAudioListen = () => {
+    const next = !audioListen;
+    setAudioListen(next);
+    worldRef.current?.setRemoteAudioEnabled(next); // user gesture → browsers allow unmute
+  };
+
+  const toggleMic = () => {
+    const next = !micOn;
+    setMicOn(next);
+    worldRef.current?.setMicEnabled(next);
   };
 
   const selfVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -4143,7 +4179,7 @@ function App(): React.ReactElement {
               position: "absolute",
               bottom: 92,
               left: "50%",
-              transform: "translateX(-50%)",
+              transform: "translateX(-104%)", // sit just LEFT of center (won't overlap the agent panel)
               width: 280,
               padding: "12px 14px",
               borderRadius: 12,
@@ -4232,11 +4268,30 @@ function App(): React.ReactElement {
                 TX {txEnabled ? "On" : "Off"}
               </button>
             </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={toggleAudioListen}
+                style={p2pBtnStyle(audioListen)}
+                title="Hear other players' audio"
+              >
+                🔊 Listen {audioListen ? "On" : "Off"}
+              </button>
+              <button
+                type="button"
+                onClick={toggleMic}
+                disabled={!txEnabled}
+                style={{ ...p2pBtnStyle(txEnabled && micOn), opacity: txEnabled ? 1 : 0.45 }}
+                title={txEnabled ? "Mute/unmute your mic" : "Turn TX on to use your mic"}
+              >
+                🎤 {txEnabled ? (micOn ? "On" : "Muted") : "Off"}
+              </button>
+            </div>
             {p2pError && (
               <div style={{ fontSize: 11, color: "#ff9a9a" }}>{p2pError}</div>
             )}
             <div style={{ fontSize: 10, opacity: 0.6 }}>
-              RX shows others' cameras on their TV heads. TX shares your camera (480p).
+              RX shows others' cameras; TX shares your camera + mic (480p). Listen = hear others.
             </div>
           </aside>
         )}
@@ -4248,7 +4303,7 @@ function App(): React.ReactElement {
               position: "absolute",
               bottom: 92,
               left: "50%",
-              transform: "translateX(-50%)",
+              transform: "translateX(4%)", // sit just RIGHT of center (won't overlap the P2P panel)
               width: 300,
               padding: "12px 14px",
               borderRadius: 12,

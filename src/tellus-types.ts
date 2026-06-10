@@ -164,6 +164,8 @@ export interface TellusWorldApi {
   setRxEnabled(on: boolean): void;
   setTxEnabled(on: boolean): Promise<boolean>;
   setP2pDevices(audioDeviceId?: string, videoDeviceId?: string): Promise<void>;
+  setRemoteAudioEnabled(on: boolean): void;
+  setMicEnabled(on: boolean): void;
   getP2pStats(): MeshStats | null;
   getSelfStream(): MediaStream | null;
   destroy(): void;

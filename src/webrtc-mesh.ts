@@ -68,7 +68,10 @@ interface PeerRecord {
   ignoreOffer: boolean;
   /** The single video transceiver we manage for send/recv direction. */
   videoTransceiver: RTCRtpTransceiver | null;
-  /** Latest remote stream observed via ontrack. */
+  /** The single audio transceiver (mic). */
+  audioTransceiver: RTCRtpTransceiver | null;
+  /** Latest remote stream observed via ontrack — ONE persistent stream that accumulates the peer's
+   *  audio + video tracks (each arrives in its own `ontrack`, with empty ev.streams under replaceTrack). */
   remoteStream: MediaStream | null;
   /** Whether we've surfaced this peer's stream to the caller (subject to RX + cap). */
   surfaced: boolean;
@@ -121,9 +124,10 @@ export class WebRtcMesh {
   private peers = new Map<string, PeerRecord>();
 
   private rx = true; // accept inbound remote video
-  private tx = false; // send local video
+  private tx = false; // send local video+mic
+  private micEnabled = true; // mic on by default while TX is on (toggle with setMicEnabled)
 
-  /** Selected devices for the local capture (audio is unused in v1). */
+  /** Selected devices for the local capture. */
   private audioDeviceId: string | undefined;
   private videoDeviceId: string | undefined;
 
@@ -269,8 +273,11 @@ export class WebRtcMesh {
       const newStream = await this.acquireLocalStream();
       const oldStream = this.localStream;
       this.localStream = newStream;
-      const track = newStream.getVideoTracks()[0] ?? null;
-      await this.replaceOutgoingTrack(track);
+      const vtrack = newStream.getVideoTracks()[0] ?? null;
+      const atrack = newStream.getAudioTracks()[0] ?? null;
+      if (atrack) atrack.enabled = this.micEnabled;
+      await this.replaceOutgoingTrack(vtrack);
+      for (const rec of this.peers.values()) await this.safeReplaceAudioTrack(rec, atrack);
       this.safeLocalStream(newStream); // refresh self-view to the new device
       // Stop the old stream's tracks now that senders point at the new one.
       this.stopStreamTracks(oldStream);
@@ -347,6 +354,7 @@ export class WebRtcMesh {
       makingOffer: false,
       ignoreOffer: false,
       videoTransceiver: null,
+      audioTransceiver: null,
       remoteStream: null,
       surfaced: false,
       lastBytes: 0,
@@ -356,16 +364,17 @@ export class WebRtcMesh {
     this.peers.set(peerId, rec);
     this.wirePc(rec);
 
-    // Add the single video transceiver. Direction follows current TX state.
+    // Add the video + audio transceivers. Direction follows current TX state.
     try {
       const direction: RTCRtpTransceiverDirection = this.tx ? "sendrecv" : "recvonly";
       rec.videoTransceiver = pc.addTransceiver("video", { direction });
-      // If TX is on and we have a local track, attach it to the new sender.
+      rec.audioTransceiver = pc.addTransceiver("audio", { direction });
+      // If TX is on and we have local tracks, attach them to the new senders.
       if (this.tx) {
-        const track = this.localStream?.getVideoTracks()[0] ?? null;
-        if (track && rec.videoTransceiver?.sender) {
-          void this.safeReplaceTrack(rec, track);
-        }
+        const vtrack = this.localStream?.getVideoTracks()[0] ?? null;
+        if (vtrack && rec.videoTransceiver?.sender) void this.safeReplaceTrack(rec, vtrack);
+        const atrack = this.localStream?.getAudioTracks()[0] ?? null;
+        if (atrack && rec.audioTransceiver?.sender) void this.safeReplaceAudioTrack(rec, atrack);
       }
     } catch (err) {
       this.reportError(peerId, err);
@@ -394,17 +403,18 @@ export class WebRtcMesh {
 
     pc.ontrack = (ev) => {
       try {
-        // TX sends via sender.replaceTrack on a transceiver, which does NOT associate a MediaStream,
-        // so the remote `ontrack` arrives with `ev.streams` EMPTY. Wrap the bare track in a fresh
-        // MediaStream — otherwise remoteStream stays null and the video never surfaces even though
-        // bytes are flowing (the "connected, N kbps, 0/16 streams" symptom).
-        const stream =
-          ev.streams && ev.streams[0]
-            ? ev.streams[0]
-            : ev.track
-              ? new MediaStream([ev.track])
-              : null;
-        rec.remoteStream = stream;
+        // TX sends via sender.replaceTrack on a transceiver, which does NOT associate a MediaStream, so
+        // the remote `ontrack` arrives with `ev.streams` EMPTY and fires ONCE PER TRACK (audio + video).
+        // Accumulate both tracks into ONE persistent remoteStream so the <video> element plays video AND
+        // audio. (Wrapping each track in its own stream would split audio off the video element.)
+        if (!ev.track) return;
+        if (ev.streams && ev.streams[0]) {
+          rec.remoteStream = ev.streams[0];
+        } else {
+          if (!rec.remoteStream) rec.remoteStream = new MediaStream();
+          if (!rec.remoteStream.getTracks().some((t) => t.id === ev.track.id))
+            rec.remoteStream.addTrack(ev.track);
+        }
         this.maybeSurface(rec);
       } catch (err) {
         this.reportError(rec.id, err);
@@ -618,20 +628,22 @@ export class WebRtcMesh {
   // -------------------------------------------------------------------------
 
   private async startTx(): Promise<void> {
-    // Acquire local capture (480p, video only).
+    // Acquire local capture (480p video + mic).
     const stream = await this.acquireLocalStream();
     this.localStream = stream;
     this.tx = true;
-    const track = stream.getVideoTracks()[0] ?? null;
+    const vtrack = stream.getVideoTracks()[0] ?? null;
+    const atrack = stream.getAudioTracks()[0] ?? null;
+    if (atrack) atrack.enabled = this.micEnabled; // honor the current mute state
     this.safeLocalStream(stream); // self-view
 
-    // Flip every transceiver to sendrecv and attach the track.
+    // Flip every transceiver to sendrecv and attach the tracks.
     for (const rec of this.peers.values()) {
       try {
-        if (rec.videoTransceiver) {
-          rec.videoTransceiver.direction = "sendrecv";
-        }
-        if (track) await this.safeReplaceTrack(rec, track);
+        if (rec.videoTransceiver) rec.videoTransceiver.direction = "sendrecv";
+        if (rec.audioTransceiver) rec.audioTransceiver.direction = "sendrecv";
+        if (vtrack) await this.safeReplaceTrack(rec, vtrack);
+        if (atrack) await this.safeReplaceAudioTrack(rec, atrack);
       } catch (err) {
         this.reportError(rec.id, err);
       }
@@ -640,13 +652,13 @@ export class WebRtcMesh {
 
   private async stopTx(): Promise<void> {
     this.tx = false;
-    // Replace outgoing track with null and set transceivers back to recvonly.
+    // Replace outgoing tracks with null and set transceivers back to recvonly.
     for (const rec of this.peers.values()) {
       try {
         await this.safeReplaceTrack(rec, null);
-        if (rec.videoTransceiver) {
-          rec.videoTransceiver.direction = "recvonly";
-        }
+        await this.safeReplaceAudioTrack(rec, null);
+        if (rec.videoTransceiver) rec.videoTransceiver.direction = "recvonly";
+        if (rec.audioTransceiver) rec.audioTransceiver.direction = "recvonly";
       } catch (err) {
         this.reportError(rec.id, err);
       }
@@ -657,6 +669,18 @@ export class WebRtcMesh {
     this.safeLocalStream(null); // clear self-view
   }
 
+  /** Mute/unmute the local mic without renegotiating (toggles the audio track's enabled flag). */
+  setMicEnabled(on: boolean): void {
+    this.micEnabled = on;
+    const atrack = this.localStream?.getAudioTracks()[0] ?? null;
+    if (atrack) atrack.enabled = on;
+    this.refreshCachedStats();
+  }
+
+  micIsEnabled(): boolean {
+    return this.micEnabled;
+  }
+
   private safeLocalStream(stream: MediaStream | null): void {
     try {
       this.onLocalStream?.(stream);
@@ -665,7 +689,7 @@ export class WebRtcMesh {
     }
   }
 
-  /** getUserMedia for 480p video only (audio muted/none for v1). Throws on failure. */
+  /** getUserMedia for 480p video + mic (with echo cancellation). Throws on failure. */
   private async acquireLocalStream(): Promise<MediaStream> {
     const md = navigator.mediaDevices;
     if (!md || typeof md.getUserMedia !== "function") {
@@ -679,7 +703,26 @@ export class WebRtcMesh {
     if (this.videoDeviceId) {
       videoConstraints.deviceId = { exact: this.videoDeviceId };
     }
-    return await md.getUserMedia({ video: videoConstraints, audio: false });
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+    if (this.audioDeviceId) {
+      audioConstraints.deviceId = { exact: this.audioDeviceId };
+    }
+    return await md.getUserMedia({ video: videoConstraints, audio: audioConstraints });
+  }
+
+  /** replaceTrack on a peer's audio sender, contained. */
+  private async safeReplaceAudioTrack(rec: PeerRecord, track: MediaStreamTrack | null): Promise<void> {
+    const sender = rec.audioTransceiver?.sender;
+    if (!sender) return;
+    try {
+      await sender.replaceTrack(track);
+    } catch (err) {
+      this.reportError(rec.id, err);
+    }
   }
 
   /** Replace the outgoing video track on every PC's video sender. */
