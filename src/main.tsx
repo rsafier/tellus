@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowDown,
@@ -73,12 +73,31 @@ import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, Generatio
 import { WORLD_RADIUS, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, AGENT_SPEED, PLAYER_SPEED, AUTONOMOUS_ASSET_INTERVAL_MS, AUTONOMOUS_REFLECTION_OFFSET_MS, AUTONOMOUS_AGENT_GENERATION_ENABLED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, WORLD_FEEDBACK_INTERVAL_MS, WORLD_FEEDBACK_START_DELAY_MS, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, allAgentIds, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms, johnnyFallbackIdeas } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
-import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId, speakTellusText } from "./tellus-urls-identity";
+import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId, speakTellusText } from "./tellus-urls-identity";
 import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, captureCanvasDataUrl, requestWorldFeedback, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, loadAgentAvatar, assetTargetHeight, loadGeneratedModel, createPondWater, createAgentMesh, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import { createAgentSeeds, normalizeAssetPrompt, promptAlreadyExists, terrainEditModeFromValue, agentDecisionAction, chooseAgentPrompt, ensureNovelAgentDecision, extractJsonObject, parseAgentDecision, chooseAgentLocation, compassDirection, describeAgentPerception, chatContent, askAgentForDecision, askAgentForReply } from "./tellus-agent-llm";
 import "./styles.css";
+
+// Per-user embodied-agent status shape returned by the Hyades world agent endpoints (camelCase).
+interface AgentStatus {
+  enabled: boolean;
+  optedIn: boolean;
+  offlinePersistence: boolean;
+  ownerPresent: boolean;
+  tokensSpentToday: number;
+  dailyTokenBudget: number;
+  selfSection: string;
+  corePrompt: string;
+  visitorId: string;
+  agentId: string;
+  idleBackoffLevel: number;
+  intervalSeconds: number;
+  pausedReason: string | null;
+  tickCount: number;
+  lastTickAt: string | null;
+}
 
 function createTellusWorld(
   container: HTMLElement,
@@ -3865,6 +3884,12 @@ function App(): React.ReactElement {
   const [selectedCam, setSelectedCam] = useState<string>("");
   const [p2pError, setP2pError] = useState<string | null>(null);
   const [p2pStats, setP2pStats] = useState<MeshStats | null>(null);
+  // ── "Your Agent" panel state (per-user embodied agent on Hyades; self-contained, pure fetch) ──
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
+  const [agentPersonaDraft, setAgentPersonaDraft] = useState("");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
   const p2pSupported =
     typeof RTCPeerConnection !== "undefined" &&
     typeof navigator !== "undefined" &&
@@ -3954,6 +3979,76 @@ function App(): React.ReactElement {
     }, 1000);
     return () => window.clearInterval(id);
   }, [p2pPanelOpen, showFps]);
+
+  // ── "Your Agent" panel handlers (self-contained; pure fetch against the Hyades world agent API) ──
+  const fetchAgentStatus = useCallback(async (signal?: AbortSignal): Promise<AgentStatus | null> => {
+    const res = await fetch(tellusAgentUrl("status"), { signal });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    return (await res.json()) as AgentStatus;
+  }, []);
+
+  const runAgentAction = useCallback(
+    async (action: "start" | "stop" | "persona", body?: unknown) => {
+      setAgentBusy(true);
+      setAgentError(null);
+      try {
+        const res = await fetch(tellusAgentUrl(action), {
+          method: "POST",
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) throw new Error(`${action} failed (${res.status})`);
+        const status = (await res.json()) as AgentStatus;
+        setAgentStatus(status);
+        setAgentPersonaDraft(status.selfSection ?? "");
+        return status;
+      } catch (err) {
+        setAgentError(err instanceof Error ? err.message : `Failed to ${action} agent.`);
+        return null;
+      } finally {
+        setAgentBusy(false);
+      }
+    },
+    [],
+  );
+
+  const onAgentStartStop = useCallback(() => {
+    void runAgentAction(agentStatus?.optedIn ? "stop" : "start");
+  }, [runAgentAction, agentStatus?.optedIn]);
+
+  const onAgentSavePersona = useCallback(() => {
+    void runAgentAction("persona", { text: agentPersonaDraft, replace: true });
+  }, [runAgentAction, agentPersonaDraft]);
+
+  // Poll the agent status every ~3s while the panel is open; prime the persona draft on first load.
+  useEffect(() => {
+    if (!agentPanelOpen) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const status = await fetchAgentStatus(controller.signal);
+        if (cancelled) return;
+        // Seed the textarea from selfSection ONLY on the first load (prev === null), so the 3s poll
+        // never clobbers the user's edits — including a deliberately-cleared field.
+        setAgentStatus((prev) => {
+          if (prev === null) setAgentPersonaDraft(status?.selfSection ?? "");
+          return status;
+        });
+        setAgentError(null);
+      } catch (err) {
+        if (cancelled || controller.signal.aborted) return;
+        setAgentError(err instanceof Error ? err.message : "Failed to load agent status.");
+      }
+    };
+    void load();
+    const id = window.setInterval(() => void load(), 3000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, [agentPanelOpen, fetchAgentStatus]);
 
   // Re-enumerate when devices change (hot-plug, permission grant).
   useEffect(() => {
@@ -4618,6 +4713,15 @@ function App(): React.ReactElement {
               <span>P2P</span>
             </button>
           )}
+          <button
+            type="button"
+            className={agentPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Your Agent"
+            onClick={() => setAgentPanelOpen((open) => !open)}
+          >
+            <Bot size={18} />
+            <span>Agent</span>
+          </button>
         </aside>
         {p2pPanelOpen && p2pSupported && (
           <aside
@@ -4721,6 +4825,131 @@ function App(): React.ReactElement {
             )}
             <div style={{ fontSize: 10, opacity: 0.6 }}>
               RX shows others' cameras on their TV heads. TX shares your camera (480p).
+            </div>
+          </aside>
+        )}
+        {agentPanelOpen && (
+          <aside
+            className="agent-panel"
+            aria-label="Your agent"
+            style={{
+              position: "absolute",
+              bottom: 92,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: 300,
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(12,16,22,0.92)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "#dfe7d8",
+              font: "500 13px/1.4 system-ui, sans-serif",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              zIndex: 30,
+              pointerEvents: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>Your Agent</strong>
+              {(() => {
+                const optedIn = agentStatus?.optedIn ?? false;
+                const running =
+                  optedIn &&
+                  ((agentStatus?.ownerPresent ?? false) || (agentStatus?.offlinePersistence ?? false)) &&
+                  (agentStatus?.enabled ?? false);
+                const label = !optedIn ? "Stopped" : running ? "Running" : "Sleeping";
+                const dot = !optedIn ? "#7a8597" : running ? "#6fae46" : "#d8a64a";
+                return (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, opacity: 0.9 }}>
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: dot,
+                        boxShadow: `0 0 6px ${dot}`,
+                      }}
+                    />
+                    {label}
+                    {agentStatus?.offlinePersistence && (
+                      <span
+                        style={{
+                          marginLeft: 4,
+                          padding: "1px 6px",
+                          borderRadius: 999,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: 0.4,
+                          textTransform: "uppercase",
+                          color: "#0c1016",
+                          background: "linear-gradient(90deg,#f4d06f,#e9a23a)",
+                        }}
+                      >
+                        Premium
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
+            </div>
+            <button
+              type="button"
+              disabled={agentBusy}
+              onClick={onAgentStartStop}
+              style={{
+                ...p2pBtnStyle(agentStatus?.optedIn ?? false),
+                flex: "none",
+                width: "100%",
+                padding: "7px 0",
+                opacity: agentBusy ? 0.6 : 1,
+                cursor: agentBusy ? "default" : "pointer",
+              }}
+            >
+              {agentBusy ? "…" : agentStatus?.optedIn ? "Stop" : "Start my agent"}
+            </button>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11 }}>
+              Persona
+              <textarea
+                value={agentPersonaDraft}
+                onChange={(e) => setAgentPersonaDraft(e.target.value)}
+                placeholder="Describe how your agent should behave…"
+                rows={5}
+                style={{
+                  background: "rgba(0,0,0,0.4)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  borderRadius: 6,
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={agentBusy}
+              onClick={onAgentSavePersona}
+              style={{
+                ...p2pBtnStyle(false),
+                flex: "none",
+                width: "100%",
+                opacity: agentBusy ? 0.6 : 1,
+                cursor: agentBusy ? "default" : "pointer",
+              }}
+            >
+              Save persona
+            </button>
+            <div style={{ fontSize: 11, opacity: 0.7 }}>
+              tokens: {agentStatus?.tokensSpentToday ?? 0} / {agentStatus?.dailyTokenBudget ?? 0}
+            </div>
+            {agentError && (
+              <div style={{ fontSize: 11, color: "#ff9a9a" }}>{agentError}</div>
+            )}
+            <div style={{ fontSize: 10, opacity: 0.6 }}>
+              Your agent acts as you in this world. Premium keeps it active while you're away.
             </div>
           </aside>
         )}

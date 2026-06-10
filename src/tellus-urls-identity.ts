@@ -10,6 +10,11 @@ export function tellusWorldHttpUrl(route: "state" | "action"): string {
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}?userId=${encodeURIComponent(tellusUserId())}`;
 }
 
+export function tellusAgentUrl(action: "start" | "stop" | "persona" | "status"): string {
+  // Per-user embodied-agent control endpoints; carry the stable user id (missing => 401 from the backend).
+  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/agent/${action}?userId=${encodeURIComponent(tellusUserId())}`;
+}
+
 export function tellusAssetLibraryUrl(path: string): string {
   return `${runtimeConfig.worldApiBase}${path.startsWith("/") ? path : `/${path}`}`;
 }
