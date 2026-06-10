@@ -4,6 +4,16 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.5.0 — 2026-06-10
+- **Agent feedback in-game: dialog feed + POV viewport.** The "Your Agent" panel now shows what your
+  server-side agent is doing. A **Dialog feed** (polled on the same ~3s cadence as status) streams the
+  agent's recent assistant lines and tool calls from the new Hyades transcript endpoint
+  (`GET /api/world/{id}/agent/transcript`); it auto-scrolls to the newest line only when you're already at
+  the bottom, so reading older lines isn't interrupted. A **Show/Hide viewport** toggle renders a 220×140
+  picture-in-picture of the scene from the agent avatar's point of view (a second camera at the avatar's
+  head, bottom-left, both WebGL and WebGPU). The panel gained a height cap + scroll so it never overflows on
+  short viewports.
+
 ## 0.4.0 — 2026-06-10
 - **P2P audio + mute/unmute.** The WebRTC mesh now captures the mic alongside 480p video (echo-cancel /
   noise-suppress / auto-gain), sends it on an audio transceiver, and accumulates a peer's audio+video into

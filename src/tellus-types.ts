@@ -168,6 +168,9 @@ export interface TellusWorldApi {
   setMicEnabled(on: boolean): void;
   getP2pStats(): MeshStats | null;
   getSelfStream(): MediaStream | null;
+  // Picture-in-picture POV view of the scene from a remote-presence avatar (the player's server-side agent).
+  // Pass the agent's visitorId to show its viewport; pass null to hide it.
+  setAgentViewport(visitorId: string | null): void;
   destroy(): void;
 }
 

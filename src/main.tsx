@@ -95,6 +95,18 @@ interface AgentStatus {
   lastTickAt: string | null;
 }
 
+// One turn of the server-side agent's recent conversation (its dialog). role "assistant" = the agent speaking;
+// "tool" = a tool call/result (rendered dimmer/smaller in the feed).
+interface AgentTranscriptMessage {
+  role: "assistant" | "tool";
+  text: string;
+}
+
+// Shape of GET .../agent/transcript — last 40 of the agent's conversation turns.
+interface AgentTranscriptResponse {
+  messages?: AgentTranscriptMessage[];
+}
+
 function createTellusWorld(
   container: HTMLElement,
   onSnapshot: (snapshot: TellusSnapshot) => void,
@@ -347,6 +359,14 @@ function createTellusWorld(
   scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
 
   const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
+  // Agent POV picture-in-picture: when set to a remote avatar's visitorId we render a small second view of
+  // the scene from that avatar's head, looking forward along its facing. Reusable camera + scratch vectors.
+  let agentViewportVisitorId: string | null = null;
+  const povCamera = new THREE.PerspectiveCamera(62, 220 / 140, 0.1, 720);
+  const povEye = new THREE.Vector3();
+  const povForward = new THREE.Vector3();
+  const povLookAt = new THREE.Vector3();
+  const POV_LOOK_DROP = new THREE.Vector3(0, -1.4, 0);
   const fallbackSky = createSkyDome();
   if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
     skyboxTintMaterials.add(fallbackSky.material);
@@ -2797,6 +2817,65 @@ function createTellusWorld(
     syncExternalSkyboxToCamera(camera.position);
   };
 
+  const setAgentViewport = (id: string | null) => {
+    agentViewportVisitorId = id && id.trim() ? id.trim() : null;
+  };
+
+  // Render the agent POV picture-in-picture: a small second view of the scene from the target avatar's head,
+  // looking forward along its facing. Runs AFTER the main render; any failure is swallowed so a bad PiP frame
+  // never breaks the main loop. Works for both WebGL and WebGPU renderers (both expose scissor/viewport/render).
+  const renderAgentViewport = () => {
+    if (!renderer || !agentViewportVisitorId) return;
+    const avatar = remoteVisitorMeshes.get(agentViewportVisitorId);
+    if (!avatar) return;
+    try {
+      // Eye = avatar world position + head offset; forward derived from the group's facing (rotation.y).
+      avatar.getWorldPosition(povEye);
+      povEye.y += 2.4;
+      const facing = avatar.rotation.y;
+      povForward.set(Math.sin(facing), 0, Math.cos(facing)).normalize();
+      // Look slightly ahead and a touch down, so the PiP frames the world in front of the agent.
+      povLookAt
+        .copy(povEye)
+        .addScaledVector(povForward, 8)
+        .add(POV_LOOK_DROP);
+      povCamera.position.copy(povEye);
+      povCamera.lookAt(povLookAt);
+      povCamera.updateMatrixWorld();
+
+      const dpr = renderer.getPixelRatio();
+      // Logical PiP rect: 220x140, sat clear in the bottom-LEFT corner (the sparse-HUD toolbelt is
+      // centered, so this corner is free).
+      const pipW = 220;
+      const pipH = 140;
+      const marginX = 16;
+      const marginY = 96;
+      const x = Math.floor(marginX * dpr);
+      const y = Math.floor(marginY * dpr);
+      const w = Math.floor(pipW * dpr);
+      const h = Math.floor(pipH * dpr);
+
+      renderer.setScissorTest(true);
+      renderer.setScissor(x, y, w, h);
+      renderer.setViewport(x, y, w, h);
+      renderer.render(scene, povCamera);
+    } catch {
+      /* a bad PiP frame must never break the main loop */
+    } finally {
+      try {
+        renderer.setScissorTest(false);
+        renderer.setViewport(
+          0,
+          0,
+          renderer.domElement.width,
+          renderer.domElement.height,
+        );
+      } catch {
+        /* ignore restore failures */
+      }
+    }
+  };
+
   const animate = async () => {
     if (destroyed || !renderer) return;
     const now = performance.now();
@@ -2834,6 +2913,7 @@ function createTellusWorld(
         });
       }
     }
+    renderAgentViewport();
     if (!destroyed) {
       animationId = requestAnimationFrame(() => void animate());
     }
@@ -3242,6 +3322,7 @@ function createTellusWorld(
     },
     getP2pStats: () => latestP2pStats,
     getSelfStream: () => selfStream,
+    setAgentViewport,
     destroy: () => {
       destroyed = true;
       // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
@@ -3391,6 +3472,10 @@ function App(): React.ReactElement {
   const [agentPersonaDraft, setAgentPersonaDraft] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+  // Agent dialog feed (last turns of the server-side agent's conversation) + POV viewport toggle.
+  const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptMessage[]>([]);
+  const [agentViewportOn, setAgentViewportOn] = useState(false);
+  const agentTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const p2pSupported =
     typeof RTCPeerConnection !== "undefined" &&
     typeof navigator !== "undefined" &&
@@ -3500,6 +3585,16 @@ function App(): React.ReactElement {
     return (await res.json()) as AgentStatus;
   }, []);
 
+  const fetchAgentTranscript = useCallback(
+    async (signal?: AbortSignal): Promise<AgentTranscriptMessage[]> => {
+      const res = await fetch(tellusAgentUrl("transcript"), { signal });
+      if (!res.ok) throw new Error(`transcript ${res.status}`);
+      const body = (await res.json()) as AgentTranscriptResponse;
+      return Array.isArray(body.messages) ? body.messages : [];
+    },
+    [],
+  );
+
   const runAgentAction = useCallback(
     async (action: "start" | "stop" | "persona", body?: unknown) => {
       setAgentBusy(true);
@@ -3553,6 +3648,22 @@ function App(): React.ReactElement {
         if (cancelled || controller.signal.aborted) return;
         setAgentError(err instanceof Error ? err.message : "Failed to load agent status.");
       }
+      // Dialog feed: poll on the same cadence. A transcript failure is non-fatal — keep the last good feed
+      // and don't surface an error (status drives the panel's error line).
+      try {
+        const messages = await fetchAgentTranscript(controller.signal);
+        if (cancelled) return;
+        // Skip the state update when the feed is byte-for-byte unchanged so we don't re-render — and, more
+        // importantly, don't yank the scroll to the bottom — on every 3s poll while the agent is idle.
+        setAgentTranscript((prev) =>
+          prev.length === messages.length &&
+          prev.every((m, i) => m.role === messages[i].role && m.text === messages[i].text)
+            ? prev
+            : messages,
+        );
+      } catch {
+        /* keep the last transcript; status owns the error surface */
+      }
     };
     void load();
     const id = window.setInterval(() => void load(), 3000);
@@ -3561,7 +3672,36 @@ function App(): React.ReactElement {
       controller.abort();
       window.clearInterval(id);
     };
-  }, [agentPanelOpen, fetchAgentStatus]);
+  }, [agentPanelOpen, fetchAgentStatus, fetchAgentTranscript]);
+
+  // Auto-scroll the dialog feed to the newest message when it grows — but only if the user is already near
+  // the bottom, so we don't snatch the view away from someone scrolled up reading older lines.
+  useEffect(() => {
+    const el = agentTranscriptScrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [agentTranscript]);
+
+  // Drive the in-world POV viewport: ON + panel open + a known agent visitorId => show that avatar's view;
+  // otherwise hide it. Re-applies when the agent's visitorId changes.
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!world) return;
+    const visitorId = agentStatus?.visitorId;
+    if (agentViewportOn && agentPanelOpen && visitorId) {
+      world.setAgentViewport(visitorId);
+    } else {
+      world.setAgentViewport(null);
+    }
+  }, [agentViewportOn, agentPanelOpen, agentStatus?.visitorId]);
+
+  // Clear the transcript + viewport target when the panel closes so a reopen starts fresh.
+  useEffect(() => {
+    if (agentPanelOpen) return;
+    setAgentTranscript([]);
+    worldRef.current?.setAgentViewport(null);
+  }, [agentPanelOpen]);
 
   // Re-enumerate when devices change (hot-plug, permission grant).
   useEffect(() => {
@@ -4305,6 +4445,8 @@ function App(): React.ReactElement {
               left: "50%",
               transform: "translateX(4%)", // sit just RIGHT of center (won't overlap the P2P panel)
               width: 300,
+              maxHeight: "calc(100dvh - 120px)",
+              overflowY: "auto",
               padding: "12px 14px",
               borderRadius: 12,
               background: "rgba(12,16,22,0.92)",
@@ -4415,6 +4557,74 @@ function App(): React.ReactElement {
             {agentError && (
               <div style={{ fontSize: 11, color: "#ff9a9a" }}>{agentError}</div>
             )}
+            {/* Dialog feed: the agent's recent conversation turns (assistant = dialog, tool = dimmed). */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>Dialog</span>
+              <div
+                ref={agentTranscriptScrollRef}
+                style={{
+                  maxHeight: 140,
+                  overflowY: "auto",
+                  background: "rgba(0,0,0,0.32)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 6,
+                  padding: "6px 8px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                {agentTranscript.length === 0 ? (
+                  <span style={{ fontSize: 11, opacity: 0.5, fontStyle: "italic" }}>
+                    Your agent hasn't said anything yet.
+                  </span>
+                ) : (
+                  agentTranscript.map((msg, i) =>
+                    msg.role === "tool" ? (
+                      <span
+                        key={i}
+                        style={{
+                          fontSize: 10,
+                          opacity: 0.5,
+                          fontStyle: "italic",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {msg.text}
+                      </span>
+                    ) : (
+                      <span
+                        key={i}
+                        style={{
+                          fontSize: 12,
+                          color: "#dfe7d8",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {msg.text}
+                      </span>
+                    ),
+                  )
+                )}
+              </div>
+            </div>
+            {/* POV viewport toggle: render a picture-in-picture of the scene from the agent's avatar. */}
+            <button
+              type="button"
+              onClick={() => setAgentViewportOn((v) => !v)}
+              disabled={!agentStatus?.visitorId}
+              style={{
+                ...p2pBtnStyle(agentViewportOn),
+                flex: "none",
+                width: "100%",
+                opacity: agentStatus?.visitorId ? 1 : 0.5,
+                cursor: agentStatus?.visitorId ? "pointer" : "default",
+              }}
+            >
+              {agentViewportOn ? "Hide viewport" : "Show viewport"}
+            </button>
             <div style={{ fontSize: 10, opacity: 0.6 }}>
               Your agent acts as you in this world. Premium keeps it active while you're away.
             </div>
