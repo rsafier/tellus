@@ -14,12 +14,11 @@
 # The dgx-deploy runner agent must be a `reader` collaborator on this gnostr-cloud repo (else its clone
 # 401s) — grant once: `gnostr-cloud-cli repo add-collaborator <repo> <runner-npub> --role reader`.
 #
-# Trigger: a push to `master` of THIS gnostr-cloud repo, OR a `v*` tag. The gnostr-cloud CI watch
-# (`ci watch`) polls the default-branch head and enqueues on a change, so the publish trigger is a
-# push to the gnostr-cloud `master` — which is the dedicated PUBLISH channel (GitHub `main` is the
-# dev repo and is NOT auto-mirrored here), so pushing to it is the deliberate "ship it" act. A `v*`
-# tag on a new commit publishes that version; a plain master push publishes `git-<short-sha>`. Either
-# way the image tag is unique per build (never reuse a tag mid-rollout — the split-cluster gotcha).
+# Trigger: TAG-ONLY (`v*`). lisa publishes by tagging a release (`git tag v0.2.0 && git push
+# gnostr-cloud v0.2.0`) — the CI watch enqueues a tag pipeline and this job's `tags: [v*]` rule runs
+# it. A plain push to `master` does NOT deploy, so WIP never goes live. Image tag = the git tag minus
+# the leading `v` (`v0.2.0` -> `0.2.0`), unique per release (never reuse a tag mid-rollout — the
+# split-cluster gotcha with IfNotPresent caching).
 
 stages:
   - deploy
@@ -34,8 +33,6 @@ jobs:
     stage: deploy
     runs-on: dgx-deploy
     rules:
-      branches:
-        - master
       tags:
         - v*
     timeout: 3600
@@ -43,17 +40,14 @@ jobs:
       - |
         set -euo pipefail
         docker --version
-        # Unique image tag per build (never reuse a tag mid-rollout — IfNotPresent caches divergent
-        # content per node). A v* tag publishes that version (v0.2.0 -> 0.2.0); a plain master push
-        # publishes git-<short-sha>.
+        # Image tag = the git tag minus the leading 'v' (v0.2.0 -> 0.2.0). Tag-only pipeline; refuse
+        # anything that isn't v* (a stray branch enqueue should never build).
         REF="${GITHUB_REF_NAME:-}"
-        SHA="${GITHUB_SHA:-$(git rev-parse HEAD)}"
         case "${GITHUB_REF:-}" in refs/tags/*) REF="${GITHUB_REF#refs/tags/}" ;; esac
-        if printf '%s' "$REF" | grep -q '^v[0-9]'; then
-          TAG="${REF#v}"
-        else
-          TAG="git-${SHA:0:12}"
-        fi
+        case "$REF" in
+          v[0-9]*) TAG="${REF#v}" ;;
+          *) echo "build-deploy refused non-v* ref '$REF'" >&2; exit 1 ;;
+        esac
         echo "building + pushing tellus:$TAG (multi-arch on monumental-k8s)"
         ./deploy/build-push.sh "$TAG"
         echo "rolling deploy/tellus -> tellus:$TAG"
