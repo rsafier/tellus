@@ -18,118 +18,39 @@ bun run dev
 
 Open <http://localhost:3344/>.
 
-## Cloudflare Realtime World
+## World backend (Hyades)
 
-Tellus can use a Cloudflare Worker Durable Object as the authoritative shared
-world. The browser talks to:
-
-```text
-GET /api/world/main/state
-POST /api/world/main/action
-WS  /api/world/main/live
-```
-
-The Worker stores one terrain snapshot per world id, broadcasts terrain changes
-over WebSockets, and can enqueue future generation work through
-`TELLUS_GENERATION_QUEUE`.
-
-Local validation:
-
-```bash
-bun run typecheck:worker
-bunx wrangler deploy --dry-run --config wrangler.toml
-```
-
-Cloudflare deploy:
-
-```bash
-wrangler login
-bun run deploy:worker
-```
-
-If the Worker is mounted under the same hostname as the site, leave
-`worldApiBase` empty. If it is deployed on a separate Worker hostname, set one
-of these:
+The authoritative shared world now lives in **Hyades** (Orleans virtual-actor
+grains) — not a Cloudflare Worker / Durable Object. The browser speaks the same
+protocol it always has:
 
 ```text
-VITE_TELLUS_WORLD_API_BASE=https://tellus-world.agentstarter.workers.dev
-VITE_TELLUS_WORLD_ID=main
+GET  /api/world/{worldId}/state    # full snapshot
+POST /api/world/{worldId}/action   # one action (sculpt, move, generate, ...)
+WS   /api/world/{worldId}/live      # snapshot, then live patches
 ```
 
-or runtime config:
+Point the client at the cluster via runtime config (`public/tellus-config.json`)
+or the matching `VITE_*` build vars:
 
 ```json
 {
-  "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
-  "worldId": "main"
-}
-```
-
-For same-origin Cloudflare Pages, add a route or Worker binding that sends
-`/api/world/*` to the `tellus-world` Worker.
-
-### Cheaper Durable World Persistence
-
-The Durable Object should be treated as the live coordinator for WebSockets and
-short-lived presence, not as the write-heavy database for every terrain/object
-edit. Tellus does not use Durable Object storage by default; it only uses
-external persistence when `TELLUS_PERSISTENCE_API_BASE` is configured. To persist
-world state in the Flask/Postgres asset service, configure the Worker with:
-
-```bash
-wrangler secret put TELLUS_PERSISTENCE_API_TOKEN --config wrangler.toml
-wrangler deploy --config wrangler.toml --var TELLUS_PERSISTENCE_API_BASE:https://3d.flobots.xyz
-```
-
-or add the variable in the Cloudflare dashboard:
-
-```text
-TELLUS_PERSISTENCE_API_BASE=https://3d.flobots.xyz
-TELLUS_PERSISTENCE_API_TOKEN=...
-```
-
-Only set this if you intentionally want to use Cloudflare Durable Object storage
-and accept its storage write limits:
-
-```text
-TELLUS_DO_STORAGE_MODE=durable
-```
-
-The Worker will call:
-
-```text
-GET /api/tellus/worlds/:worldId/state
-PUT /api/tellus/worlds/:worldId/state
-```
-
-Expected JSON shape:
-
-```json
-{
-  "version": 1,
+  "worldApiBase": "https://hyades.gnostr.cloud",
   "worldId": "main",
-  "terrain": {
-    "version": 2,
-    "revision": 12,
-    "terrainSculptOffsets": [],
-    "terrainPaint": [],
-    "distantIslandSculptOffsets": {},
-    "distantIslandPaint": {},
-    "savedAt": "2026-06-07T00:00:00.000Z"
-  },
-  "generated": [],
-  "queuedGenerationJobs": [],
-  "savedAt": "2026-06-07T00:00:00.000Z"
+  "apiBase": ""
 }
 ```
 
-`GET` may also return `{ "state": { ... } }` or a Tellus
-`world.snapshot` patch. `PUT` should upsert by `worldId`. If the Flask/Postgres
-endpoint is unavailable, the Worker falls back to in-memory state so Cloudflare
-storage limits are not consumed.
+- `worldApiBase` — the Hyades world surface (state / action / live). Each
+  `worldId` is its own grain; a new id is created on first use.
+- `apiBase` — this app's own `/api/*` server routes (chat, generate-3d, vision,
+  tellus-state). Empty = same-origin (this deployment serves them itself).
 
-See [docs/tellus-flask-postgres-world-state.md](docs/tellus-flask-postgres-world-state.md)
-for a Flask/Postgres route sketch with public/private worlds.
+Everything heavy routes through Hyades now: **3D generation** (`/3d/jobs` →
+concept image → image-to-3D → asset store), **LLM** chat and **vision**
+(`/v1/chat/completions`), and the **asset library** (`/api/assets/*`, proxied
+server-side to the 3D Asset Manager store). Deploy assets live under `deploy/`.
+
 
 ## Coolify
 
@@ -342,7 +263,7 @@ committed config:
 ```json
 {
   "assetForgeApiBase": "https://your-asset-forge.example.com",
-  "worldApiBase": "https://tellus-world.agentstarter.workers.dev",
+  "worldApiBase": "https://hyades.gnostr.cloud",
   "worldId": "main",
   "skyboxUrl": "https://cdn.example.com/tellus/sky.glb",
   "enabledAgents": ["johnny"],

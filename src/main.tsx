@@ -232,6 +232,7 @@ interface TellusWorldApi {
   setPaused(paused: boolean): void;
   submitVisitorPrompt(prompt: string): void;
   snapshot(): TellusSnapshot;
+  getFps(): number;
   destroy(): void;
 }
 
@@ -3644,6 +3645,10 @@ function createTellusWorld(
   let paused = true; // AI agents start OFF — the visitor resumes them with the "Resume AI" button.
   let animationId = 0;
   let lastTime = performance.now();
+  // Debug FPS counter (sampled every 500ms); surfaced via getFps() for the hidden FPS overlay.
+  let fpsValue = 0;
+  let fpsFrames = 0;
+  let fpsSampleStart = lastTime;
   let tick = 0;
   let renderer: THREE.WebGLRenderer | WebGPURenderer | null = null;
   let resizeObserver: ResizeObserver | null = null;
@@ -6593,6 +6598,12 @@ function createTellusWorld(
   const animate = async () => {
     if (destroyed || !renderer) return;
     const now = performance.now();
+    fpsFrames++;
+    if (now - fpsSampleStart >= 500) {
+      fpsValue = Math.round((fpsFrames * 1000) / (now - fpsSampleStart));
+      fpsFrames = 0;
+      fpsSampleStart = now;
+    }
     const delta = clamp((now - lastTime) / 1000, 0, 0.05);
     lastTime = now;
     tick++;
@@ -7042,6 +7053,7 @@ function createTellusWorld(
     setPaused,
     submitVisitorPrompt,
     snapshot,
+    getFps: () => fpsValue,
     destroy: () => {
       destroyed = true;
       abortPendingGeneration();
@@ -7155,6 +7167,20 @@ function App(): React.ReactElement {
   });
   const [prompt, setPrompt] = useState("");
   const [chatPrompt, setChatPrompt] = useState("");
+  // Hidden FPS overlay: triple-click the "Tellus World Weaver" brand box to toggle.
+  const [showFps, setShowFps] = useState(false);
+  const [fps, setFps] = useState(0);
+  const brandClicksRef = useRef<number[]>([]);
+  const handleBrandTripleClick = () => {
+    const now = performance.now();
+    const recent = brandClicksRef.current.filter((t) => now - t < 600);
+    recent.push(now);
+    brandClicksRef.current = recent;
+    if (recent.length >= 3) {
+      brandClicksRef.current = [];
+      setShowFps((v) => !v);
+    }
+  };
   const [characterBodyPrompt, setCharacterBodyPrompt] = useState("");
   const [characterPersonalityPrompt, setCharacterPersonalityPrompt] = useState("");
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
@@ -7267,6 +7293,14 @@ function App(): React.ReactElement {
       })
       .filter((thing): thing is WorldGeneratedThing => thing !== null);
   };
+
+  useEffect(() => {
+    if (!showFps) return;
+    const id = window.setInterval(() => {
+      setFps(worldRef.current?.getFps() ?? 0);
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [showFps]);
 
   useEffect(() => {
     window.__tellusSnapshot = () => snapshot;
@@ -7491,12 +7525,36 @@ function App(): React.ReactElement {
       <section className="world-panel" aria-label="Tellus world">
         <div ref={containerRef} className="world-canvas" />
         <div className="world-top-bar">
-          <div className="top-left-cluster">
-            <div className="brand-mark">
+          <div className="top-left-cluster" style={{ position: "relative" }}>
+            <div
+              className="brand-mark"
+              onClick={handleBrandTripleClick}
+              style={{ userSelect: "none" }}
+            >
               <span className="brand-sigil">T</span>
               <span>Tellus</span>
               <small>World Weaver</small>
             </div>
+            {showFps && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  marginTop: 4,
+                  padding: "2px 8px",
+                  borderRadius: 6,
+                  background: "rgba(0,0,0,0.6)",
+                  color: "#7ec850",
+                  font: "600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace",
+                  whiteSpace: "nowrap",
+                  pointerEvents: "none",
+                  zIndex: 20,
+                }}
+              >
+                {fps} FPS
+              </div>
+            )}
           </div>
           <div aria-hidden="true" />
           <div className="top-right-cluster">
