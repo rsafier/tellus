@@ -251,6 +251,10 @@ interface TellusRuntimeConfig {
   dayNightStart: number;
   enabledAgents: AgentId[];
   avatars: Partial<Record<AgentId, string>>;
+  // When true, fold non-selected static (no-animation) duplicate generated placements that share a modelUrl
+  // into a shared THREE.InstancedMesh per sub-mesh to cut draw calls. Default OFF — opt in via
+  // VITE_TELLUS_INSTANCE_STATIC=true or a runtime-config `instanceStaticDuplicates: true`.
+  instanceStaticDuplicates: boolean;
 }
 
 interface AgentDecision {
@@ -473,6 +477,8 @@ const runtimeConfig: TellusRuntimeConfig = {
     mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
     sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
   },
+  instanceStaticDuplicates:
+    import.meta.env.VITE_TELLUS_INSTANCE_STATIC === "true",
 };
 const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
 const dracoLoader = new DRACOLoader().setDecoderPath(
@@ -1307,6 +1313,15 @@ function applyRuntimeConfig(config: unknown): void {
     if (configuredAgentIds.length > 0) {
       runtimeConfig.enabledAgents = [...new Set(configuredAgentIds)];
     }
+  }
+
+  // Only honour a runtime-config boolean when the VITE build var is unset (mirrors worldApiBase et al.).
+  const instanceStaticDuplicates = config.instanceStaticDuplicates;
+  if (
+    import.meta.env.VITE_TELLUS_INSTANCE_STATIC === undefined &&
+    typeof instanceStaticDuplicates === "boolean"
+  ) {
+    runtimeConfig.instanceStaticDuplicates = instanceStaticDuplicates;
   }
 
   const avatars = config.avatars;
@@ -3626,7 +3641,7 @@ function createTellusWorld(
   onSnapshot: (snapshot: TellusSnapshot) => void,
 ): TellusWorldApi {
   let destroyed = false;
-  let paused = false;
+  let paused = true; // AI agents start OFF — the visitor resumes them with the "Resume AI" button.
   let animationId = 0;
   let lastTime = performance.now();
   let tick = 0;
@@ -3645,6 +3660,26 @@ function createTellusWorld(
   const logs: TellusLog[] = [];
   const generatedMeshes = new Map<string, THREE.Object3D>();
   const generatedAnimationMixers = new Map<string, THREE.AnimationMixer>();
+  // GPU-instancing of static duplicated generated models (flag-gated; default OFF). One InstancePool per
+  // modelUrl holds one THREE.InstancedMesh per sub-mesh of the shared GLB; folded ("instanced") things keep
+  // their regular mesh in the scene but `visible = false`, and we copy that hidden mesh's per-sub-mesh
+  // matrixWorld into the matching instance slot. NOTHING here ever throws into the render loop — every op is
+  // wrapped, and any failure disables instancing for the group and reverts its meshes to visible. See
+  // reevaluateInstanceGroup / instancePools below `thingById`.
+  interface InstancePool {
+    modelUrl: string;
+    instanced: THREE.InstancedMesh[]; // one per sub-mesh, in deterministic traversal order
+    subMeshCount: number;
+    capacity: number;
+    freeSlots: number[]; // recycled slot indices (LIFO)
+    nextSlot: number; // next never-used slot index
+    slotToThing: Map<number, string>; // slot -> thing.id (reverse map for picking)
+    thingToSlot: Map<string, number>; // thing.id -> slot
+    disabled: boolean; // a failure here disables the whole group, reverting to regular meshes
+  }
+  const instancePools = new Map<string, InstancePool>();
+  // Model URLs whose instancing hit an error once — never re-attempt for the session (they stay regular).
+  const instancingDisabledUrls = new Set<string>();
   const agentMeshes = new Map<AgentId, THREE.Group>();
   const skyboxTintMaterials = new Set<THREE.MeshBasicMaterial>();
   const pendingAgentDecisions = new Set<AgentId>();
@@ -4171,6 +4206,332 @@ function createTellusWorld(
   const thingById = (id: string): GeneratedThing | undefined =>
     generated.find((thing) => thing.id === id);
 
+  // ── Static-duplicate GPU instancing ──────────────────────────────────────────────────────────────────
+  // All of this is a no-op unless runtimeConfig.instanceStaticDuplicates is on. Correctness rule (per design):
+  // we NEVER hand-derive instance matrices — we reuse the regular mesh's already-correct matrixWorld and copy
+  // sub-mesh worldMatrices into instance slots, then hide the regular mesh.
+  const INSTANCE_ZERO_MATRIX = new THREE.Matrix4().makeScale(0, 0, 0);
+  const instancingEnabled = () => runtimeConfig.instanceStaticDuplicates;
+
+  // A thing is animated (→ never instanced) if it has a live mixer, or its mounted mesh carries a non-empty
+  // userData.animations array.
+  const isThingAnimated = (thing: GeneratedThing): boolean => {
+    if (generatedAnimationMixers.has(thing.id)) return true;
+    const mesh = generatedMeshes.get(thing.id);
+    const anims = mesh?.userData.animations;
+    return Array.isArray(anims) && anims.length > 0;
+  };
+
+  // A thing is a *candidate* for folding if its loaded static GLB is mounted (sharedGltf + matching
+  // loadedModelUrl) and it isn't animated. Selection/duplicate-count gating is applied separately.
+  const isInstanceCandidate = (thing: GeneratedThing): boolean => {
+    if (!thing.modelUrl || thing.generationStatus !== "ready") return false;
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return false;
+    if (mesh.userData.loadedModelUrl !== thing.modelUrl) return false;
+    if (!mesh.userData.sharedGltf) return false;
+    if (mesh.userData.generatingSwirl) return false;
+    if (isThingAnimated(thing)) return false;
+    return true;
+  };
+
+  // Enumerate the sub-meshes of a mounted mesh in deterministic traversal order.
+  const collectSubMeshes = (root: THREE.Object3D): THREE.Mesh[] => {
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((child) => {
+      if (child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh)) {
+        meshes.push(child);
+      }
+    });
+    return meshes;
+  };
+
+  // Revert a whole group to plain regular meshes and forget the pool (used on any error or teardown).
+  const disableInstancePool = (modelUrl: string, reason?: unknown) => {
+    const pool = instancePools.get(modelUrl);
+    if (!pool) return;
+    pool.disabled = true;
+    try {
+      for (const inst of pool.instanced) {
+        scene.remove(inst);
+        inst.dispose();
+      }
+    } catch {
+      // best-effort dispose; nothing else to do
+    }
+    for (const thingId of pool.thingToSlot.keys()) {
+      const mesh = generatedMeshes.get(thingId);
+      if (mesh) mesh.visible = true;
+    }
+    instancePools.delete(modelUrl);
+    if (reason !== undefined) {
+      // An actual error (not a benign drop-below-2 teardown) → never re-attempt this URL for the session.
+      instancingDisabledUrls.add(modelUrl);
+      console.warn(`[instancing] disabled for modelUrl=${modelUrl}`, reason);
+    }
+  };
+
+  // Create the per-sub-mesh InstancedMeshes for a group, sized to `capacity`, from a template mounted mesh.
+  const buildInstancePool = (
+    modelUrl: string,
+    templateMesh: THREE.Object3D,
+    capacity: number,
+  ): InstancePool | null => {
+    // Build into a local array first; only attach to the scene once the full set constructs without throwing,
+    // so a mid-build failure leaves nothing orphaned in the scene.
+    const instanced: THREE.InstancedMesh[] = [];
+    try {
+      const subMeshes = collectSubMeshes(templateMesh);
+      if (subMeshes.length === 0) return null;
+      for (const sub of subMeshes) {
+        const inst = new THREE.InstancedMesh(sub.geometry, sub.material, capacity);
+        inst.frustumCulled = false;
+        inst.castShadow = true;
+        inst.receiveShadow = true;
+        inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        inst.userData.tellusInstancePool = modelUrl;
+        // Hide all slots until they're filled (avoids stray identity-matrix copies at the origin).
+        for (let i = 0; i < capacity; i += 1) {
+          inst.setMatrixAt(i, INSTANCE_ZERO_MATRIX);
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.count = capacity;
+        instanced.push(inst);
+      }
+      for (const inst of instanced) scene.add(inst);
+      const pool: InstancePool = {
+        modelUrl,
+        instanced,
+        subMeshCount: instanced.length,
+        capacity,
+        freeSlots: [],
+        nextSlot: 0,
+        slotToThing: new Map(),
+        thingToSlot: new Map(),
+        disabled: false,
+      };
+      instancePools.set(modelUrl, pool);
+      return pool;
+    } catch (error) {
+      for (const inst of instanced) {
+        scene.remove(inst);
+        inst.dispose();
+      }
+      console.warn(`[instancing] failed to build pool for ${modelUrl}`, error);
+      return null;
+    }
+  };
+
+  // Grow a pool to ×2 capacity, recreating the InstancedMeshes and re-copying existing matrices.
+  const growInstancePool = (pool: InstancePool): boolean => {
+    const newInstanced: THREE.InstancedMesh[] = [];
+    try {
+      const newCapacity = Math.max(pool.capacity * 2, pool.capacity + 1);
+      const oldInstanced = pool.instanced;
+      const tmp = new THREE.Matrix4();
+      for (const old of oldInstanced) {
+        const inst = new THREE.InstancedMesh(old.geometry, old.material, newCapacity);
+        inst.frustumCulled = false;
+        inst.castShadow = true;
+        inst.receiveShadow = true;
+        inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        inst.userData.tellusInstancePool = pool.modelUrl;
+        for (let i = 0; i < newCapacity; i += 1) {
+          if (i < pool.capacity) {
+            old.getMatrixAt(i, tmp);
+            inst.setMatrixAt(i, tmp);
+          } else {
+            inst.setMatrixAt(i, INSTANCE_ZERO_MATRIX);
+          }
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.count = newCapacity;
+        newInstanced.push(inst);
+      }
+      for (const inst of newInstanced) scene.add(inst);
+      for (const old of oldInstanced) {
+        scene.remove(old);
+        old.dispose();
+      }
+      pool.instanced = newInstanced;
+      pool.capacity = newCapacity;
+      return true;
+    } catch (error) {
+      for (const inst of newInstanced) {
+        scene.remove(inst);
+        inst.dispose();
+      }
+      disableInstancePool(pool.modelUrl, error);
+      return false;
+    }
+  };
+
+  // Allocate a free slot, growing if needed.
+  const allocateSlot = (pool: InstancePool): number | null => {
+    const recycled = pool.freeSlots.pop();
+    if (recycled !== undefined) return recycled;
+    if (pool.nextSlot < pool.capacity) {
+      const slot = pool.nextSlot;
+      pool.nextSlot += 1;
+      return slot;
+    }
+    if (!growInstancePool(pool)) return null;
+    const slot = pool.nextSlot;
+    pool.nextSlot += 1;
+    return slot;
+  };
+
+  // Fold one thing into its group's pool at a free slot. Returns true on success.
+  const instanceThing = (pool: InstancePool, thing: GeneratedThing): boolean => {
+    if (pool.disabled) return false;
+    if (pool.thingToSlot.has(thing.id)) return true; // already instanced
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return false;
+    try {
+      mesh.updateWorldMatrix(true, true);
+      const subMeshes = collectSubMeshes(mesh);
+      // Sub-mesh count/order must line up with the pool template (shared GLB → should always hold). If not,
+      // bail this thing back to a regular visible mesh — do NOT corrupt the pool.
+      if (subMeshes.length !== pool.subMeshCount) {
+        console.warn(
+          `[instancing] sub-mesh mismatch for thing ${thing.id} (${subMeshes.length} vs ${pool.subMeshCount}); keeping regular mesh`,
+        );
+        mesh.visible = true;
+        return false;
+      }
+      const slot = allocateSlot(pool);
+      if (slot === null) return false;
+      for (let j = 0; j < pool.subMeshCount; j += 1) {
+        pool.instanced[j].setMatrixAt(slot, subMeshes[j].matrixWorld);
+        pool.instanced[j].instanceMatrix.needsUpdate = true;
+      }
+      pool.slotToThing.set(slot, thing.id);
+      pool.thingToSlot.set(thing.id, slot);
+      mesh.visible = false;
+      return true;
+    } catch (error) {
+      disableInstancePool(pool.modelUrl, error);
+      return false;
+    }
+  };
+
+  // Pop one thing OUT of instancing: zero its slot for every sub-mesh, free the slot, show the regular mesh.
+  const uninstanceThing = (thingId: string) => {
+    const mesh = generatedMeshes.get(thingId);
+    for (const pool of instancePools.values()) {
+      const slot = pool.thingToSlot.get(thingId);
+      if (slot === undefined) continue;
+      try {
+        for (let j = 0; j < pool.subMeshCount; j += 1) {
+          pool.instanced[j].setMatrixAt(slot, INSTANCE_ZERO_MATRIX);
+          pool.instanced[j].instanceMatrix.needsUpdate = true;
+        }
+        pool.thingToSlot.delete(thingId);
+        pool.slotToThing.delete(slot);
+        pool.freeSlots.push(slot);
+      } catch (error) {
+        disableInstancePool(pool.modelUrl, error);
+      }
+    }
+    if (mesh) mesh.visible = true;
+  };
+
+  // Resolve an InstancedMesh raycast hit (pool + instanceId) back to a thing id.
+  const resolveInstancedHit = (
+    instanced: THREE.InstancedMesh,
+    instanceId: number,
+  ): string | undefined => {
+    const modelUrl = instanced.userData.tellusInstancePool;
+    if (typeof modelUrl !== "string") return undefined;
+    const pool = instancePools.get(modelUrl);
+    return pool?.slotToThing.get(instanceId);
+  };
+
+  // Re-decide folding for every ready static placement that shares `modelUrl`. Folds in when ≥2 qualify and
+  // the thing isn't selected; pops out the selected one and (when <2 qualify) the lone remaining one.
+  const reevaluateInstanceGroup = (modelUrl: string | undefined) => {
+    if (!modelUrl) return;
+    if (instancingDisabledUrls.has(modelUrl)) return; // errored earlier this session → stay regular
+    if (!instancingEnabled()) {
+      // Flag off: ensure nothing stays folded (covers a runtime flip to off).
+      const pool = instancePools.get(modelUrl);
+      if (pool) disableInstancePool(modelUrl);
+      return;
+    }
+    try {
+      const existingPool = instancePools.get(modelUrl);
+      if (existingPool?.disabled) return;
+      // Candidates: ready, static, mounted GLB, sharing this modelUrl.
+      const candidates = generated.filter(
+        (t) => t.modelUrl === modelUrl && isInstanceCandidate(t),
+      );
+      // Foldable = candidate AND not currently selected.
+      const foldable = candidates.filter((t) => t.id !== selectedThingId);
+
+      if (foldable.length < 2) {
+        // Below threshold → pop everyone in this group back out (regular meshes), drop the pool.
+        const pool = instancePools.get(modelUrl);
+        if (pool) {
+          for (const thingId of [...pool.thingToSlot.keys()]) {
+            uninstanceThing(thingId);
+          }
+          disableInstancePool(modelUrl);
+        }
+        return;
+      }
+
+      // ≥2 foldable → ensure a pool exists, then sync membership.
+      let pool = instancePools.get(modelUrl);
+      if (!pool) {
+        const template = generatedMeshes.get(foldable[0].id);
+        if (!template) return;
+        const created = buildInstancePool(
+          modelUrl,
+          template,
+          Math.max(4, foldable.length * 2),
+        );
+        if (!created) {
+          // Build failed → make sure all regular meshes are visible.
+          for (const t of candidates) {
+            const m = generatedMeshes.get(t.id);
+            if (m) m.visible = true;
+          }
+          return;
+        }
+        pool = created;
+      }
+
+      const foldableIds = new Set(foldable.map((t) => t.id));
+      // Pop out anything currently instanced that's no longer foldable (e.g. just selected).
+      for (const thingId of [...pool.thingToSlot.keys()]) {
+        if (!foldableIds.has(thingId)) uninstanceThing(thingId);
+      }
+      // Fold in anything foldable that isn't yet instanced.
+      for (const t of foldable) {
+        if (!pool.thingToSlot.has(t.id)) instanceThing(pool, t);
+      }
+    } catch (error) {
+      disableInstancePool(modelUrl, error);
+    }
+  };
+
+  // Re-fold the previously-selected thing's group and the newly-selected thing's group around a selection
+  // change (the selected thing must always be a regular mesh so TransformControls can attach + move it).
+  const reevaluateInstancingForSelection = (
+    previousSelectedId: string | undefined,
+    nextSelectedId: string | undefined,
+  ) => {
+    if (!instancingEnabled()) return;
+    const urls = new Set<string>();
+    const prev = previousSelectedId ? thingById(previousSelectedId) : undefined;
+    const next = nextSelectedId ? thingById(nextSelectedId) : undefined;
+    if (prev?.modelUrl) urls.add(prev.modelUrl);
+    if (next?.modelUrl) urls.add(next.modelUrl);
+    // A selected thing is never instanced; pop it out first so its regular mesh is live before any re-fold.
+    if (nextSelectedId) uninstanceThing(nextSelectedId);
+    for (const url of urls) reevaluateInstanceGroup(url);
+  };
+
   const stopGeneratedAnimation = (id: string) => {
     const mixer = generatedAnimationMixers.get(id);
     if (!mixer) return;
@@ -4191,6 +4552,32 @@ function createTellusWorld(
     generatedAnimationMixers.set(id, mixer);
   };
 
+  // If a thing is currently folded into a pool (a non-selected instanced thing moved — rare), re-copy its
+  // mesh's sub-mesh worldMatrices into its instance slot so the GPU copy tracks the new transform.
+  const refreshInstancedThingMatrix = (thing: GeneratedThing) => {
+    for (const pool of instancePools.values()) {
+      const slot = pool.thingToSlot.get(thing.id);
+      if (slot === undefined) continue;
+      const mesh = generatedMeshes.get(thing.id);
+      if (!mesh) return;
+      try {
+        mesh.updateWorldMatrix(true, true);
+        const subMeshes = collectSubMeshes(mesh);
+        if (subMeshes.length !== pool.subMeshCount) {
+          uninstanceThing(thing.id); // shape changed under us → bail to a regular visible mesh
+          return;
+        }
+        for (let j = 0; j < pool.subMeshCount; j += 1) {
+          pool.instanced[j].setMatrixAt(slot, subMeshes[j].matrixWorld);
+          pool.instanced[j].instanceMatrix.needsUpdate = true;
+        }
+      } catch (error) {
+        disableInstancePool(pool.modelUrl, error);
+      }
+      return;
+    }
+  };
+
   const updateThingMeshPosition = (thing: GeneratedThing) => {
     const mesh = generatedMeshes.get(thing.id);
     if (!mesh) return;
@@ -4205,10 +4592,12 @@ function createTellusWorld(
       if (mesh.userData.generatingSwirl) {
         mesh.userData.baseY = mesh.position.y;
       }
+      refreshInstancedThingMatrix(thing);
       updateSelectionIndicator();
       return;
     }
     placeObjectAboveGround(mesh, thing.position, 0.04);
+    refreshInstancedThingMatrix(thing);
     updateSelectionIndicator();
   };
 
@@ -4387,6 +4776,7 @@ function createTellusWorld(
         }
         const oldMesh = generatedMeshes.get(thing.id);
         if (oldMesh) {
+          uninstanceThing(thing.id); // free any instance slot the old mesh held before we swap it out
           stopGeneratedAnimation(thing.id);
           scene.remove(oldMesh);
           disposeObject(oldMesh);
@@ -4396,6 +4786,7 @@ function createTellusWorld(
         startGeneratedAnimation(thing.id, model);
         scene.add(model);
         syncTransformControls();
+        reevaluateInstanceGroup(thing.modelUrl);
         publish();
       })
       .catch((error) => {
@@ -4426,7 +4817,12 @@ function createTellusWorld(
     ) {
       return;
     }
+    const previousModelUrl =
+      typeof currentMesh?.userData.loadedModelUrl === "string"
+        ? (currentMesh.userData.loadedModelUrl as string)
+        : undefined;
     if (currentMesh) {
+      uninstanceThing(thing.id); // a torn-down mesh must release its instance slot first
       stopGeneratedAnimation(thing.id);
       scene.remove(currentMesh);
       disposeObject(currentMesh);
@@ -4436,6 +4832,8 @@ function createTellusWorld(
     scene.add(nextMesh);
     syncTransformControls();
     updateThingMeshPosition(thing);
+    // The old GLB (if any) just lost a member; re-evaluate that group so the survivors fold correctly.
+    if (previousModelUrl) reevaluateInstanceGroup(previousModelUrl);
   };
 
   const reconcileRemoteGeneratedManifest = (thing: GeneratedThing) => {
@@ -4615,9 +5013,11 @@ function createTellusWorld(
   const applyRemoteGeneratedDelete = (id: string) => {
     const index = generated.findIndex((thing) => thing.id === id);
     if (index === -1) return;
-    generated.splice(index, 1);
+    const [removed] = generated.splice(index, 1);
+    const removedModelUrl = removed?.modelUrl;
     const mesh = generatedMeshes.get(id);
     if (mesh) {
+      uninstanceThing(id); // free the instance slot before the mesh goes away
       stopGeneratedAnimation(id);
       scene.remove(mesh);
       disposeObject(mesh);
@@ -4626,6 +5026,7 @@ function createTellusWorld(
     if (selectedThingId === id) selectedThingId = undefined;
     syncTransformControls();
     if (sailingThingId === id) sailingThingId = undefined;
+    reevaluateInstanceGroup(removedModelUrl); // group may now drop below 2 → pop the survivor out
     saveGeneratedPlacementSnapshot();
     publish();
   };
@@ -4641,7 +5042,11 @@ function createTellusWorld(
   }
 
   const selectGenerated = (id?: string) => {
+    const previousSelectedId = selectedThingId;
     selectedThingId = id && thingById(id) ? id : undefined;
+    // Pop the newly-selected thing OUT (regular mesh visible) BEFORE attaching TransformControls, and re-fold
+    // the previously-selected thing's group. No-op unless instancing is on.
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     updateSelectionIndicator();
     syncTransformControls();
     publish();
@@ -4650,7 +5055,9 @@ function createTellusWorld(
   const goToGenerated = (id: string) => {
     const thing = thingById(id);
     if (!thing) return;
+    const previousSelectedId = selectedThingId;
     selectedThingId = id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     const distance = Math.hypot(thing.position.x, thing.position.z);
     const offset =
       distance > 0.001
@@ -4808,11 +5215,14 @@ function createTellusWorld(
   const deleteGenerated = (id: string) => {
     const index = generated.findIndex((thing) => thing.id === id);
     if (index < 0) return;
+    const previousSelectedId = selectedThingId;
     const [thing] = generated.splice(index, 1);
+    const deletedModelUrl = thing?.modelUrl;
     pendingGenerationControllers.get(id)?.abort();
     pendingGenerationControllers.delete(id);
     const mesh = generatedMeshes.get(id);
     if (mesh) {
+      uninstanceThing(id); // free the instance slot before the mesh goes away
       stopGeneratedAnimation(id);
       scene.remove(mesh);
       disposeObject(mesh);
@@ -4829,6 +5239,9 @@ function createTellusWorld(
     }
     selectedThingId =
       generated[Math.min(index, generated.length - 1)]?.id ?? undefined;
+    // Deleting may drop the group below 2 (pop survivor out) and changes the selection (pop the new one out).
+    reevaluateInstanceGroup(deletedModelUrl);
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     addLog({
       agentId: "visitor",
       agentName: "Visitor",
@@ -4873,8 +5286,10 @@ function createTellusWorld(
     const thing = thingById(id);
     const mode = thing ? vehicleMode(thing) : null;
     if (!thing || !mode) return;
+    const previousSelectedId = selectedThingId;
     sailingThingId = id;
     selectedThingId = id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     if (mode === "water" && waterBlockedByLand(thing.position)) {
       moveGeneratedToWater(id);
     } else if (mode === "air") {
@@ -5265,7 +5680,9 @@ function createTellusWorld(
     const mesh = createGenerationSwirl(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
+    const previousSelectedId = selectedThingId;
     selectedThingId = thing.id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     syncTransformControls();
     addLog({
       agentId: "visitor",
@@ -5531,7 +5948,9 @@ function createTellusWorld(
 
     const target = agentActionTarget(agent, decision);
     if (!target) return false;
+    const previousSelectedId = selectedThingId;
     selectedThingId = target.id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
 
     if (action === "moveAsset") {
       const dx = clamp(decision.dx ?? 0, -4, 4);
@@ -6282,11 +6701,30 @@ function createTellusWorld(
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
     );
     raycaster.setFromCamera(pointerNdc, camera);
-    const intersections = raycaster.intersectObjects(
-      [...generatedMeshes.values()],
-      true,
-    );
+    // Raycast both the regular meshes (the visible, non-instanced ones) AND the pool InstancedMeshes. Hidden
+    // (instanced) regular meshes are skipped automatically by THREE since they're `visible = false`, so a
+    // folded thing is only ever hit through its InstancedMesh — no double-selection.
+    const targets: THREE.Object3D[] = [...generatedMeshes.values()];
+    for (const pool of instancePools.values()) {
+      for (const inst of pool.instanced) targets.push(inst);
+    }
+    const intersections = raycaster.intersectObjects(targets, true);
     for (const intersection of intersections) {
+      // Instanced hit: resolve (pool, instanceId) → thing id.
+      if (
+        intersection.object instanceof THREE.InstancedMesh &&
+        typeof intersection.instanceId === "number"
+      ) {
+        const instancedThingId = resolveInstancedHit(
+          intersection.object,
+          intersection.instanceId,
+        );
+        if (instancedThingId) {
+          selectGenerated(instancedThingId); // pops the thing out of instancing
+          return;
+        }
+        continue;
+      }
       let object: THREE.Object3D | null = intersection.object;
       while (object) {
         const tellusId = object.userData.tellusId;
@@ -6618,6 +7056,11 @@ function createTellusWorld(
       for (const id of generatedAnimationMixers.keys()) {
         stopGeneratedAnimation(id);
       }
+      // Dispose the static-duplicate instancing pools (InstancedMeshes own their own instanceMatrix buffers;
+      // geometry/materials are shared with the GLB cache, so InstancedMesh.dispose() leaves those alone).
+      for (const modelUrl of [...instancePools.keys()]) {
+        disableInstancePool(modelUrl);
+      }
       cancelAnimationFrame(animationId);
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", handleKeyDown);
@@ -6702,7 +7145,7 @@ function App(): React.ReactElement {
     agents: createAgentSeeds(),
     generated: [],
     logs: [],
-    paused: false,
+    paused: true,
     generationProvider: runtimeConfig.generationProvider,
     playerGenerationProvider: runtimeConfig.playerGenerationProvider,
     agentGenerationProvider: runtimeConfig.agentGenerationProvider,
