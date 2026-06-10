@@ -7181,6 +7181,73 @@ function App(): React.ReactElement {
       setShowFps((v) => !v);
     }
   };
+  // World switching: each worldId is its own Hyades grain (created on first use). The list endpoint only
+  // returns SEEDED worlds, so we union it with locally-remembered ids + the current one.
+  const [activeWorldId, setActiveWorldId] = useState<string | null>(null);
+  const [worlds, setWorlds] = useState<string[]>([]);
+  const KNOWN_WORLDS_KEY = "tellus.knownWorlds";
+  const ACTIVE_WORLD_KEY = "tellus.activeWorldId";
+  const loadKnownWorlds = (): string[] => {
+    try {
+      const raw = window.localStorage.getItem(KNOWN_WORLDS_KEY);
+      const arr = raw ? (JSON.parse(raw) as unknown) : [];
+      return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const rememberWorld = (id: string) => {
+    try {
+      const next = [...new Set([...loadKnownWorlds(), id])];
+      window.localStorage.setItem(KNOWN_WORLDS_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+  const refreshWorldList = async (current?: string) => {
+    let server: string[] = [];
+    try {
+      const res = await fetch(`${runtimeConfig.worldApiBase}/api/tellus/worlds`, {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as unknown;
+      const list = Array.isArray(data)
+        ? data
+        : (data as { worlds?: unknown })?.worlds;
+      if (Array.isArray(list)) {
+        server = list
+          .map((w) => (typeof w === "string" ? w : (w as { worldId?: string })?.worldId))
+          .filter((x): x is string => typeof x === "string" && x.length > 0);
+      }
+    } catch {
+      /* offline / no index — fall back to local */
+    }
+    const cur = current ?? activeWorldId ?? runtimeConfig.worldId;
+    setWorlds([...new Set([...server, ...loadKnownWorlds(), ...(cur ? [cur] : [])])].sort());
+  };
+  const switchWorld = (id: string) => {
+    if (!id || id === activeWorldId) return;
+    rememberWorld(id);
+    try {
+      window.localStorage.setItem(ACTIVE_WORLD_KEY, id);
+    } catch {
+      /* ignore */
+    }
+    setActiveWorldId(id);
+    void refreshWorldList(id);
+  };
+  const createNewWorld = () => {
+    const raw = window.prompt("New world id (letters, numbers, dashes):", "");
+    if (!raw) return;
+    const id = raw
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    if (!id) return;
+    switchWorld(id);
+  };
   const [characterBodyPrompt, setCharacterBodyPrompt] = useState("");
   const [characterPersonalityPrompt, setCharacterPersonalityPrompt] = useState("");
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
@@ -7349,22 +7416,45 @@ function App(): React.ReactElement {
     }
   }, [snapshot.generated]);
 
+  // Load runtime config + asset library once, then choose the initial active world (a persisted choice wins
+  // over the config default) and fetch the world list.
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
     let cancelled = false;
-    let world: TellusWorldApi | null = null;
     void loadRuntimeConfig()
       .then(async () => {
-        const [models] = await Promise.all([
-          loadAssetLibraryModels().catch(() => []),
-          loadTellusState(),
-        ]);
-        if (!cancelled) setAssetLibrary(models);
+        const models = await loadAssetLibraryModels().catch(() => []);
+        if (cancelled) return;
+        setAssetLibrary(models);
+        let initial = runtimeConfig.worldId;
+        try {
+          const saved = window.localStorage.getItem(ACTIVE_WORLD_KEY);
+          if (saved && saved.trim()) initial = saved.trim();
+        } catch {
+          /* ignore */
+        }
+        runtimeConfig.worldId = initial;
+        setActiveWorldId(initial);
+        void refreshWorldList(initial);
       })
       .catch((error) => {
         console.warn("Tellus startup state failed to load", error);
-      })
+        if (!cancelled) setActiveWorldId(runtimeConfig.worldId);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // (Re)create the world view whenever the active world changes — load that world's state, then mount it.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !activeWorldId) return;
+    runtimeConfig.worldId = activeWorldId;
+    let cancelled = false;
+    let world: TellusWorldApi | null = null;
+    void loadTellusState()
+      .catch(() => undefined)
       .then(() => {
         if (cancelled) return;
         world = createTellusWorld(container, setSnapshot);
@@ -7375,7 +7465,8 @@ function App(): React.ReactElement {
       world?.destroy();
       worldRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorldId]);
 
   const selected = useMemo(
     () =>
@@ -7556,7 +7647,49 @@ function App(): React.ReactElement {
               </div>
             )}
           </div>
-          <div aria-hidden="true" />
+          <div
+            className="world-switcher"
+            style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center" }}
+          >
+            <select
+              aria-label="Active world"
+              title="Switch world"
+              value={activeWorldId ?? ""}
+              onChange={(e) => switchWorld(e.target.value)}
+              style={{
+                background: "rgba(0,0,0,0.5)",
+                color: "#dfe7d8",
+                border: "1px solid rgba(255,255,255,0.18)",
+                borderRadius: 8,
+                padding: "4px 8px",
+                font: "600 12px/1.2 ui-sans-serif, system-ui",
+                maxWidth: 180,
+              }}
+            >
+              {!activeWorldId && <option value="">…</option>}
+              {worlds.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              title="Create a new world"
+              onClick={createNewWorld}
+              style={{
+                background: "rgba(0,0,0,0.5)",
+                color: "#7ec850",
+                border: "1px solid rgba(255,255,255,0.18)",
+                borderRadius: 8,
+                padding: "4px 9px",
+                font: "700 12px/1.2 ui-sans-serif, system-ui",
+                cursor: "pointer",
+              }}
+            >
+              ＋ New
+            </button>
+          </div>
           <div className="top-right-cluster">
             <details className="world-help">
               <summary title="Controls" aria-label="Controls">
