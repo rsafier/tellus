@@ -217,6 +217,7 @@ interface TellusWorldApi {
   liftGenerated(id: string, amount: number): void;
   groundGenerated(id: string): void;
   deleteGenerated(id: string): void;
+  cloneGenerated(id: string): void;
   moveGeneratedToWater(id: string): void;
   boardGenerated(id: string): void;
   disembark(): void;
@@ -2045,19 +2046,35 @@ async function waitForDirectGeneration(
   if (initial.modelUrl && initial.status !== "failed") return initial;
   const deadline = Date.now() + 22 * 60 * 1000;
   let lastStatus = initial.status;
+  // The job runs server-side; a transient poll error (network blip, a pod roll, a momentary CF/route hiccup)
+  // must NOT fail the whole generation — keep waiting and only give up after many CONSECUTIVE failures. This
+  // was the "generation failed on the UI but actually uploaded" bug: one dropped poll aborted the wait.
+  let consecutiveErrors = 0;
+  const maxConsecutiveErrors = 12; // ~48s of solid failures before giving up
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     await new Promise((resolve) => window.setTimeout(resolve, 4000));
     signal?.throwIfAborted();
-    const response = await fetch(
-      tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`),
-      { signal },
-    );
-    const contentType = response.headers.get("Content-Type") ?? "";
-    if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
-      throw new Error("Direct generation endpoint unavailable");
+    let status: DirectGenerationResponse;
+    try {
+      const response = await fetch(
+        tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`),
+        { signal },
+      );
+      const contentType = response.headers.get("Content-Type") ?? "";
+      if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
+        if (++consecutiveErrors > maxConsecutiveErrors) {
+          throw new Error("Direct generation endpoint unavailable");
+        }
+        continue;
+      }
+      status = await readJsonResponse<DirectGenerationResponse>(response);
+      consecutiveErrors = 0;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (++consecutiveErrors > maxConsecutiveErrors) throw error;
+      continue; // transient — the job is still running; poll again
     }
-    const status = await readJsonResponse<DirectGenerationResponse>(response);
     if (status.status === "failed") {
       throw new Error(status.error ?? `Generation job ${initial.jobId} failed`);
     }
@@ -4675,6 +4692,45 @@ function createTellusWorld(
     publish();
   };
 
+  // Duplicate the selected object, preserving its model + scale + rotation, offset a little so it doesn't sit
+  // exactly on the original. The GLB loads from the in-memory parse cache, so a clone is instant (no
+  // re-download/re-parse), and it's persisted to the world like any other placement.
+  const cloneGenerated = (id: string) => {
+    const source = thingById(id);
+    if (!source) return;
+    const offset = 1.4 + source.scale * 0.8;
+    const clone: GeneratedThing = {
+      id: browserUuid(),
+      kind: source.kind,
+      prompt: source.prompt,
+      creatorId: "visitor",
+      ownerUserId: userId,
+      position: groundedPosition(
+        source.position.x + offset,
+        source.position.z + offset,
+        source.position,
+      ),
+      rotationX: source.rotationX,
+      rotationY: source.rotationY,
+      rotationZ: source.rotationZ,
+      scale: source.scale,
+      color: source.color,
+      modelUrl: source.modelUrl,
+      pipelineId: source.pipelineId,
+      generationStatus: source.generationStatus,
+    };
+    generated.push(clone);
+    const mesh = shouldShowGenerationSwirl(clone)
+      ? createGenerationSwirl(clone)
+      : createGeneratedMesh(clone);
+    generatedMeshes.set(clone.id, mesh);
+    scene.add(mesh);
+    updateThingMeshPosition(clone);
+    loadRemoteGeneratedModel(clone);
+    publishGeneratedThing(clone);
+    selectGenerated(clone.id);
+  };
+
   const rotateGenerated = (id: string, radians: number, axis: "x" | "y" | "z" = "y") => {
     const thing = thingById(id);
     if (!thing) return;
@@ -6533,6 +6589,7 @@ function createTellusWorld(
     liftGenerated,
     groundGenerated,
     deleteGenerated,
+    cloneGenerated,
     moveGeneratedToWater,
     boardGenerated,
     disembark,
@@ -7263,6 +7320,16 @@ function App(): React.ReactElement {
                   {snapshot.sailingThingId === activeSelectedThing.id
                     ? "Dismount"
                     : "Ride"}
+                </button>
+                <button
+                  type="button"
+                  className="selected-name-action"
+                  title="Duplicate this object with its current scale & rotation"
+                  onClick={() =>
+                    worldRef.current?.cloneGenerated(activeSelectedThing.id)
+                  }
+                >
+                  Clone
                 </button>
                 <button
                   type="button"
