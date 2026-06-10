@@ -4,6 +4,14 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.5.2 — 2026-06-10
+- **Chat with your agent.** The "Your Agent" panel's read-only Dialog feed is now a two-way **Chat**: a text
+  box + Send (Enter to send) posts to the new Hyades `POST /agent/say`, your line appears immediately, and the
+  agent's reply arrives in the same thread via the existing transcript poll (your lines and the agent's dialog
+  interleave in send/reply order; tool actions stay dimmed). Requires the agent to be started (the box is
+  disabled and prompts you to start it otherwise — chatting never silently spends tokens). The thread is
+  per-session (clears on panel close); the agent itself remembers the conversation in its durable thread.
+
 ## 0.5.1 — 2026-06-10
 - **Fix: the agent POV viewport showed the player's sky, not the agent's.** The skybox dome, moon, and moon
   cloud-veil are repositioned every frame to follow the *player* camera, so the picture-in-picture rendered

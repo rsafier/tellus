@@ -107,6 +107,14 @@ interface AgentTranscriptResponse {
   messages?: AgentTranscriptMessage[];
 }
 
+// One line in the "Your Agent" chat thread: either something you typed ("you") or one of the agent's
+// dialog/tool turns merged in from its transcript.
+interface AgentChatLine {
+  id: number;
+  who: "you" | "agent" | "tool";
+  text: string;
+}
+
 function createTellusWorld(
   container: HTMLElement,
   onSnapshot: (snapshot: TellusSnapshot) => void,
@@ -3493,10 +3501,15 @@ function App(): React.ReactElement {
   const [agentPersonaDraft, setAgentPersonaDraft] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
-  // Agent dialog feed (last turns of the server-side agent's conversation) + POV viewport toggle.
-  const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptMessage[]>([]);
+  // Agent chat thread: the server-side agent's dialog (assistant=dialog, tool=dimmed) merged with the lines
+  // YOU send it. Your lines append locally on send; the agent's replies arrive via the transcript poll and
+  // are merged (content-deduped) so the thread reads as a conversation. POV viewport toggle alongside.
+  const [agentChat, setAgentChat] = useState<AgentChatLine[]>([]);
+  const [agentChatInput, setAgentChatInput] = useState("");
   const [agentViewportOn, setAgentViewportOn] = useState(false);
   const agentTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const agentChatSeqRef = useRef(0);
+  const agentMergedKeysRef = useRef<Set<string>>(new Set());
   const p2pSupported =
     typeof RTCPeerConnection !== "undefined" &&
     typeof navigator !== "undefined" &&
@@ -3649,6 +3662,52 @@ function App(): React.ReactElement {
     void runAgentAction("persona", { text: agentPersonaDraft, replace: true });
   }, [runAgentAction, agentPersonaDraft]);
 
+  // Merge the agent's polled transcript into the chat thread. Content-deduped (role|text) so each agent line
+  // is appended once; your "you" lines (added on send) stay interleaved in real send/reply order.
+  const mergeAgentTranscript = useCallback((messages: AgentTranscriptMessage[]) => {
+    const seen = agentMergedKeysRef.current;
+    const additions: AgentChatLine[] = [];
+    for (const m of messages) {
+      const key = `${m.role}|${m.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      additions.push({
+        id: ++agentChatSeqRef.current,
+        who: m.role === "tool" ? "tool" : "agent",
+        text: m.text,
+      });
+    }
+    if (additions.length) setAgentChat((prev) => [...prev, ...additions]);
+  }, []);
+
+  const onAgentSend = useCallback(async () => {
+    const text = agentChatInput.trim();
+    if (!text) return;
+    if (!agentStatus?.optedIn) {
+      setAgentError("Start your agent before talking to it.");
+      return;
+    }
+    setAgentChat((prev) => [...prev, { id: ++agentChatSeqRef.current, who: "you", text }]);
+    setAgentChatInput("");
+    setAgentError(null);
+    try {
+      const res = await fetch(tellusAgentUrl("say"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+      if (!res.ok) {
+        setAgentError(
+          res.status === 409
+            ? "Start your agent before talking to it."
+            : `Send failed (${res.status})`,
+        );
+      }
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : "Send failed.");
+    }
+  }, [agentChatInput, agentStatus?.optedIn]);
+
   // Poll the agent status every ~3s while the panel is open; prime the persona draft on first load.
   useEffect(() => {
     if (!agentPanelOpen) return;
@@ -3674,16 +3733,11 @@ function App(): React.ReactElement {
       try {
         const messages = await fetchAgentTranscript(controller.signal);
         if (cancelled) return;
-        // Skip the state update when the feed is byte-for-byte unchanged so we don't re-render — and, more
-        // importantly, don't yank the scroll to the bottom — on every 3s poll while the agent is idle.
-        setAgentTranscript((prev) =>
-          prev.length === messages.length &&
-          prev.every((m, i) => m.role === messages[i].role && m.text === messages[i].text)
-            ? prev
-            : messages,
-        );
+        // Merge new agent lines into the chat thread (content-deduped — identical polls add nothing, so the
+        // feed neither re-renders nor re-scrolls while the agent is idle).
+        mergeAgentTranscript(messages);
       } catch {
-        /* keep the last transcript; status owns the error surface */
+        /* keep the last thread; status owns the error surface */
       }
     };
     void load();
@@ -3693,16 +3747,16 @@ function App(): React.ReactElement {
       controller.abort();
       window.clearInterval(id);
     };
-  }, [agentPanelOpen, fetchAgentStatus, fetchAgentTranscript]);
+  }, [agentPanelOpen, fetchAgentStatus, fetchAgentTranscript, mergeAgentTranscript]);
 
-  // Auto-scroll the dialog feed to the newest message when it grows — but only if the user is already near
-  // the bottom, so we don't snatch the view away from someone scrolled up reading older lines.
+  // Auto-scroll the chat thread to the newest line when it grows — but only if the user is already near the
+  // bottom, so we don't snatch the view away from someone scrolled up reading older lines.
   useEffect(() => {
     const el = agentTranscriptScrollRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [agentTranscript]);
+  }, [agentChat]);
 
   // Drive the in-world POV viewport: ON + panel open + a known agent visitorId => show that avatar's view;
   // otherwise hide it. Re-applies when the agent's visitorId changes.
@@ -3717,10 +3771,12 @@ function App(): React.ReactElement {
     }
   }, [agentViewportOn, agentPanelOpen, agentStatus?.visitorId]);
 
-  // Clear the transcript + viewport target when the panel closes so a reopen starts fresh.
+  // Clear the chat thread + viewport target when the panel closes so a reopen starts fresh.
   useEffect(() => {
     if (agentPanelOpen) return;
-    setAgentTranscript([]);
+    setAgentChat([]);
+    setAgentChatInput("");
+    agentMergedKeysRef.current.clear();
     worldRef.current?.setAgentViewport(null);
   }, [agentPanelOpen]);
 
@@ -4578,9 +4634,9 @@ function App(): React.ReactElement {
             {agentError && (
               <div style={{ fontSize: 11, color: "#ff9a9a" }}>{agentError}</div>
             )}
-            {/* Dialog feed: the agent's recent conversation turns (assistant = dialog, tool = dimmed). */}
+            {/* Chat thread: the agent's dialog (assistant = dialog, tool = dimmed) plus the lines you send it. */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, opacity: 0.7 }}>Dialog</span>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>Chat</span>
               <div
                 ref={agentTranscriptScrollRef}
                 style={{
@@ -4595,15 +4651,17 @@ function App(): React.ReactElement {
                   gap: 4,
                 }}
               >
-                {agentTranscript.length === 0 ? (
+                {agentChat.length === 0 ? (
                   <span style={{ fontSize: 11, opacity: 0.5, fontStyle: "italic" }}>
-                    Your agent hasn't said anything yet.
+                    {agentStatus?.optedIn
+                      ? "Say hello to your agent below."
+                      : "Start your agent, then say hello below."}
                   </span>
                 ) : (
-                  agentTranscript.map((msg, i) =>
-                    msg.role === "tool" ? (
+                  agentChat.map((line) =>
+                    line.who === "tool" ? (
                       <span
-                        key={i}
+                        key={line.id}
                         style={{
                           fontSize: 10,
                           opacity: 0.5,
@@ -4612,23 +4670,70 @@ function App(): React.ReactElement {
                           wordBreak: "break-word",
                         }}
                       >
-                        {msg.text}
+                        {line.text}
                       </span>
                     ) : (
                       <span
-                        key={i}
+                        key={line.id}
                         style={{
                           fontSize: 12,
-                          color: "#dfe7d8",
+                          color: line.who === "you" ? "#9ec8ff" : "#dfe7d8",
                           whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
                         }}
                       >
-                        {msg.text}
+                        <b style={{ opacity: 0.7, fontWeight: 600 }}>
+                          {line.who === "you" ? "You: " : ""}
+                        </b>
+                        {line.text}
                       </span>
                     ),
                   )
                 )}
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input
+                  type="text"
+                  value={agentChatInput}
+                  onChange={(e) => setAgentChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void onAgentSend();
+                    }
+                  }}
+                  placeholder={agentStatus?.optedIn ? "Talk to your agent…" : "Start your agent first"}
+                  disabled={!agentStatus?.optedIn}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: 12,
+                    padding: "5px 8px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "rgba(0,0,0,0.3)",
+                    color: "#eef2ea",
+                    opacity: agentStatus?.optedIn ? 1 : 0.5,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => void onAgentSend()}
+                  disabled={!agentStatus?.optedIn || agentChatInput.trim().length === 0}
+                  style={{
+                    ...p2pBtnStyle(false),
+                    flex: "none",
+                    padding: "5px 12px",
+                    opacity:
+                      agentStatus?.optedIn && agentChatInput.trim().length > 0 ? 1 : 0.5,
+                    cursor:
+                      agentStatus?.optedIn && agentChatInput.trim().length > 0
+                        ? "pointer"
+                        : "default",
+                  }}
+                >
+                  Send
+                </button>
               </div>
             </div>
             {/* POV viewport toggle: render a picture-in-picture of the scene from the agent's avatar. */}
