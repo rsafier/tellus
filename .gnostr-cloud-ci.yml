@@ -1,0 +1,59 @@
+# CI/CD for the Tellus frontend on gnostr-cloud (uranus). Lets a push PUBLISH straight to the live
+# k3s deployment (namespace `tellus`, fronted at tellus.garden / tellus.gnostr.cloud) — no manual
+# image build or kubectl needed. Mirrors the fleet's native CI schema (see hyades/.gnostr-cloud-ci.yml):
+# top-level `stages:` + `variables:` + `jobs:` with stage / runs-on / rules {branches,tags} / script.
+#
+# Unlike hyades (whose release is operator-driven), Tellus AUTO-DEPLOYS: the single job builds the
+# multi-arch image AND rolls the k3s Deployment, so `git push` == publish.
+#
+# Runner: `dgx-deploy` — the privileged systemd host runner on dgx-00 (User=ms) with docker + the
+# shared `monumental-k8s` buildx builder + the k3s kubeconfig. (The gVisor `ariel` runner can't build
+# images or reach the cluster, so it isn't used here; the Dockerfile build runs `tsc --noEmit` +
+# `vite build`, so a type/build error fails the image build and reds the deploy.)
+#
+# The dgx-deploy runner agent must be a `reader` collaborator on this gnostr-cloud repo (else its clone
+# 401s) — grant once: `gnostr-cloud-cli repo add-collaborator <repo> <runner-npub> --role reader`.
+#
+# Trigger: every push to `master` (the gnostr-cloud branch; GitHub `main` is mirrored to it) AND any
+# `v*` tag. Image tag = `git-<short-sha>` — UNIQUE per build, so a re-roll never reuses a tag mid-
+# rollout (the split-cluster gotcha with IfNotPresent caching).
+
+stages:
+  - deploy
+
+variables:
+  KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  TELLUS_REGISTRY: "192.168.1.187:30500"
+  TELLUS_NAMESPACE: tellus
+
+jobs:
+  build-deploy:
+    stage: deploy
+    runs-on: dgx-deploy
+    rules:
+      branches:
+        - master
+      tags:
+        - v*
+    timeout: 3600
+    script:
+      - |
+        set -euo pipefail
+        docker --version
+        # Unique image tag per build (never reuse a tag mid-rollout — IfNotPresent caches divergent
+        # content per node). Prefer the git tag for a v* pipeline, else a short-sha tag.
+        REF="${GITHUB_REF_NAME:-}"
+        SHA="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+        case "${GITHUB_REF:-}" in refs/tags/*) REF="${GITHUB_REF#refs/tags/}" ;; esac
+        if [ -n "$REF" ] && printf '%s' "$REF" | grep -q '^v'; then
+          TAG="${REF#v}"
+        else
+          TAG="git-${SHA:0:12}"
+        fi
+        echo "building + pushing tellus:$TAG (multi-arch on monumental-k8s)"
+        ./deploy/build-push.sh "$TAG"
+        echo "rolling deploy/tellus -> tellus:$TAG"
+        kubectl -n "${TELLUS_NAMESPACE:-tellus}" set image deploy/tellus \
+          tellus="${TELLUS_REGISTRY:-192.168.1.187:30500}/tellus:$TAG"
+        kubectl -n "${TELLUS_NAMESPACE:-tellus}" rollout status deploy/tellus --timeout=300s
+        echo "published tellus:$TAG to the live deployment"
