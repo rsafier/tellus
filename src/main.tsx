@@ -1424,7 +1424,9 @@ function loadTerrainStateLocally(): TellusTerrainState | null {
 }
 
 function tellusWorldHttpUrl(route: "state" | "action"): string {
-  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}`;
+  // Carry the stable (anonymous) user id so private worlds bind to / gate on the visitor. The WS URL
+  // inherits it because tellusWorldWebSocketUrl is derived from the "state" URL.
+  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}?userId=${encodeURIComponent(tellusUserId())}`;
 }
 
 function tellusAssetLibraryUrl(path: string): string {
@@ -7207,9 +7209,10 @@ function App(): React.ReactElement {
   const refreshWorldList = async (current?: string) => {
     let server: string[] = [];
     try {
-      const res = await fetch(`${runtimeConfig.worldApiBase}/api/tellus/worlds`, {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `${runtimeConfig.worldApiBase}/api/tellus/worlds?userId=${encodeURIComponent(tellusUserId())}`,
+        { cache: "no-store" },
+      );
       const data = (await res.json()) as unknown;
       const list = Array.isArray(data)
         ? data
@@ -7246,7 +7249,25 @@ function App(): React.ReactElement {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48);
     if (!id) return;
-    switchWorld(id);
+    const makePrivate = window.confirm(
+      "Make this world PRIVATE? Only you (this identity) can see and enter it.\n\nOK = private · Cancel = public",
+    );
+    const enter = () => switchWorld(id);
+    if (makePrivate) {
+      // Claim ownership + mark private before entering, so the world loads gated to this user.
+      void fetch(
+        `${runtimeConfig.worldApiBase}/api/tellus/worlds/${encodeURIComponent(id)}?userId=${encodeURIComponent(tellusUserId())}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isPublic: false }),
+        },
+      )
+        .then(enter)
+        .catch(enter);
+    } else {
+      enter();
+    }
   };
   const [characterBodyPrompt, setCharacterBodyPrompt] = useState("");
   const [characterPersonalityPrompt, setCharacterPersonalityPrompt] = useState("");
