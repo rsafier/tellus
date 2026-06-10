@@ -14,8 +14,9 @@
 # The dgx-deploy runner agent must be a `reader` collaborator on this gnostr-cloud repo (else its clone
 # 401s) — grant once: `gnostr-cloud-cli repo add-collaborator <repo> <runner-npub> --role reader`.
 #
-# Trigger: every push to `master` (the gnostr-cloud branch; GitHub `main` is mirrored to it) AND any
-# `v*` tag. Image tag = `git-<short-sha>` — UNIQUE per build, so a re-roll never reuses a tag mid-
+# Trigger: TAG-ONLY. A plain push to `master` does nothing; pushing a `v*` tag (e.g. `v0.2.0`) builds
+# + publishes. Intentional-release model so WIP commits never go live. Image tag = the git tag minus
+# the leading `v` (`v0.2.0` -> `0.2.0`) — unique per release, so a re-roll never reuses a tag mid-
 # rollout (the split-cluster gotcha with IfNotPresent caching).
 
 stages:
@@ -31,8 +32,6 @@ jobs:
     stage: deploy
     runs-on: dgx-deploy
     rules:
-      branches:
-        - master
       tags:
         - v*
     timeout: 3600
@@ -40,16 +39,14 @@ jobs:
       - |
         set -euo pipefail
         docker --version
-        # Unique image tag per build (never reuse a tag mid-rollout — IfNotPresent caches divergent
-        # content per node). Prefer the git tag for a v* pipeline, else a short-sha tag.
+        # Image tag = the git tag minus the leading 'v' (v0.2.0 -> 0.2.0). Tag-only pipeline, so a ref
+        # MUST be present; refuse anything that isn't v*.
         REF="${GITHUB_REF_NAME:-}"
-        SHA="${GITHUB_SHA:-$(git rev-parse HEAD)}"
         case "${GITHUB_REF:-}" in refs/tags/*) REF="${GITHUB_REF#refs/tags/}" ;; esac
-        if [ -n "$REF" ] && printf '%s' "$REF" | grep -q '^v'; then
-          TAG="${REF#v}"
-        else
-          TAG="git-${SHA:0:12}"
-        fi
+        case "$REF" in
+          v*) TAG="${REF#v}" ;;
+          *) echo "build-deploy refused non-v* ref '$REF'" >&2; exit 1 ;;
+        esac
         echo "building + pushing tellus:$TAG (multi-arch on monumental-k8s)"
         ./deploy/build-push.sh "$TAG"
         echo "rolling deploy/tellus -> tellus:$TAG"
