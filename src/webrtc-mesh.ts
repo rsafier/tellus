@@ -394,7 +394,16 @@ export class WebRtcMesh {
 
     pc.ontrack = (ev) => {
       try {
-        const stream = ev.streams && ev.streams[0] ? ev.streams[0] : null;
+        // TX sends via sender.replaceTrack on a transceiver, which does NOT associate a MediaStream,
+        // so the remote `ontrack` arrives with `ev.streams` EMPTY. Wrap the bare track in a fresh
+        // MediaStream — otherwise remoteStream stays null and the video never surfaces even though
+        // bytes are flowing (the "connected, N kbps, 0/16 streams" symptom).
+        const stream =
+          ev.streams && ev.streams[0]
+            ? ev.streams[0]
+            : ev.track
+              ? new MediaStream([ev.track])
+              : null;
         rec.remoteStream = stream;
         this.maybeSurface(rec);
       } catch (err) {
