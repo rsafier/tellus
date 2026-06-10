@@ -7649,7 +7649,13 @@ function App(): React.ReactElement {
           </div>
           <div
             className="world-switcher"
-            style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center" }}
+            style={{
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "auto",
+            }}
           >
             <select
               aria-label="Active world"
