@@ -1542,7 +1542,11 @@ async function executeHyadesGeneration(params: {
   // Concept image is generated inside /3d/jobs (Z Image Turbo); a caller-supplied image_url skips it.
   const imageUrl = payload.imageUrl?.trim();
 
-  const submitBody: Record<string, unknown> = { prompt, provider: backend };
+  const submitBody: Record<string, unknown> = {
+    prompt,
+    provider: backend,
+    share_to_store: true, // Tellus generations belong in the shared game asset library
+  };
   if (imageUrl) submitBody.image_url = imageUrl;
   if (typeof payload.sampleSteps === "number" && payload.sampleSteps > 0) {
     submitBody.sample_steps = payload.sampleSteps;
