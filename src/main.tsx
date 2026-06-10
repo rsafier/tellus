@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { createVegetation } from "./tellus-vegetation";
+import { createAmbientPhysics, resolveObstacles, type ObstacleCircle } from "./tellus-physics";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
@@ -385,6 +387,35 @@ function createTellusWorld(
   const useWebGPU = "gpu" in navigator;
   const ocean = createOceanSurface(useWebGPU);
   const archipelago = createDistantArchipelago();
+  // Ambient procedural vegetation (wind-swayed grass/flowers streamed around the player + island-wide
+  // trees/rocks) and the lightweight physics world (thrown things, player jump/obstacles). Both are
+  // deterministic from the synced terrain state — no protocol changes.
+  const vegetation = createVegetation({
+    scene,
+    useWebGPU,
+    sampleHeight: terrainHeight,
+    samplePaint: centralTerrainPaintAt,
+    isExcluded: (x, z, h) => {
+      const pdx = x - POND_CENTER.x;
+      const pdz = z - POND_CENTER.z;
+      return (
+        pdx * pdx + pdz * pdz < (POND_RADIUS + 0.6) * (POND_RADIUS + 0.6) &&
+        h < pondWaterLevel() + 0.35
+      );
+    },
+  });
+  const ambientPhysics = createAmbientPhysics({
+    groundHeightAt: (x, z) => groundHeightAt(x, z) ?? SEA_LEVEL - 2.6,
+    waterLevelAt: (x, z) => {
+      const pdx = x - POND_CENTER.x;
+      const pdz = z - POND_CENTER.z;
+      if (pdx * pdx + pdz * pdz < (POND_RADIUS + 0.4) * (POND_RADIUS + 0.4)) {
+        return pondWaterLevel();
+      }
+      return SEA_LEVEL;
+    },
+    worldRadius: OCEAN_RADIUS - 6,
+  });
   const terrain = new THREE.Mesh(
     createTerrainGeometry(),
     new THREE.MeshStandardMaterial({
@@ -577,6 +608,9 @@ function createTellusWorld(
     if (!centralTerrainDirty) return;
     centralTerrainDirty = false;
     rebuildCentralTerrain();
+    // Re-grow the procedural vegetation lazily wherever the terrain changed (local sculpt or remote
+    // patch both funnel through here).
+    vegetation.notifyTerrainChanged();
   };
   refreshFlowerPatches();
 
@@ -2509,6 +2543,48 @@ function createTellusWorld(
     renderer?.setSize(width, height, false);
   };
 
+  // ── Player physics: jump, fall, and obstacle pushout (trees + large placed things) ──
+  let playerVy = 0;
+  let playerAirborne = false;
+  let obstacleCache: ObstacleCircle[] = [];
+  let obstacleCacheAt = 0;
+  const footprintCache = new Map<string, { radius: number; height: number }>();
+  const thingFootprint = (thing: GeneratedThing): { radius: number; height: number } | null => {
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return null;
+    const key = `${thing.id}:${thing.scale.toFixed(2)}`;
+    const cached = footprintCache.get(key);
+    if (cached) return cached;
+    const box = new THREE.Box3().setFromObject(mesh);
+    if (box.isEmpty()) return null;
+    const size = box.getSize(new THREE.Vector3());
+    const fp = { radius: Math.max(size.x, size.z) / 2, height: size.y };
+    footprintCache.set(key, fp);
+    if (footprintCache.size > 600) footprintCache.clear();
+    return fp;
+  };
+  const currentObstacles = (): ObstacleCircle[] => {
+    const nowMs = performance.now();
+    if (nowMs - obstacleCacheAt > 500) {
+      obstacleCacheAt = nowMs;
+      const list: ObstacleCircle[] = [...vegetation.getTreeColliders()];
+      for (const thing of generated) {
+        if (thing.id === sailingThingId || ambientPhysics.has(thing.id)) continue;
+        const fp = thingFootprint(thing);
+        if (!fp || fp.height < 1.4 || fp.radius < 0.55) continue;
+        // only solid when the player can actually run into it (not lifted into the sky)
+        if (thing.position.y > visitorPosition.y + 2.2) continue;
+        list.push({
+          x: thing.position.x,
+          z: thing.position.z,
+          r: Math.min(fp.radius * 0.7, 2.6),
+        });
+      }
+      obstacleCache = list;
+    }
+    return obstacleCache;
+  };
+
   const moveVisitor = (delta: number) => {
     const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
     const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -2517,9 +2593,17 @@ function createTellusWorld(
     if (keys.has("s") || keys.has("arrowdown")) movement.sub(forward);
     if (keys.has("a") || keys.has("arrowright")) movement.add(right);
     if (keys.has("d") || keys.has("arrowleft")) movement.sub(right);
-    if (movement.lengthSq() === 0) return;
-    movement.normalize().multiplyScalar(PLAYER_SPEED * delta);
+    const hasInput = movement.lengthSq() > 0;
+    if (!sailingThingId && keys.has(" ") && !playerAirborne) {
+      playerVy = 8.6;
+      playerAirborne = true;
+    }
+    if (!hasInput && !playerAirborne) return;
+    if (hasInput) movement.normalize().multiplyScalar(PLAYER_SPEED * delta);
     if (sailingThingId) {
+      playerAirborne = false;
+      playerVy = 0;
+      if (!hasInput) return;
       const boat = thingById(sailingThingId);
       if (!boat) {
         sailingThingId = undefined;
@@ -2545,12 +2629,103 @@ function createTellusWorld(
       publish();
       return;
     }
-    visitorPosition = groundedPosition(
+    // obstacle pushout, then ground/air vertical dynamics
+    const pushed = resolveObstacles(
       visitorPosition.x + movement.x,
       visitorPosition.z + movement.z,
-      visitorPosition,
+      0.5,
+      currentObstacles(),
     );
+    const grounded = groundedPosition(pushed.x, pushed.z, visitorPosition);
+    if (playerAirborne) {
+      playerVy -= 24 * delta;
+      const ny = visitorPosition.y + playerVy * delta;
+      if (ny <= grounded.y) {
+        visitorPosition = grounded;
+        playerAirborne = false;
+        playerVy = 0;
+      } else {
+        visitorPosition = { x: grounded.x, y: ny, z: grounded.z };
+      }
+    } else if (grounded.y < visitorPosition.y - 1.6) {
+      // walked off a ledge — fall instead of snapping down
+      playerAirborne = true;
+      playerVy = 0;
+      visitorPosition = { x: grounded.x, y: visitorPosition.y, z: grounded.z };
+    } else {
+      visitorPosition = grounded;
+    }
     sendPresenceUpdate();
+  };
+
+  // ── Throw the selected thing: a real ballistic launch that tumbles, bounces off the terrain (or
+  // splashes and floats), then settles — the rest pose publishes through the normal upsert path so
+  // every client converges. The flight itself streams at ~7 Hz for remote spectators.
+  const throwEuler = new THREE.Euler();
+  const throwGenerated = (id: string) => {
+    const thing = thingById(id);
+    if (!thing || thing.id === sailingThingId) return;
+    const mesh = generatedMeshes.get(id);
+    if (!mesh) return;
+    const fp = thingFootprint(thing);
+    const radius = THREE.MathUtils.clamp(fp?.radius ?? 0.5, 0.3, 2.4);
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    dir.y = Math.max(dir.y, -0.15);
+    dir.normalize();
+    const heft = THREE.MathUtils.clamp(15 / (1 + radius * radius), 5, 14);
+    const isBalloon = thing.kind === "balloon";
+    const velocity = dir
+      .multiplyScalar(isBalloon ? heft * 0.7 : heft)
+      .add(new THREE.Vector3(0, 3.4, 0));
+    const groundHere = groundHeightAt(thing.position.x, thing.position.z) ?? SEA_LEVEL;
+    const start = new THREE.Vector3(
+      thing.position.x,
+      Math.max(thing.position.y, groundHere) + radius + 0.25,
+      thing.position.z,
+    );
+    const angular = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
+      .normalize()
+      .multiplyScalar(2 + Math.random() * 4);
+    const startQuat = new THREE.Quaternion().setFromEuler(
+      throwEuler.set(thing.rotationX ?? 0, thing.rotationY, thing.rotationZ ?? 0),
+    );
+    let lastFlightPublish = 0;
+    const applyPose = (p: THREE.Vector3, q: THREE.Quaternion) => {
+      thing.position = { x: p.x, y: p.y, z: p.z };
+      throwEuler.setFromQuaternion(q);
+      thing.rotationX = throwEuler.x;
+      thing.rotationY = throwEuler.y;
+      thing.rotationZ = throwEuler.z;
+      mesh.position.set(p.x, p.y, p.z);
+      mesh.quaternion.copy(q);
+      refreshInstancedThingMatrix(thing);
+    };
+    ambientPhysics.launch({
+      id,
+      radius,
+      position: start,
+      quaternion: startQuat,
+      velocity,
+      angularVelocity: angular,
+      gravityScale: isBalloon ? 0.16 : 1,
+      restitution: isBalloon ? 0.55 : 0.42,
+      onFrame: (p, q) => {
+        applyPose(p, q);
+        const nowMs = performance.now();
+        if (nowMs - lastFlightPublish > 150) {
+          lastFlightPublish = nowMs;
+          publishGeneratedThing(thing);
+        }
+        publish();
+      },
+      onSettle: (p, q) => {
+        applyPose(p, q);
+        publishGeneratedThing(thing);
+        updateSelectionIndicator();
+        publish();
+      },
+    });
   };
 
   const syncMeshes = (now: number) => {
@@ -2929,6 +3104,8 @@ function createTellusWorld(
     updateDayNightCycle(Date.now(), now);
     flushTerrain();
     flushPublish();
+    vegetation.update(visitorPosition.x, visitorPosition.z, visitorPosition.y, fpsValue, now);
+    ambientPhysics.step(delta);
     try {
       renderer.render(scene, camera);
     } catch (error) {
@@ -2984,6 +3161,11 @@ function createTellusWorld(
     if (event.key.startsWith("Arrow")) {
       event.preventDefault();
       if (nudgeSelectedWithArrowKey(event.key)) return;
+    }
+    if (event.key === " ") event.preventDefault(); // jump — don't scroll the page
+    if (event.key.toLowerCase() === "g" && selectedThingId) {
+      throwGenerated(selectedThingId);
+      return;
     }
     keys.add(event.key.toLowerCase());
   };
@@ -3352,8 +3534,15 @@ function createTellusWorld(
     getP2pStats: () => latestP2pStats,
     getSelfStream: () => selfStream,
     setAgentViewport,
+    throwGenerated,
+    getAmbientStats: () => ({
+      vegetation: vegetation.stats(),
+      physicsBodies: ambientPhysics.activeCount(),
+    }),
     destroy: () => {
       destroyed = true;
+      vegetation.dispose();
+      ambientPhysics.dispose();
       // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
       sendRtcSignal(null, "bye", "{}");
       for (const remoteId of remoteVisitorMeshes.keys()) {
@@ -3495,6 +3684,9 @@ function App(): React.ReactElement {
   const [selectedCam, setSelectedCam] = useState<string>("");
   const [p2pError, setP2pError] = useState<string | null>(null);
   const [p2pStats, setP2pStats] = useState<MeshStats | null>(null);
+  const [ambientStats, setAmbientStats] = useState<ReturnType<
+    TellusWorldApi["getAmbientStats"]
+  > | null>(null);
   // ── "Your Agent" panel state (per-user embodied agent on Hyades; self-contained, pure fetch) ──
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
@@ -3608,6 +3800,7 @@ function App(): React.ReactElement {
     if (!p2pPanelOpen && !showFps) return;
     const id = window.setInterval(() => {
       setP2pStats(worldRef.current?.getP2pStats() ?? null);
+      setAmbientStats(worldRef.current?.getAmbientStats() ?? null);
     }, 1000);
     return () => window.clearInterval(id);
   }, [p2pPanelOpen, showFps]);
@@ -4228,6 +4421,13 @@ function App(): React.ReactElement {
                 }}
               >
                 <div>{fps} FPS</div>
+                {ambientStats && (
+                  <div style={{ marginTop: 3, color: "#b8e08a" }}>
+                    veg T{ambientStats.vegetation.tier} · {ambientStats.vegetation.chunks}ch ·{" "}
+                    {Math.round(ambientStats.vegetation.grassIndices / 3)}tri ·{" "}
+                    {ambientStats.vegetation.trees}🌲 · {ambientStats.physicsBodies}⚙
+                  </div>
+                )}
                 <div style={{ marginTop: 3, color: "#9ad0ff" }}>
                   P2P {p2pStats?.tx ? "TX●" : "tx○"} {p2pStats?.rx ?? rxEnabled ? "RX●" : "rx○"} ·{" "}
                   {p2pStats?.rxStreams ?? 0}/16 streams
@@ -4872,6 +5072,16 @@ function App(): React.ReactElement {
                   }
                 >
                   Clone
+                </button>
+                <button
+                  type="button"
+                  className="selected-name-action"
+                  title="Hurl it where you're looking — it tumbles, bounces, and settles (or floats). Key: G"
+                  onClick={() =>
+                    worldRef.current?.throwGenerated(activeSelectedThing.id)
+                  }
+                >
+                  Throw
                 </button>
                 <button
                   type="button"

@@ -4,6 +4,24 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.6.0 — 2026-06-10
+- **Procedural vegetation (Crysis-style ground cover).** The island now grows wind-swayed grass and
+  flowers streamed in chunks around you, plus ~100+ procedural low-poly trees and rock scatter — all
+  terrain-aware (paint kind, height, slope, water/pond exclusion) and fully deterministic, so every
+  client grows the identical world with zero new protocol. Sculpting or painting the terrain re-grows
+  the affected vegetation lazily. On WebGPU the grass is a TSL node material with per-blade flutter, a
+  traveling gust front, **bend-away-as-you-walk-through**, and a shrink-into-the-ground distance fade;
+  the WebGL fallback renders the same geometry statically. Each chunk is one merged draw call stamped
+  into pre-allocated buffers (zero steady-state allocation), and an **adaptive quality controller**
+  drops density/radius tiers when FPS dips and climbs back when there's headroom.
+- **Physics.** (1) **Throw things**: select any placed object and press **G** (or the new Throw button)
+  to hurl it where you're looking — it arcs, tumbles, bounces off terrain slopes (real surface
+  normals), or splashes into water and bobs up to float; the rest pose publishes through the normal
+  upsert path so every client converges, and the flight streams at ~7 Hz for spectators. Balloons are
+  floaty. (2) **Jump** with Space (and fall off ledges instead of snapping down). (3) **Solid
+  obstacles**: trees and large placed objects now push you out instead of being walk-through holograms.
+- Debug overlay (triple-click) gains a vegetation/physics line (tier, chunks, tris, trees, bodies).
+
 ## 0.5.2 — 2026-06-10
 - **Chat with your agent.** The "Your Agent" panel's read-only Dialog feed is now a two-way **Chat**: a text
   box + Send (Enter to send) posts to the new Hyades `POST /agent/say`, your line appears immediately, and the

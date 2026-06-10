@@ -171,6 +171,14 @@ export interface TellusWorldApi {
   // Picture-in-picture POV view of the scene from a remote-presence avatar (the player's server-side agent).
   // Pass the agent's visitorId to show its viewport; pass null to hide it.
   setAgentViewport(visitorId: string | null): void;
+  // Ballistic throw of a placed thing (tumbles, bounces off terrain or splashes + floats, then
+  // settles; the rest pose publishes through the normal upsert path). Bound to G when selected.
+  throwGenerated(id: string): void;
+  // Live counters for the procedural vegetation + ambient physics (debug overlay).
+  getAmbientStats(): {
+    vegetation: { tier: number; chunks: number; grassIndices: number; trees: number };
+    physicsBodies: number;
+  };
   destroy(): void;
 }
 
