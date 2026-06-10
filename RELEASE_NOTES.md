@@ -4,6 +4,13 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.5.1 — 2026-06-10
+- **Fix: the agent POV viewport showed the player's sky, not the agent's.** The skybox dome, moon, and moon
+  cloud-veil are repositioned every frame to follow the *player* camera, so the picture-in-picture rendered
+  them locked to the player instead of the agent — the sky/moon in the PiP tracked your movement, not the
+  agent's. The PiP render now shifts those camera-following celestials onto the POV camera for its draw and
+  restores them immediately after (guarded so a dropped frame can't desync the moon).
+
 ## 0.5.0 — 2026-06-10
 - **Agent feedback in-game: dialog feed + POV viewport.** The "Your Agent" panel now shows what your
   server-side agent is doing. A **Dialog feed** (polled on the same ~3s cadence as status) streams the

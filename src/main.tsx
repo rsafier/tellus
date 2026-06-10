@@ -367,6 +367,9 @@ function createTellusWorld(
   const povForward = new THREE.Vector3();
   const povLookAt = new THREE.Vector3();
   const POV_LOOK_DROP = new THREE.Vector3(0, -1.4, 0);
+  // Scratch: the player-camera → POV-camera offset, used to re-center the camera-following celestials
+  // (skybox dome, moon) on the POV camera for the PiP render so they don't stay locked to the player.
+  const povSkyDelta = new THREE.Vector3();
   const fallbackSky = createSkyDome();
   if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
     skyboxTintMaterials.add(fallbackSky.material);
@@ -2828,6 +2831,7 @@ function createTellusWorld(
     if (!renderer || !agentViewportVisitorId) return;
     const avatar = remoteVisitorMeshes.get(agentViewportVisitorId);
     if (!avatar) return;
+    let skyShifted = false;
     try {
       // Eye = avatar world position + head offset; forward derived from the group's facing (rotation.y).
       avatar.getWorldPosition(povEye);
@@ -2842,6 +2846,16 @@ function createTellusWorld(
       povCamera.position.copy(povEye);
       povCamera.lookAt(povLookAt);
       povCamera.updateMatrixWorld();
+
+      // The skybox dome + moon + cloud veil are repositioned every frame to follow the PLAYER camera
+      // (updateCamera / updateDayNightCycle). Without this they stay centered on the player, so the PiP
+      // shows the player's sky/moon, not the agent's. Shift them by (POV - player) for this render, then
+      // undo it in the finally so the next main-loop frame starts from a clean player-centered state.
+      povSkyDelta.copy(povCamera.position).sub(camera.position);
+      syncExternalSkyboxToCamera(povCamera.position);
+      if (moonModel) moonModel.position.add(povSkyDelta);
+      moonCloudVeil.group.position.add(povSkyDelta);
+      skyShifted = true;
 
       const dpr = renderer.getPixelRatio();
       // Logical PiP rect: 220x140, sat clear in the bottom-LEFT corner (the sparse-HUD toolbelt is
@@ -2863,6 +2877,13 @@ function createTellusWorld(
       /* a bad PiP frame must never break the main loop */
     } finally {
       try {
+        // Restore the celestials to the player camera (next frame's updateCamera re-syncs the skybox too,
+        // but undo the moon shift here so a mid-frame read never sees the POV-shifted position).
+        if (skyShifted) {
+          if (moonModel) moonModel.position.sub(povSkyDelta);
+          moonCloudVeil.group.position.sub(povSkyDelta);
+          syncExternalSkyboxToCamera(camera.position);
+        }
         renderer.setScissorTest(false);
         renderer.setViewport(
           0,
