@@ -187,8 +187,15 @@ export class WebRtcMesh {
   /** Inbound 'signal' patch from the WS. */
   handleSignal(from: string, kind: string, payload: string): void {
     if (this.destroyed) return;
-    // Ignore signals from peers not in the current roster.
-    if (!from || from === this.selfId || !this.roster.has(from)) return;
+    if (!from || from === this.selfId) return;
+    // A signal is itself proof of presence: the server only relays signals between peers it has
+    // validated are both joined to the world. So if `from` isn't in our roster yet, ADOPT it rather
+    // than dropping — otherwise an offer that races ahead of the presence update gets discarded and
+    // the connection wedges (the offerer sends its offer only once). This eliminates that race.
+    if (!this.roster.has(from)) {
+      this.roster.add(from);
+      this.ensureStatsTimer();
+    }
 
     let parsed: unknown;
     try {

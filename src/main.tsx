@@ -3945,12 +3945,26 @@ function createTellusWorld(
     typeof navigator !== "undefined" &&
     Boolean(navigator.mediaDevices?.getUserMedia);
 
+  // P2P diagnostics: on by default (low volume) so connection issues are visible in the console;
+  // silence with localStorage 'tellus.p2pDebug' = '0'.
+  const p2pLog = (...args: unknown[]): void => {
+    try {
+      if (window.localStorage.getItem("tellus.p2pDebug") === "0") return;
+    } catch {
+      /* ignore */
+    }
+    console.info("[p2p]", ...args);
+  };
+
   const sendRtcSignal = (
     to: string | null,
     kind: string,
     payload: string,
   ): void => {
-    if (!worldSocket || worldSocket.readyState !== WebSocket.OPEN) return;
+    if (!worldSocket || worldSocket.readyState !== WebSocket.OPEN) {
+      p2pLog("send DROPPED (socket not open)", kind, "->", to);
+      return;
+    }
     try {
       worldSocket.send(
         JSON.stringify({
@@ -3959,6 +3973,7 @@ function createTellusWorld(
           signal: { to, kind, payload },
         }),
       );
+      p2pLog("send", kind, "->", to);
     } catch {
       /* socket race — peer will retry via renegotiation */
     }
@@ -3998,29 +4013,46 @@ function createTellusWorld(
 
   const feedP2pPresence = (peerIds: string[]): void => {
     if (p2pMesh) {
+      p2pLog("roster", peerIds);
       p2pMesh.setPresence(peerIds);
     } else {
+      p2pLog("roster (mesh pending)", peerIds);
       pendingPeerRoster = peerIds;
     }
   };
 
+  let lastP2pStatesLog = "";
   const ensureP2pMesh = (): void => {
-    if (p2pMesh || !p2pSupported) return;
+    if (p2pMesh || !p2pSupported) {
+      if (!p2pSupported) p2pLog("UNSUPPORTED (no RTCPeerConnection/getUserMedia)");
+      return;
+    }
+    p2pLog("mesh ready, self=", visitorId, "ice=", p2pIceServers);
     p2pMesh = new WebRtcMesh({
       selfId: visitorId,
       iceServers: p2pIceServers,
       sendSignal: (to, kind, payload) => sendRtcSignal(to, kind, payload),
-      onPeerStream: (peerId, stream) => setPeerVideo(peerId, stream),
+      onPeerStream: (peerId, stream) => {
+        p2pLog("peer stream", peerId, stream ? "ON" : "off");
+        setPeerVideo(peerId, stream);
+      },
       onLocalStream: (stream) => setSelfVideo(stream),
       onStats: (stats) => {
         latestP2pStats = stats;
+        // Log connection-state transitions (not every tick).
+        const sig = stats.peers.map((p) => `${p.id.slice(0, 6)}:${p.state}`).join(",");
+        if (sig !== lastP2pStatesLog) {
+          lastP2pStatesLog = sig;
+          p2pLog("states", sig || "(no peers)");
+        }
       },
-      onError: () => {
-        /* contained — a failed peer degrades to static, never surfaced to the world */
+      onError: (peerId, err) => {
+        p2pLog("ERROR", peerId, err);
       },
       maxPeers: 16,
     });
     if (pendingPeerRoster) {
+      p2pLog("roster (drained)", pendingPeerRoster);
       p2pMesh.setPresence(pendingPeerRoster);
       pendingPeerRoster = null;
     }
@@ -4445,6 +4477,7 @@ function createTellusWorld(
             s.from !== visitorId &&
             typeof s.kind === "string"
           ) {
+            p2pLog("recv", s.kind, "from", s.from, p2pMesh ? "" : "(mesh null!)");
             p2pMesh?.handleSignal(
               s.from,
               s.kind,
