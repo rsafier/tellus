@@ -37,6 +37,7 @@ data:
       "dayNightCycleMs": 600000,
       "dayNightStart": 0.18,
       "enabledAgents": ["johnny"],
+      "instanceStaticDuplicates": true,
       "avatars": {}
     }
 ---
