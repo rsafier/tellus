@@ -31,6 +31,7 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import {
   MeshBasicNodeMaterial,
   WebGPURenderer,
@@ -2433,6 +2434,10 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
 }
 
 function disposeObject(object: THREE.Object3D): void {
+  // Models cloned from the cached GLB share geometry/materials with the cache; never free those buffers
+  // here (it would break every other instance + the cache). The node wrappers are GC'd; buffers live in
+  // generatedGltfCache for the session.
+  if (object.userData?.sharedGltf) return;
   object.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
     child.geometry.dispose();
@@ -2475,11 +2480,27 @@ async function loadGltfObject(url: string): Promise<THREE.Object3D> {
   return (await cached).clone(true);
 }
 
+// Parse each generated GLB once, then hand out skeleton-safe clones (handles skinned/animated models, which
+// THREE's .clone() mishandles). Clones share geometry/materials with the cached original — see disposeObject,
+// which skips freeing those for sharedGltf instances. Avoids re-downloading + re-parsing on every re-add /
+// reconnect-snapshot replay / recovery.
+const generatedGltfCache = new Map<
+  string,
+  Promise<{ scene: THREE.Object3D; animations: THREE.AnimationClip[] }>
+>();
+
 async function loadGeneratedGltfObject(
   url: string,
 ): Promise<{ model: THREE.Object3D; animations: THREE.AnimationClip[] }> {
-  const gltf = await createGltfLoader().loadAsync(url);
-  return { model: gltf.scene, animations: gltf.animations };
+  let cached = generatedGltfCache.get(url);
+  if (!cached) {
+    cached = createGltfLoader()
+      .loadAsync(url)
+      .then((gltf) => ({ scene: gltf.scene, animations: gltf.animations }));
+    generatedGltfCache.set(url, cached);
+  }
+  const { scene, animations } = await cached;
+  return { model: skeletonClone(scene), animations };
 }
 
 function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
@@ -2660,7 +2681,7 @@ async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<T
   const { model, animations } = await loadGeneratedGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, assetTargetHeight(thing));
-  fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind };
+  fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind, sharedGltf: true };
   if (animations.length > 0) {
     fitted.userData.animations = animations;
   }
@@ -3741,7 +3762,18 @@ function createTellusWorld(
     sailingThingId,
   });
 
-  const publish = () => onSnapshot(snapshot());
+  // Coalesce HUD publishes to at most one per animation frame. publish() can be called many times per frame
+  // (every WS patch, every transform-drag frame); each onSnapshot is a deep-cloned snapshot + a React
+  // re-render, so collapsing them to a single flush in animate() removes the per-frame clone/render storm.
+  let publishPending = false;
+  const publish = () => {
+    publishPending = true;
+  };
+  const flushPublish = () => {
+    if (!publishPending) return;
+    publishPending = false;
+    onSnapshot(snapshot());
+  };
 
   const addLog = (entry: Omit<TellusLog, "id" | "tick">): TellusLog => {
     const log: TellusLog = {
@@ -3806,7 +3838,7 @@ function createTellusWorld(
     }
   };
 
-  const refreshTerrainGeometry = () => {
+  const rebuildCentralTerrain = () => {
     const positions = terrain.geometry.getAttribute(
       "position",
     ) as THREE.BufferAttribute;
@@ -3837,6 +3869,19 @@ function createTellusWorld(
     terrain.geometry.computeVertexNormals();
     refreshFlowerPatches();
   };
+  // Coalesce the full 9409-vertex rebuild (positions + colors + computeVertexNormals + flower patches) to one
+  // flush per frame — rapid sculpt steps and remote terrain patches no longer recompute the whole grid N
+  // times per frame. Terrain height queries use the math (terrainHeight), not the mesh, so a 1-frame defer is
+  // invisible.
+  let centralTerrainDirty = false;
+  const refreshTerrainGeometry = () => {
+    centralTerrainDirty = true;
+  };
+  const flushTerrain = () => {
+    if (!centralTerrainDirty) return;
+    centralTerrainDirty = false;
+    rebuildCentralTerrain();
+  };
   refreshFlowerPatches();
 
   const refreshDistantIslandGeometry = (spec: DistantIslandSpec) => {
@@ -3847,11 +3892,29 @@ function createTellusWorld(
     mesh.geometry = createDistantIslandTerrainGeometry(spec);
   };
 
+  // Cheap per-island fingerprint so a remote terrain patch (which carries the FULL state every time) only
+  // disposes+recreates a distant-island geometry that actually changed. Central sculpts never touch the
+  // distant islands, so this skips the entire rebuild loop on the common case.
+  const distantIslandSig = new Map<number, number>();
+  const distantIslandSignature = (spec: DistantIslandSpec): number => {
+    let h = 0;
+    for (let i = 0; i < spec.sculptOffsets.length; i++) {
+      h = (Math.imul(h, 31) + Math.round(spec.sculptOffsets[i] * 100)) | 0;
+    }
+    for (let i = 0; i < spec.paint.length; i++) {
+      h = (Math.imul(h, 31) + spec.paint[i]) | 0;
+    }
+    return h;
+  };
+
   const applyRemoteTerrainState = (terrainState: TellusTerrainState) => {
     if (!applyTellusTerrainState(terrainState)) return;
     terrainStateDirty = false;
     refreshTerrainGeometry();
     for (const spec of distantIslandSpecs) {
+      const sig = distantIslandSignature(spec);
+      if (distantIslandSig.get(spec.seed) === sig) continue;
+      distantIslandSig.set(spec.seed, sig);
       refreshDistantIslandGeometry(spec);
     }
     updatePondSurfacePosition();
@@ -6068,6 +6131,8 @@ function createTellusWorld(
     syncTransformControls();
     updateCamera();
     updateDayNightCycle(Date.now(), now);
+    flushTerrain();
+    flushPublish();
     try {
       renderer.render(scene, camera);
       refreshWorldFeedback(now);
