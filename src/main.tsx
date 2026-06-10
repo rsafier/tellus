@@ -24,6 +24,7 @@ import {
   Send,
   Ship,
   Trash2,
+  Video,
   Waves,
 } from "lucide-react";
 import * as THREE from "three";
@@ -42,12 +43,20 @@ import {
   mx_worley_noise_float,
   positionWorld,
   screenUV,
+  texture,
   time,
+  uv,
   vec2,
+  vec3,
   viewportDepthTexture,
   viewportLinearDepth,
   viewportSharedTexture,
 } from "three/tsl";
+import {
+  WebRtcMesh,
+  enumerateMediaDevices,
+  type MeshStats,
+} from "./webrtc-mesh";
 import {
   type TellusTerrainState,
   type WorldGeneratedThing,
@@ -233,6 +242,11 @@ interface TellusWorldApi {
   submitVisitorPrompt(prompt: string): void;
   snapshot(): TellusSnapshot;
   getFps(): number;
+  // ── P2P video controls (RX inbound video, TX local camera) ──
+  setRxEnabled(on: boolean): void;
+  setTxEnabled(on: boolean): Promise<boolean>;
+  setP2pDevices(audioDeviceId?: string, videoDeviceId?: string): Promise<void>;
+  getP2pStats(): MeshStats | null;
   destroy(): void;
 }
 
@@ -2847,11 +2861,177 @@ function createVisitorMesh(): THREE.Group {
   return group;
 }
 
-function createRemoteVisitorMesh(): THREE.Group {
+// ── P2P video: robot + TV-head avatar ───────────────────────────────────────
+// Remote visitors render as a robot body with a TV head. The TV screen defaults to animated
+// static (snow) and swaps to a live <video> texture when a peer's WebRTC MediaStream arrives.
+// State stashed on the screen mesh so setPeerVideo can hot-swap without rebuilding the avatar.
+interface TvScreenState {
+  mode: "static" | "video";
+  rendererIsWebGPU: boolean;
+  videoEl: HTMLVideoElement | null;
+  videoTexture: THREE.VideoTexture | null;
+}
+
+// One shared animated-static texture for every default (no-video) screen — repainted ~12fps in
+// the render tick (WebGL path only; the WebGPU path generates snow on the GPU with zero upload).
+let sharedStaticCanvas: HTMLCanvasElement | null = null;
+let sharedStaticTexture: THREE.CanvasTexture | null = null;
+let sharedStaticLastPaint = 0;
+
+function paintSharedStatic(): void {
+  const canvas = sharedStaticCanvas;
+  const tex = sharedStaticTexture;
+  if (!canvas || !tex) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const img = ctx.createImageData(canvas.width, canvas.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = (Math.random() * 255) | 0;
+    d[i] = v;
+    d[i + 1] = v;
+    d[i + 2] = v;
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  tex.needsUpdate = true;
+}
+
+function getSharedStaticTexture(): THREE.CanvasTexture {
+  if (!sharedStaticTexture) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 128;
+    canvas.height = 96;
+    sharedStaticCanvas = canvas;
+    sharedStaticTexture = new THREE.CanvasTexture(canvas);
+    sharedStaticTexture.colorSpace = THREE.SRGBColorSpace;
+    paintSharedStatic();
+  }
+  return sharedStaticTexture;
+}
+
+// Called once per frame from animate(); throttled to ~12fps. No-op until a static screen exists.
+function tickSharedStatic(nowMs: number): void {
+  if (!sharedStaticTexture) return;
+  if (nowMs - sharedStaticLastPaint < 83) return;
+  sharedStaticLastPaint = nowMs;
+  paintSharedStatic();
+}
+
+// Build a fresh unlit screen material showing animated static. WebGPU: GPU worley-noise node
+// (no CPU upload). WebGL: a MeshBasicMaterial mapped to the shared repainted CanvasTexture.
+function makeStaticScreenMaterial(rendererIsWebGPU: boolean): THREE.Material {
+  if (rendererIsWebGPU) {
+    const mat = new MeshBasicNodeMaterial();
+    const n = mx_worley_noise_float(uv().mul(vec2(36, 28)).add(time.mul(7)));
+    mat.colorNode = vec3(n, n, n);
+    return mat;
+  }
+  return new THREE.MeshBasicMaterial({ map: getSharedStaticTexture() });
+}
+
+// Swap a screen mesh to static (releasing any prior video material/texture but never the shared
+// static CanvasTexture).
+function applyStaticToScreen(screen: THREE.Mesh, rendererIsWebGPU: boolean): void {
+  const state = screen.userData.tvScreen as TvScreenState | undefined;
+  // Dispose prior per-screen material (and video texture/element if any).
+  const prev = screen.material;
+  if (state?.videoTexture) {
+    try {
+      state.videoTexture.dispose();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (state?.videoEl) {
+    try {
+      state.videoEl.pause();
+      state.videoEl.srcObject = null;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (Array.isArray(prev)) {
+    for (const m of prev) m.dispose();
+  } else if (prev) {
+    prev.dispose();
+  }
+  screen.material = makeStaticScreenMaterial(rendererIsWebGPU);
+  screen.userData.tvScreen = {
+    mode: "static",
+    rendererIsWebGPU,
+    videoEl: null,
+    videoTexture: null,
+  } satisfies TvScreenState;
+}
+
+// Swap a screen mesh to a live MediaStream. Fully contained — any failure falls back to static.
+function applyVideoToScreen(screen: THREE.Mesh, stream: MediaStream): void {
+  const state = screen.userData.tvScreen as TvScreenState | undefined;
+  const rendererIsWebGPU = state?.rendererIsWebGPU ?? false;
+  try {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.srcObject = stream;
+    void video.play().catch(() => undefined);
+    const videoTexture = new THREE.VideoTexture(video);
+    videoTexture.colorSpace = THREE.SRGBColorSpace;
+
+    // Release the prior material/texture before swapping.
+    const prev = screen.material;
+    if (state?.videoTexture) {
+      try {
+        state.videoTexture.dispose();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (state?.videoEl) {
+      try {
+        state.videoEl.pause();
+        state.videoEl.srcObject = null;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (Array.isArray(prev)) {
+      for (const m of prev) m.dispose();
+    } else if (prev) {
+      prev.dispose();
+    }
+
+    if (rendererIsWebGPU) {
+      const mat = new MeshBasicNodeMaterial();
+      mat.colorNode = texture(videoTexture);
+      screen.material = mat;
+    } else {
+      screen.material = new THREE.MeshBasicMaterial({ map: videoTexture });
+    }
+    screen.userData.tvScreen = {
+      mode: "video",
+      rendererIsWebGPU,
+      videoEl: video,
+      videoTexture,
+    } satisfies TvScreenState;
+  } catch {
+    // Texture/stream error → degrade this one TV to static; never throws into the render loop.
+    applyStaticToScreen(screen, rendererIsWebGPU);
+  }
+}
+
+function createRemoteVisitorMesh(rendererIsWebGPU: boolean): THREE.Group {
   const group = new THREE.Group();
   const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0x8fb8ff,
-    roughness: 0.7,
+    color: 0x9aa6b8,
+    roughness: 0.55,
+    metalness: 0.45,
+  });
+  const jointMaterial = new THREE.MeshStandardMaterial({
+    color: 0x5b6470,
+    roughness: 0.6,
+    metalness: 0.4,
   });
   const markerMaterial = new THREE.MeshStandardMaterial({
     color: 0xf5f0b8,
@@ -2859,23 +3039,73 @@ function createRemoteVisitorMesh(): THREE.Group {
     emissiveIntensity: 0.35,
     roughness: 0.55,
   });
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.46, 1.08, 6, 12),
+
+  // Legs.
+  for (const x of [-0.22, 0.22]) {
+    const leg = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.13, 0.15, 0.9, 12),
+      jointMaterial,
+    );
+    leg.position.set(x, 0.45, 0);
+    group.add(leg);
+  }
+  // Hips + torso.
+  const hips = new THREE.Mesh(
+    new THREE.BoxGeometry(0.62, 0.3, 0.42),
     bodyMaterial,
   );
-  body.position.y = 1.02;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.38, 16, 12),
+  hips.position.y = 1.02;
+  const torso = new THREE.Mesh(
+    new THREE.BoxGeometry(0.72, 0.82, 0.46),
     bodyMaterial,
   );
-  head.position.y = 1.98;
+  torso.position.y = 1.6;
+  group.add(hips, torso);
+  // Arms.
+  for (const x of [-0.52, 0.52]) {
+    const arm = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.1, 0.1, 0.82, 12),
+      jointMaterial,
+    );
+    arm.position.set(x, 1.58, 0);
+    group.add(arm);
+  }
+  // Neck.
+  const neck = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.12, 0.18, 10),
+    jointMaterial,
+  );
+  neck.position.y = 2.12;
+  group.add(neck);
+  // TV head (box) + front-face screen plane.
+  const tv = new THREE.Mesh(
+    new THREE.BoxGeometry(0.86, 0.68, 0.7),
+    bodyMaterial,
+  );
+  tv.position.y = 2.5;
+  group.add(tv);
+  const screen = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.7, 0.52),
+    makeStaticScreenMaterial(rendererIsWebGPU),
+  );
+  screen.position.set(0, 2.5, 0.351); // flush on the +Z front face of the TV box
+  screen.userData.tvScreen = {
+    mode: "static",
+    rendererIsWebGPU,
+    videoEl: null,
+    videoTexture: null,
+  } satisfies TvScreenState;
+  group.add(screen);
+  // Presence ring above the head.
   const marker = new THREE.Mesh(
     new THREE.TorusGeometry(0.52, 0.035, 8, 28),
     markerMaterial,
   );
-  marker.position.y = 2.58;
+  marker.position.y = 3.0;
   marker.rotation.x = Math.PI / 2;
-  group.add(body, head, marker);
+  group.add(marker);
+
+  group.userData.tvScreenRef = screen;
   return group;
 }
 
@@ -3715,6 +3945,120 @@ function createTellusWorld(
   const remoteVisitors = new Map<string, WorldPresence>();
   let lastPresenceSentAt = 0;
 
+  // ── P2P video mesh (WebRTC, RX-on/TX-off by default) ──────────────────────
+  // The mesh is the sole owner of all RTCPeerConnections; it lives outside the render loop and
+  // contains every async failure (a dead peer just leaves its TV on static). Hyades is the
+  // rendezvous only: signaling rides the /live WS, presence IS the peer roster, ICE comes from
+  // the world snapshot. Constructed lazily once ICE config is known.
+  let p2pMesh: WebRtcMesh | null = null;
+  let p2pIceServers: RTCIceServer[] = [
+    { urls: ["stun:stun.l.google.com:19302"] },
+  ];
+  let latestP2pStats: MeshStats | null = null;
+  let pendingPeerRoster: string[] | null = null;
+  // Streams that arrived before their avatar mesh existed (race on presence vs ontrack).
+  const pendingPeerStreams = new Map<string, MediaStream | null>();
+
+  const p2pSupported =
+    typeof RTCPeerConnection !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia);
+
+  const sendRtcSignal = (
+    to: string | null,
+    kind: string,
+    payload: string,
+  ): void => {
+    if (!worldSocket || worldSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      worldSocket.send(
+        JSON.stringify({
+          type: "signal",
+          visitorId,
+          signal: { to, kind, payload },
+        }),
+      );
+    } catch {
+      /* socket race — peer will retry via renegotiation */
+    }
+  };
+
+  // Swap a remote avatar's TV screen to a live stream (or back to static when stream === null).
+  const setPeerVideo = (peerId: string, stream: MediaStream | null): void => {
+    const mesh = remoteVisitorMeshes.get(peerId);
+    if (!mesh) {
+      // Avatar not built yet — remember and apply when applyRemotePresence creates it.
+      pendingPeerStreams.set(peerId, stream);
+      return;
+    }
+    const screen = mesh.userData.tvScreenRef as THREE.Mesh | undefined;
+    if (!screen) return;
+    if (stream) {
+      applyVideoToScreen(screen, stream);
+    } else {
+      applyStaticToScreen(screen, useWebGPU);
+    }
+  };
+
+  const feedP2pPresence = (peerIds: string[]): void => {
+    if (p2pMesh) {
+      p2pMesh.setPresence(peerIds);
+    } else {
+      pendingPeerRoster = peerIds;
+    }
+  };
+
+  const ensureP2pMesh = (): void => {
+    if (p2pMesh || !p2pSupported) return;
+    p2pMesh = new WebRtcMesh({
+      selfId: visitorId,
+      iceServers: p2pIceServers,
+      sendSignal: (to, kind, payload) => sendRtcSignal(to, kind, payload),
+      onPeerStream: (peerId, stream) => setPeerVideo(peerId, stream),
+      onStats: (stats) => {
+        latestP2pStats = stats;
+      },
+      onError: () => {
+        /* contained — a failed peer degrades to static, never surfaced to the world */
+      },
+      maxPeers: 16,
+    });
+    if (pendingPeerRoster) {
+      p2pMesh.setPresence(pendingPeerRoster);
+      pendingPeerRoster = null;
+    }
+  };
+
+  // Fetch cluster ICE config (STUN-only default), then stand up the mesh. Best-effort: on any
+  // failure we keep the bundled public STUN and still build the mesh.
+  const initP2p = async (): Promise<void> => {
+    if (!p2pSupported || !runtimeConfig.worldApiBase) return;
+    try {
+      const res = await fetch(`${runtimeConfig.worldApiBase}/api/tellus/ice`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const body = (await res.json()) as {
+          iceServers?: {
+            urls?: string[] | string;
+            username?: string;
+            credential?: string;
+          }[];
+        };
+        if (Array.isArray(body.iceServers) && body.iceServers.length > 0) {
+          p2pIceServers = body.iceServers.map((s) => ({
+            urls: s.urls ?? [],
+            username: s.username,
+            credential: s.credential,
+          }));
+        }
+      }
+    } catch {
+      /* keep bundled STUN */
+    }
+    ensureP2pMesh();
+  };
+
   const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
     generated.some(
       (thing) =>
@@ -3998,9 +4342,15 @@ function createTellusWorld(
       });
       let mesh = remoteVisitorMeshes.get(remote.visitorId);
       if (!mesh) {
-        mesh = createRemoteVisitorMesh();
+        mesh = createRemoteVisitorMesh(useWebGPU);
         remoteVisitorMeshes.set(remote.visitorId, mesh);
         scene.add(mesh);
+        // Drain any peer stream that surfaced before this avatar existed.
+        if (pendingPeerStreams.has(remote.visitorId)) {
+          const pending = pendingPeerStreams.get(remote.visitorId) ?? null;
+          pendingPeerStreams.delete(remote.visitorId);
+          setPeerVideo(remote.visitorId, pending);
+        }
       }
       const position = groundedPosition(
         remote.position.x,
@@ -4012,10 +4362,15 @@ function createTellusWorld(
     }
     for (const [remoteId, mesh] of remoteVisitorMeshes) {
       if (activeRemoteIds.has(remoteId)) continue;
+      // Detach + dispose the TV video (texture/<video>) BEFORE removing the avatar.
+      setPeerVideo(remoteId, null);
+      pendingPeerStreams.delete(remoteId);
       scene.remove(mesh);
       remoteVisitorMeshes.delete(remoteId);
       remoteVisitors.delete(remoteId);
     }
+    // Feed the live roster to the mesh (drives connect/disconnect of PCs).
+    feedP2pPresence(Array.from(activeRemoteIds));
     publish();
   };
 
@@ -4072,6 +4427,34 @@ function createTellusWorld(
         typeof (parsed as { id?: unknown }).id === "string"
       ) {
         applyRemoteGeneratedDelete((parsed as { id: string }).id);
+      }
+      // WebRTC signaling relay (ephemeral, Seq=0). The grain stamps `from`; the gateway already
+      // filtered to us. Hand to the mesh, which owns all PC/negotiation state.
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        (parsed as { type?: unknown }).type === "signal"
+      ) {
+        const sig = (parsed as { signal?: unknown }).signal;
+        if (sig && typeof sig === "object") {
+          const s = sig as {
+            from?: unknown;
+            kind?: unknown;
+            payload?: unknown;
+          };
+          if (
+            typeof s.from === "string" &&
+            s.from !== visitorId &&
+            typeof s.kind === "string"
+          ) {
+            p2pMesh?.handleSignal(
+              s.from,
+              s.kind,
+              typeof s.payload === "string" ? s.payload : "",
+            );
+          }
+        }
       }
     });
 
@@ -5044,6 +5427,7 @@ function createTellusWorld(
   }
 
   connectTellusWorldRealtime();
+  void initP2p();
   if (!tellusWorldBackendAvailable && !recoverGeneratedFromPlacementSnapshot()) {
     recoverGeneratedFromManifest();
   }
@@ -6615,6 +6999,7 @@ function createTellusWorld(
       mixer.update(delta);
     }
     syncMeshes(now);
+    tickSharedStatic(now);
     updateSelectionIndicator(now);
     syncTransformControls();
     updateCamera();
@@ -7056,8 +7441,30 @@ function createTellusWorld(
     submitVisitorPrompt,
     snapshot,
     getFps: () => fpsValue,
+    setRxEnabled: (on: boolean) => {
+      ensureP2pMesh();
+      p2pMesh?.setRx(on);
+    },
+    setTxEnabled: async (on: boolean) => {
+      ensureP2pMesh();
+      if (!p2pMesh) return false;
+      await p2pMesh.setTx(on);
+      return p2pMesh.isTx();
+    },
+    setP2pDevices: async (audioDeviceId?: string, videoDeviceId?: string) => {
+      ensureP2pMesh();
+      await p2pMesh?.setDevices(audioDeviceId, videoDeviceId);
+    },
+    getP2pStats: () => latestP2pStats,
     destroy: () => {
       destroyed = true;
+      // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
+      sendRtcSignal(null, "bye", "{}");
+      for (const remoteId of remoteVisitorMeshes.keys()) {
+        setPeerVideo(remoteId, null);
+      }
+      p2pMesh?.destroy();
+      p2pMesh = null;
       abortPendingGeneration();
       for (const thing of generated) {
         if (
@@ -7183,6 +7590,100 @@ function App(): React.ReactElement {
       setShowFps((v) => !v);
     }
   };
+  // ── P2P video panel state (RX inbound default ON, TX local camera default OFF) ──
+  const [p2pPanelOpen, setP2pPanelOpen] = useState(false);
+  const [rxEnabled, setRxEnabled] = useState(true);
+  const [txEnabled, setTxEnabled] = useState(false);
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMic, setSelectedMic] = useState<string>("");
+  const [selectedCam, setSelectedCam] = useState<string>("");
+  const [p2pError, setP2pError] = useState<string | null>(null);
+  const [p2pStats, setP2pStats] = useState<MeshStats | null>(null);
+  const p2pSupported =
+    typeof RTCPeerConnection !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia);
+
+  const p2pSelectStyle: React.CSSProperties = {
+    background: "rgba(0,0,0,0.4)",
+    color: "#dfe7d8",
+    border: "1px solid rgba(255,255,255,0.16)",
+    borderRadius: 6,
+    padding: "4px 6px",
+    fontSize: 12,
+  };
+  const p2pBtnStyle = (active: boolean): React.CSSProperties => ({
+    flex: 1,
+    padding: "5px 0",
+    borderRadius: 6,
+    border: active
+      ? "1px solid #6fae46"
+      : "1px solid rgba(255,255,255,0.18)",
+    background: active ? "rgba(111,174,70,0.25)" : "rgba(255,255,255,0.06)",
+    color: "#dfe7d8",
+    fontSize: 12,
+    cursor: "pointer",
+  });
+
+  const refreshP2pDevices = async () => {
+    try {
+      const { audioIn, videoIn } = await enumerateMediaDevices();
+      setAudioInputs(audioIn);
+      setVideoInputs(videoIn);
+    } catch {
+      /* enumerate can throw before any permission grant — ignore */
+    }
+  };
+
+  const toggleRx = () => {
+    const next = !rxEnabled;
+    setRxEnabled(next);
+    worldRef.current?.setRxEnabled(next);
+  };
+
+  const toggleTx = async () => {
+    const next = !txEnabled;
+    setP2pError(null);
+    // Optimistic flip; revert on denial. TX-on is the only permission prompt.
+    const ok = (await worldRef.current?.setTxEnabled(next)) ?? false;
+    if (next && !ok) {
+      setTxEnabled(false);
+      setP2pError("Camera/mic access denied or unavailable.");
+      return;
+    }
+    setTxEnabled(next && ok);
+    if (next && ok) void refreshP2pDevices(); // labels populate after the grant
+  };
+
+  const onMicChange = (id: string) => {
+    setSelectedMic(id);
+    void worldRef.current?.setP2pDevices(id || undefined, selectedCam || undefined);
+  };
+  const onCamChange = (id: string) => {
+    setSelectedCam(id);
+    void worldRef.current?.setP2pDevices(selectedMic || undefined, id || undefined);
+  };
+
+  // Sample mesh stats while the P2P panel OR the debug overlay is open (≈1Hz).
+  useEffect(() => {
+    if (!p2pPanelOpen && !showFps) return;
+    const id = window.setInterval(() => {
+      setP2pStats(worldRef.current?.getP2pStats() ?? null);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [p2pPanelOpen, showFps]);
+
+  // Re-enumerate when devices change (hot-plug, permission grant).
+  useEffect(() => {
+    if (!p2pSupported) return;
+    const handler = () => void refreshP2pDevices();
+    navigator.mediaDevices.addEventListener("devicechange", handler);
+    return () =>
+      navigator.mediaDevices.removeEventListener("devicechange", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p2pSupported]);
+
   // World switching: each worldId is its own Hyades grain (created on first use). The list endpoint only
   // returns SEEDED worlds, so we union it with locally-remembered ids + the current one.
   const [activeWorldId, setActiveWorldId] = useState<string | null>(null);
@@ -7667,7 +8168,17 @@ function App(): React.ReactElement {
                   zIndex: 20,
                 }}
               >
-                {fps} FPS
+                <div>{fps} FPS</div>
+                <div style={{ marginTop: 3, color: "#9ad0ff" }}>
+                  P2P {p2pStats?.tx ? "TX●" : "tx○"} {p2pStats?.rx ?? rxEnabled ? "RX●" : "rx○"} ·{" "}
+                  {p2pStats?.rxStreams ?? 0}/16 streams
+                </div>
+                {(p2pStats?.peers ?? []).map((peer) => (
+                  <div key={peer.id} style={{ color: "#c8c8c8" }}>
+                    {peer.id.slice(0, 6)} {peer.state}
+                    {peer.haveRemoteVideo ? " 📺" : ""} {Math.round(peer.kbps)}kbps
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -7812,7 +8323,111 @@ function App(): React.ReactElement {
             <MessageCircle size={18} />
             <span>Chat</span>
           </button>
+          {p2pSupported && (
+            <button
+              type="button"
+              className={p2pPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+              title="P2P Video"
+              onClick={() => {
+                setP2pPanelOpen((open) => !open);
+                void refreshP2pDevices();
+              }}
+            >
+              <Video size={18} />
+              <span>P2P</span>
+            </button>
+          )}
         </aside>
+        {p2pPanelOpen && p2pSupported && (
+          <aside
+            className="p2p-panel"
+            aria-label="P2P video"
+            style={{
+              position: "absolute",
+              bottom: 92,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: 280,
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(12,16,22,0.92)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "#dfe7d8",
+              font: "500 13px/1.4 system-ui, sans-serif",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              zIndex: 30,
+              pointerEvents: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>P2P Video</strong>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>
+                {p2pStats?.rxStreams ?? 0}/16 · 480p
+              </span>
+            </div>
+            <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+              Microphone
+              <select
+                value={selectedMic}
+                onChange={(e) => onMicChange(e.target.value)}
+                style={p2pSelectStyle}
+              >
+                <option value="">Default</option>
+                {audioInputs.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+              Camera
+              <select
+                value={selectedCam}
+                onChange={(e) => onCamChange(e.target.value)}
+                style={p2pSelectStyle}
+              >
+                <option value="">Default</option>
+                {videoInputs.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Cam ${d.deviceId.slice(0, 6)}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => void refreshP2pDevices()}
+                style={p2pBtnStyle(false)}
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={toggleRx}
+                style={p2pBtnStyle(rxEnabled)}
+              >
+                RX {rxEnabled ? "On" : "Off"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleTx()}
+                style={p2pBtnStyle(txEnabled)}
+              >
+                TX {txEnabled ? "On" : "Off"}
+              </button>
+            </div>
+            {p2pError && (
+              <div style={{ fontSize: 11, color: "#ff9a9a" }}>{p2pError}</div>
+            )}
+            <div style={{ fontSize: 10, opacity: 0.6 }}>
+              RX shows others' cameras on their TV heads. TX shares your camera (480p).
+            </div>
+          </aside>
+        )}
         {worldMapOpen && (
           <aside className="world-right-hud" aria-label="World systems">
             <section className="world-map" aria-label="World map">
