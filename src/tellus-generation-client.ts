@@ -1,0 +1,344 @@
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import type {
+  AssetForgePipelineStart,
+  AssetForgePipelineStatus,
+  AssetLibraryModel,
+  AssetLibraryResponse,
+  DirectGenerationProvider,
+  DirectGenerationResponse,
+  GeneratedAssetManifestEntry,
+  GeneratedThing,
+  GenerationProvider,
+  WorldFeedbackResponse,
+} from "./tellus-types";
+import { PIXEL3D_PROVIDER } from "./tellus-constants";
+import { extractErrorMessage, readJsonResponse } from "./tellus-utils";
+import { runtimeConfig } from "./tellus-runtime-config";
+import {
+  absoluteAssetForgeUrl,
+  absoluteTellusApiUrl,
+  tellusApiUrl,
+  tellusAssetLibraryUrl,
+  toAssetId,
+} from "./tellus-urls-identity";
+
+export const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
+export const dracoLoader = new DRACOLoader().setDecoderPath(
+  "https://www.gstatic.com/draco/versioned/decoders/1.5.7/",
+);
+
+export function createGltfLoader(): GLTFLoader {
+  return new GLTFLoader()
+    .setDRACOLoader(dracoLoader)
+    .setMeshoptDecoder(MeshoptDecoder);
+}
+
+export async function loadAssetLibraryModels(): Promise<AssetLibraryModel[]> {
+  const [libraryModels, generatedEntries] = await Promise.all([
+    (async () => {
+      if (!runtimeConfig.worldApiBase) return [];
+      const response = await fetch(tellusAssetLibraryUrl("/api/assets/models?per_page=24"), {
+        cache: "no-store",
+      });
+      if (!response.ok) return [];
+      const parsed = await readJsonResponse<AssetLibraryResponse>(response);
+      return Array.isArray(parsed.models)
+        ? parsed.models
+            .filter(
+              (model): model is AssetLibraryModel =>
+                typeof model.id === "string" && typeof model.name === "string",
+            )
+            .map((model) => ({ ...model, source: "asset-library" as const }))
+        : [];
+    })(),
+    generatedAssetManifestEntries().catch(() => []),
+  ]);
+  const generatedModels = generatedEntries
+    .map((entry): AssetLibraryModel | null => {
+      if (typeof entry.id !== "string" || typeof entry.modelUrl !== "string") {
+        return null;
+      }
+      const modelUrl = entry.modelUrl;
+      const prompt =
+        typeof entry.prompt === "string" && entry.prompt.trim()
+          ? entry.prompt.trim()
+          : "generated asset";
+      return {
+        id: `generated:${entry.id}`,
+        name: prompt,
+        description: prompt,
+        file_format: "glb",
+        modelUrl: absoluteTellusApiUrl(modelUrl),
+        source: "generated",
+      };
+    })
+    .filter((model): model is AssetLibraryModel => model !== null);
+  const seen = new Set<string>();
+  return [...generatedModels, ...libraryModels].filter((model) => {
+    const key = model.modelUrl ?? model.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+let generatedAssetManifestCache:
+  | { loadedAt: number; entries: GeneratedAssetManifestEntry[]; byId: Map<string, string> }
+  | undefined;
+
+export async function generatedAssetManifestEntries(): Promise<GeneratedAssetManifestEntry[]> {
+  const now = Date.now();
+  if (generatedAssetManifestCache && now - generatedAssetManifestCache.loadedAt < 5000) {
+    return generatedAssetManifestCache.entries;
+  }
+  const response = await fetch(tellusApiUrl("/generated-assets/manifest.json"), {
+    cache: "no-store",
+  });
+  if (!response.ok) return [];
+  const parsed = (await response.json()) as unknown;
+  const entries = Array.isArray(parsed)
+    ? (parsed as GeneratedAssetManifestEntry[]).filter(
+        (entry) =>
+          typeof entry.id === "string" &&
+          typeof entry.modelUrl === "string",
+      )
+    : [];
+  const byId = new Map<string, string>();
+  for (const entry of entries) {
+    byId.set(entry.id as string, absoluteTellusApiUrl(entry.modelUrl as string));
+  }
+  generatedAssetManifestCache = { loadedAt: now, entries, byId };
+  return entries;
+}
+
+export async function generatedAssetManifestModelUrls(): Promise<Map<string, string>> {
+  await generatedAssetManifestEntries();
+  const byId = generatedAssetManifestCache?.byId ?? new Map<string, string>();
+  return byId;
+}
+
+export function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
+  const maxSide = 768;
+  const sourceWidth = Math.max(1, canvas.width);
+  const sourceHeight = Math.max(1, canvas.height);
+  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.floor(sourceWidth * scale));
+  const height = Math.max(1, Math.floor(sourceHeight * scale));
+  const output = document.createElement("canvas");
+  output.width = width;
+  output.height = height;
+  const context = output.getContext("2d");
+  if (!context) throw new Error("Could not create image capture context");
+  context.drawImage(canvas, 0, 0, width, height);
+  return output.toDataURL("image/jpeg", 0.72);
+}
+
+export async function requestWorldFeedback(imageDataUrl: string): Promise<string> {
+  const response = await fetch(tellusApiUrl("/api/world-feedback"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      imageDataUrl,
+      prompt:
+        "Describe the visible Tellus world in 4-6 concise bullet points for an autonomous in-world agent. Focus on visible terrain, water, generated objects, agent/avatar positions, spatial relationships, and anything that looks unfinished or surprising.",
+    }),
+  });
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      `World feedback service returned ${response.status} ${
+        response.statusText || "non-JSON response"
+      }`.trim(),
+    );
+  }
+  const payload = (await response.json()) as WorldFeedbackResponse;
+  if (!response.ok) {
+    throw new Error(
+      payload.error ||
+        `World feedback service returned ${response.status} ${
+          response.statusText || "error"
+        }`.trim(),
+    );
+  }
+  if (!payload.summary?.trim()) {
+    throw new Error(payload.error || "World feedback returned no summary");
+  }
+  return payload.summary.trim().slice(0, 1600);
+}
+
+export async function startPixel3DGeneration(
+  thing: GeneratedThing,
+  signal?: AbortSignal,
+): Promise<AssetForgePipelineStart> {
+  if (!runtimeConfig.assetForgeApiBase) {
+    throw new Error("VITE_ASSET_FORGE_API_BASE is not configured");
+  }
+
+  const assetId = toAssetId(thing.prompt, thing.kind);
+  const response = await fetch(`${runtimeConfig.assetForgeApiBase}/api/generation/pipeline`, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      assetId,
+      name: thing.prompt.slice(0, 72),
+      description: thing.prompt,
+      type: thing.kind === "animal" ? "character" : "environment",
+      subtype: thing.kind,
+      generationType: thing.kind === "animal" ? "avatar" : "model",
+      quality: "standard",
+      enableRigging: thing.kind === "animal",
+      enableRetexturing: false,
+      enableSprites: false,
+      customPrompts: {
+        gameStyle:
+          "A tropical island paradise WebGPU floating-world, assets for Tellus should be on white background with only one object each, stylized, game-ready low-poly proportions.",
+      },
+      metadata: {
+        provider: PIXEL3D_PROVIDER,
+        useGPT5Enhancement: false,
+      },
+    }),
+  });
+
+  return readJsonResponse<AssetForgePipelineStart>(response);
+}
+
+export async function waitForPixel3DModelUrl(
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    await new Promise((resolve) => window.setTimeout(resolve, 4000));
+    signal?.throwIfAborted();
+    const response = await fetch(
+      `${runtimeConfig.assetForgeApiBase}/api/generation/pipeline/${pipelineId}`,
+      { signal },
+    );
+    const status = await readJsonResponse<AssetForgePipelineStatus>(response);
+    if (status.status === "failed") {
+      throw new Error(status.error ?? `Pipeline ${pipelineId} failed`);
+    }
+    if (status.status === "completed" && status.finalAsset?.modelUrl) {
+      return absoluteAssetForgeUrl(status.finalAsset.modelUrl);
+    }
+  }
+  throw new Error(`Pipeline ${pipelineId} timed out`);
+}
+
+export function hasExternalGenerationProvider(provider = runtimeConfig.generationProvider): boolean {
+  if (provider === "asset-forge") {
+    return Boolean(runtimeConfig.assetForgeApiBase);
+  }
+  return (
+    provider === "instantmesh-gradio" ||
+    provider === "pixal3d-gradio" ||
+    provider === "anigen-gradio"
+  );
+}
+
+export function isMissingApiRouteError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /\b(404|405)\b/.test(error.message) || error.message.includes("endpoint unavailable");
+}
+
+export function generationProviderForThing(thing: GeneratedThing): GenerationProvider {
+  if (
+    runtimeConfig.generationProvider === "local" ||
+    runtimeConfig.generationProvider === "asset-forge"
+  ) {
+    return runtimeConfig.generationProvider;
+  }
+  return thing.creatorId === "visitor"
+    ? runtimeConfig.playerGenerationProvider
+    : runtimeConfig.agentGenerationProvider;
+}
+
+export async function startDirectInstantMeshGeneration(
+  thing: GeneratedThing,
+  provider: DirectGenerationProvider,
+  signal?: AbortSignal,
+): Promise<DirectGenerationResponse> {
+  const response = await fetch(tellusApiUrl("/api/generate-3d"), {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: thing.id,
+      prompt: thing.prompt,
+      kind: thing.kind,
+      provider,
+      instantMeshBaseUrl:
+        provider === "instantmesh-gradio"
+          ? runtimeConfig.instantMeshTargets[runtimeConfig.instantMeshTarget]
+          : undefined,
+    }),
+  });
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
+    throw new Error("Direct generation endpoint unavailable");
+  }
+  return readJsonResponse<DirectGenerationResponse>(response);
+}
+
+export async function waitForDirectGeneration(
+  initial: DirectGenerationResponse,
+  signal?: AbortSignal,
+  onStatus?: (status: DirectGenerationResponse["status"]) => void,
+): Promise<DirectGenerationResponse> {
+  if (initial.modelUrl && initial.status !== "failed") return initial;
+  const deadline = Date.now() + 22 * 60 * 1000;
+  let lastStatus = initial.status;
+  // The job runs server-side; a transient poll error (network blip, a pod roll, a momentary CF/route hiccup)
+  // must NOT fail the whole generation — keep waiting and only give up after many CONSECUTIVE failures. This
+  // was the "generation failed on the UI but actually uploaded" bug: one dropped poll aborted the wait.
+  let consecutiveErrors = 0;
+  const maxConsecutiveErrors = 12; // ~48s of solid failures before giving up
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    await new Promise((resolve) => window.setTimeout(resolve, 4000));
+    signal?.throwIfAborted();
+    let status: DirectGenerationResponse;
+    try {
+      const response = await fetch(
+        tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`),
+        { signal },
+      );
+      const contentType = response.headers.get("Content-Type") ?? "";
+      if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
+        if (++consecutiveErrors > maxConsecutiveErrors) {
+          throw new Error("Direct generation endpoint unavailable");
+        }
+        continue;
+      }
+      status = await readJsonResponse<DirectGenerationResponse>(response);
+      consecutiveErrors = 0;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (++consecutiveErrors > maxConsecutiveErrors) throw error;
+      continue; // transient — the job is still running; poll again
+    }
+    if (status.status === "failed") {
+      throw new Error(status.error ?? `Generation job ${initial.jobId} failed`);
+    }
+    if (status.status && status.status !== lastStatus) {
+      lastStatus = status.status;
+      onStatus?.(status.status);
+    }
+    if (status.modelUrl) return status;
+  }
+  throw new Error(`Generation job ${initial.jobId} timed out`);
+}
+
+export function cancelDirectGeneration(jobId?: string): void {
+  if (!jobId) return;
+  void fetch(tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(jobId)}`), {
+    method: "DELETE",
+    keepalive: true,
+  }).catch(() => undefined);
+}
