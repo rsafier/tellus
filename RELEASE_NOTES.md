@@ -4,6 +4,17 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.4 — 2026-06-11
+- **Rigged VRM robot avatars.** Players and agents now render as rigged VRM robots streamed from
+  the asset store (Bluebot / Blue / Blue Atlantean — each visitor deterministically keeps the same
+  robot), with retargeted VRMA **walk/idle animation** (speed-matched stride, hysteresis so remotes
+  don't flicker) and a **jump hold** (mid-stride freeze while airborne; a real jump clip becomes a
+  one-line `CLIP_IDS.jump` change when one lands in the store). The TV head + screen float above
+  the robot's head, so **P2P video screens keep working unchanged**. The procedural TV-head robot
+  remains the instant placeholder and the fallback on any load failure; set localStorage
+  `tellus.classicAvatar=1` to opt out of VRM avatars entirely. Works on both WebGL and WebGPU
+  (MToon materials use the node-material path under WebGPU).
+
 ## 0.8.3 — 2026-06-11
 - **Logged-in world loads again** (with hyades 0.5.193's catch-all preflights). Also fixed a boot
   race where auth/status fired before the runtime config set the API base (404 on the page origin) —

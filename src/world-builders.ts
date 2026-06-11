@@ -186,6 +186,9 @@ export function createRemoteVisitorMesh(
     roughness: 0.55,
   });
 
+  // Procedural body parts are collected so the async VRM upgrade (tellus-vrm-avatar.ts) can hide
+  // them in place — the TV screen, TV box and marker ring stay live (P2P video rides the screen).
+  const bodyParts: THREE.Object3D[] = [];
   // Legs.
   for (const x of [-0.22, 0.22]) {
     const leg = new THREE.Mesh(
@@ -194,6 +197,7 @@ export function createRemoteVisitorMesh(
     );
     leg.position.set(x, 0.45, 0);
     group.add(leg);
+    bodyParts.push(leg);
   }
   // Hips + torso.
   const hips = new THREE.Mesh(
@@ -207,6 +211,7 @@ export function createRemoteVisitorMesh(
   );
   torso.position.y = 1.6;
   group.add(hips, torso);
+  bodyParts.push(hips, torso);
   // Arms.
   for (const x of [-0.52, 0.52]) {
     const arm = new THREE.Mesh(
@@ -215,6 +220,7 @@ export function createRemoteVisitorMesh(
     );
     arm.position.set(x, 1.58, 0);
     group.add(arm);
+    bodyParts.push(arm);
   }
   // Neck.
   const neck = new THREE.Mesh(
@@ -223,6 +229,7 @@ export function createRemoteVisitorMesh(
   );
   neck.position.y = 2.12;
   group.add(neck);
+  bodyParts.push(neck);
   // TV head (box) + front-face screen plane.
   const tv = new THREE.Mesh(
     new THREE.BoxGeometry(0.86, 0.68, 0.7),
@@ -252,6 +259,9 @@ export function createRemoteVisitorMesh(
   group.add(marker);
 
   group.userData.tvScreenRef = screen;
+  group.userData.robotBodyParts = bodyParts;
+  group.userData.tvBoxRef = tv;
+  group.userData.markerRef = marker;
   return group;
 }
 
