@@ -111,6 +111,14 @@ export default defineConfig(({ mode }) => {
   const hyadesApiKey = env.HYADES_API_KEY;
 
   return {
+    build: {
+      rollupOptions: {
+        input: {
+          main: "index.html",
+          agentView: "agent-view.html",
+        },
+      },
+    },
     server: {
       host: true,
       port: 3344,

@@ -4,6 +4,14 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.12 — 2026-06-11
+- **`agent-view.html` — the headless eye for offline agents.** A second, MINIMAL build entry that
+  renders just terrain + placed things + presence markers (no UI/React/P2P/vegetation/physics; fixed
+  daylight; plain WebGL; ~2fps warm loop; HTTP state polling so it never appears as a ghost player).
+  Exposes `window.agentView.captureFor(visitorId)` → JPEG of that agent's first-person view. One page
+  per WORLD serves every agent in it — Hyades opens these in the shared browser-driver container so
+  premium/offline agents can SEE without any player client streaming images.
+
 ## 0.7.11 — 2026-06-11
 - **Agent vision — your agent can SEE now.** While your agent runs, the client renders its
   first-person view into a small offscreen target every ~12s (256×144 JPEG, ~10KB) and ships it to
