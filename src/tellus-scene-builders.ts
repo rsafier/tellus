@@ -97,15 +97,18 @@ export function createFlowerSpriteMaterials(): THREE.SpriteMaterial[] {
   );
 }
 
-export function createTerrainGeometry(): THREE.BufferGeometry {
+// renderSegments decouples the VISUAL mesh density from the synced 97² sculpt grid: the mesh samples
+// terrainHeight()/terrainKind() (base + bilinear sculpt) at any resolution, so a denser mesh means
+// smoother slopes and finer paint blending with ZERO protocol/server changes.
+export function createTerrainGeometry(renderSegments = TERRAIN_SEGMENTS): THREE.BufferGeometry {
   const positions: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
 
-  for (let z = 0; z <= TERRAIN_SEGMENTS; z++) {
-    const vz = (z / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
-    for (let x = 0; x <= TERRAIN_SEGMENTS; x++) {
-      const vx = (x / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+  for (let z = 0; z <= renderSegments; z++) {
+    const vz = (z / renderSegments - 0.5) * WORLD_RADIUS * 2;
+    for (let x = 0; x <= renderSegments; x++) {
+      const vx = (x / renderSegments - 0.5) * WORLD_RADIUS * 2;
       const r = Math.hypot(vx, vz);
       const inside = r <= WORLD_RADIUS;
       const edgeScale = inside ? 1 : WORLD_RADIUS / r;
@@ -119,9 +122,9 @@ export function createTerrainGeometry(): THREE.BufferGeometry {
     }
   }
 
-  const row = TERRAIN_SEGMENTS + 1;
-  for (let z = 0; z < TERRAIN_SEGMENTS; z++) {
-    for (let x = 0; x < TERRAIN_SEGMENTS; x++) {
+  const row = renderSegments + 1;
+  for (let z = 0; z < renderSegments; z++) {
+    for (let x = 0; x < renderSegments; x++) {
       const a = z * row + x;
       const b = a + 1;
       const c = a + row;

@@ -178,6 +178,9 @@ export interface TellusWorldApi {
   // Ballistic throw of a placed thing (tumbles, bounces off terrain or splashes + floats, then
   // settles; the rest pose publishes through the normal upsert path). Bound to G when selected.
   throwGenerated(id: string): void;
+  // Explicit Move mode: while set, any press/drag on the world repositions that thing (camera orbit
+  // suspended). Pass null to exit. Driven by the selected-object "Move" button.
+  setMoveMode(id: string | null): void;
   // Live counters for the procedural vegetation + ambient physics (debug overlay).
   getAmbientStats(): {
     vegetation: { tier: number; chunks: number; grassIndices: number; trees: number };

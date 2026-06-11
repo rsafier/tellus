@@ -393,6 +393,12 @@ function createTellusWorld(
     skyboxTintMaterials.add(fallbackSky.material);
   }
   const useWebGPU = "gpu" in navigator;
+  // Visual terrain density (decoupled from the synced 97² sculpt grid): ~3× per axis on WebGPU
+  // (~83K vertices classic, capped at 384² on big worlds), 2× on the WebGL preview.
+  const terrainRenderSegments = Math.min(
+    TERRAIN_SEGMENTS * (useWebGPU ? 3 : 2) * WORLD_SCALE,
+    useWebGPU ? 384 : 192,
+  );
   const ocean = createOceanSurface(useWebGPU);
   const archipelago = createDistantArchipelago();
   // Ambient procedural vegetation (wind-swayed grass/flowers streamed around the player + island-wide
@@ -431,7 +437,7 @@ function createTellusWorld(
     worldRadius: OCEAN_RADIUS - 6,
   });
   const terrain = new THREE.Mesh(
-    createTerrainGeometry(),
+    createTerrainGeometry(terrainRenderSegments),
     new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.88,
@@ -584,17 +590,18 @@ function createTellusWorld(
       "position",
     ) as THREE.BufferAttribute;
     const colors = terrain.geometry.getAttribute("color") as THREE.BufferAttribute;
-    for (let zIndex = 0; zIndex <= TERRAIN_SEGMENTS; zIndex++) {
-      const vz = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
-      for (let xIndex = 0; xIndex <= TERRAIN_SEGMENTS; xIndex++) {
-        const vx = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+    const renderRow = terrainRenderSegments + 1;
+    for (let zIndex = 0; zIndex <= terrainRenderSegments; zIndex++) {
+      const vz = (zIndex / terrainRenderSegments - 0.5) * WORLD_RADIUS * 2;
+      for (let xIndex = 0; xIndex <= terrainRenderSegments; xIndex++) {
+        const vx = (xIndex / terrainRenderSegments - 0.5) * WORLD_RADIUS * 2;
         const radius = Math.hypot(vx, vz);
         const inside = radius <= WORLD_RADIUS;
         const edgeScale = inside ? 1 : WORLD_RADIUS / radius;
         const px = vx * edgeScale;
         const pz = vz * edgeScale;
         const py = inside ? terrainHeight(px, pz) : -4.5;
-        const index = terrainGridIndex(xIndex, zIndex);
+        const index = zIndex * renderRow + xIndex;
         positions.setXYZ(index, px, py, pz);
         const color = terrainVertexColor(
           inside ? terrainKind(px, pz, py) : "rock",
@@ -3217,6 +3224,21 @@ function createTellusWorld(
   };
   const handlePointerDown = (event: PointerEvent) => {
     if (transformDragging) return;
+    // Move mode: every press repositions the target — no picking, no modifier.
+    if (moveModeThingId) {
+      const thing = thingById(moveModeThingId);
+      if (thing && sailingThingId !== moveModeThingId && !ambientPhysics.has(moveModeThingId)) {
+        draggingThingId = moveModeThingId;
+        dragMoved = false;
+        const target = dragGroundTarget(event);
+        if (target) {
+          moveGenerated(moveModeThingId, target.x - thing.position.x, target.z - thing.position.z);
+          dragMoved = true;
+        }
+        return;
+      }
+      setMoveMode(null); // target vanished — drop the mode
+    }
     // Object grab: Ctrl/Cmd + drag on a mouse picks up ANY object (auto-selecting it); plain drag is
     // ALWAYS camera orbit so the two never fight. Touch (no modifier keys) keeps the old rule: press
     // the already-selected object to drag it.
@@ -3318,22 +3340,54 @@ function createTellusWorld(
   let dragMoved = false;
   let lastDragMoveAt = 0;
   const dragGroundTarget = (event: PointerEvent): { x: number; z: number } | null => {
+    // Analytic ray-march against terrainHeight() — the math, not the (now ~90K-vertex) mesh, so a
+    // pointer-move never pays a dense-mesh raycast. Coarse 2u steps then 14 bisection rounds.
     setPointerNdcFromEvent(event);
     raycaster.setFromCamera(pointerNdc, camera);
-    const hits = raycaster.intersectObject(terrain, false);
-    if (hits.length > 0) return { x: hits[0].point.x, z: hits[0].point.z };
-    // Off the island mesh: intersect the sea plane so vehicles can be dragged onto water.
     const ray = raycaster.ray;
-    if (Math.abs(ray.direction.y) < 1e-5) return null;
-    const t = (SEA_LEVEL - ray.origin.y) / ray.direction.y;
-    if (t <= 0) return null;
-    return { x: ray.origin.x + ray.direction.x * t, z: ray.origin.z + ray.direction.z * t };
+    const maxT = 260 * WORLD_SCALE;
+    let prevT = 0;
+    let prevAbove = ray.origin.y - terrainHeight(ray.origin.x, ray.origin.z) > 0;
+    for (let t = 2; t <= maxT; t += 2) {
+      const x = ray.origin.x + ray.direction.x * t;
+      const z = ray.origin.z + ray.direction.z * t;
+      const y = ray.origin.y + ray.direction.y * t;
+      const ground = Math.hypot(x, z) <= CENTRAL_WALK_RADIUS ? terrainHeight(x, z) : SEA_LEVEL;
+      const above = y - ground > 0;
+      if (prevAbove && !above) {
+        let lo = prevT;
+        let hi = t;
+        for (let i = 0; i < 14; i++) {
+          const mid = (lo + hi) / 2;
+          const mx = ray.origin.x + ray.direction.x * mid;
+          const mz = ray.origin.z + ray.direction.z * mid;
+          const my = ray.origin.y + ray.direction.y * mid;
+          const mg = Math.hypot(mx, mz) <= CENTRAL_WALK_RADIUS ? terrainHeight(mx, mz) : SEA_LEVEL;
+          if (my - mg > 0) lo = mid;
+          else hi = mid;
+        }
+        const ft = (lo + hi) / 2;
+        return { x: ray.origin.x + ray.direction.x * ft, z: ray.origin.z + ray.direction.z * ft };
+      }
+      prevAbove = above;
+      prevT = t;
+    }
+    return null;
+  };
+
+  // ── Explicit Move mode: a UI toggle (no modifier needed — works on every platform incl. touch).
+  // While active for the selected object, ANY press/drag on the world repositions it (click =
+  // teleport there, drag = carry); camera orbit is suspended until the mode is toggled off. ──
+  let moveModeThingId: string | null = null;
+  const setMoveMode = (id: string | null) => {
+    moveModeThingId = id && thingById(id) ? id : null;
+    container.style.cursor = moveModeThingId ? "move" : "";
   };
   const handlePointerUp = (event: PointerEvent) => {
     if (draggingThingId) {
       const id = draggingThingId;
       draggingThingId = null;
-      container.style.cursor = "";
+      container.style.cursor = moveModeThingId ? "move" : "";
       if (dragMoved) {
         const thing = thingById(id);
         if (thing) {
@@ -3645,6 +3699,7 @@ function createTellusWorld(
     getSelfStream: () => selfStream,
     setAgentViewport,
     throwGenerated,
+    setMoveMode,
     getAmbientStats: () => ({
       vegetation: vegetation.stats(),
       physicsBodies: ambientPhysics.activeCount(),
@@ -4209,6 +4264,13 @@ function App(): React.ReactElement {
   );
 
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
+  // Selected-object Move mode (mirrors world-side state; resets when the selection changes).
+  const [moveModeActive, setMoveModeActive] = useState(false);
+  useEffect(() => {
+    setMoveModeActive(false);
+    worldRef.current?.setMoveMode(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.selectedThingId]);
   const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
   // ── Clean up dead references: world things whose model is definitively gone ──
   // Dead = generationStatus "failed" (the old strip-on-error bug), a procedural:// URL that no longer
@@ -5316,6 +5378,23 @@ function App(): React.ReactElement {
                   }
                 >
                   Throw
+                </button>
+                <button
+                  type="button"
+                  className="selected-name-action"
+                  title="Move mode: click or drag anywhere in the world to put this object there (camera won't orbit until you toggle this off). Ctrl+drag works anytime without this."
+                  style={
+                    moveModeActive
+                      ? { background: "rgba(111,174,70,0.4)", fontWeight: 700 }
+                      : undefined
+                  }
+                  onClick={() => {
+                    const next = !moveModeActive;
+                    setMoveModeActive(next);
+                    worldRef.current?.setMoveMode(next ? activeSelectedThing.id : null);
+                  }}
+                >
+                  {moveModeActive ? "Moving…" : "Move"}
                 </button>
                 <button
                   type="button"

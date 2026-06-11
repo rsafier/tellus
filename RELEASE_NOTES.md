@@ -4,6 +4,17 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.9 — 2026-06-11
+- **Move button — no modifier needed.** The selected-object panel gains a **Move** toggle: while
+  active, click or drag anywhere in the world and the object goes there (click = teleport, drag =
+  carry); camera orbit pauses until you toggle it off. Works on every platform including touch.
+  Ctrl/Cmd+drag still works anytime as the power shortcut.
+- **~10× denser island mesh (9.4K → up to ~148K vertices).** The visual terrain now renders at 288²
+  segments on WebGPU (384² on large worlds, 192² on the WebGL preview) while still sampling the same
+  synced 97² sculpt grid — dramatically smoother slopes, crisper sculpt brush falloff, finer paint
+  blending; zero protocol or server changes. Object dragging switched to an analytic terrain
+  ray-march so the dense mesh never gets raycast per pointer move.
+
 ## 0.7.8 — 2026-06-11
 - **Store animals (Baby Wolf, Baby Skunk, …) now load and animate correctly.** Two bugs: (1) Tellus
   played a model's ENTIRE animation library simultaneously — multi-clip rigs (Bark/Bite/Death/Idle/
