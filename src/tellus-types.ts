@@ -74,6 +74,10 @@ export interface AssetLibraryModel {
   download_count?: number;
   modelUrl?: string;
   source?: "asset-library" | "generated";
+  /** Store browse-card extras (3D Asset Manager /models/browse). */
+  hasThumbnail?: boolean;
+  hasGameOptimized?: boolean;
+  tags?: string[];
 }
 
 export interface AssetLibraryResponse {

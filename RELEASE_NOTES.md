@@ -4,6 +4,15 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.3 — 2026-06-10
+- **Real 3D Asset Manager integration: search, thumbnails, the whole store.** The Assets panel's
+  Search tab previously showed a fixed 24-model slice — most of the store (275+ models, including all
+  the game-optimized ores) was unreachable. It's now a live, server-side browse of the store through
+  the existing Hyades proxy: a **search box** (debounced, full-text), **preview thumbnails** on every
+  card that has one, a **game-optimized badge**, tags, sort chips (**Newest / Popular / A–Z**), a
+  result counter, and **Load more** pagination through the entire catalog. Placement still uses the
+  game-optimized GLB (~80% smaller) with the original-file fallback.
+
 ## 0.7.2 — 2026-06-10
 - **Agent "Thinking…" feedback.** The Your Agent status badge now shows a blue **Thinking…** state
   while the agent is mid-turn (LLM call in flight), and the chat thread shows a "💭 thinking…" line —

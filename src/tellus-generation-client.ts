@@ -35,6 +35,57 @@ export function createGltfLoader(): GLTFLoader {
     .setMeshoptDecoder(MeshoptDecoder);
 }
 
+// Server-side search + pagination over the 3D Asset Manager's browse feed (proxied through Hyades:
+// /api/assets/models/browse -> {store}/api/models/browse). Cards carry thumbnail/game-optimized flags.
+export interface AssetBrowseResult {
+  models: AssetLibraryModel[];
+  hasNext: boolean;
+  total: number;
+}
+
+export type AssetBrowseSort = "newest" | "oldest" | "downloads" | "name";
+
+export async function browseAssetLibrary(
+  search: string,
+  page: number,
+  sort: AssetBrowseSort = "newest",
+  perPage = 24,
+): Promise<AssetBrowseResult> {
+  if (!runtimeConfig.worldApiBase) return { models: [], hasNext: false, total: 0 };
+  const params = new URLSearchParams({ page: String(page), per_page: String(perPage), sort });
+  if (search.trim()) params.set("search", search.trim());
+  const response = await fetch(tellusAssetLibraryUrl(`/api/assets/models/browse?${params.toString()}`), {
+    cache: "no-store",
+  });
+  if (!response.ok) return { models: [], hasNext: false, total: 0 };
+  const parsed = await readJsonResponse<{
+    has_next?: boolean;
+    total?: number;
+    models?: Array<Record<string, unknown>>;
+  }>(response);
+  const models: AssetLibraryModel[] = (Array.isArray(parsed.models) ? parsed.models : [])
+    .filter(
+      (m): m is Record<string, unknown> & { id: string; name: string } =>
+        typeof m.id === "string" && typeof m.name === "string",
+    )
+    .map((m) => ({
+      id: m.id,
+      name: m.name,
+      description: m.name,
+      file_format: typeof m.file_format === "string" ? m.file_format : undefined,
+      download_count: typeof m.download_count === "number" ? m.download_count : undefined,
+      hasThumbnail: m.has_thumbnail === true,
+      hasGameOptimized: m.has_game_optimized === true,
+      tags: Array.isArray(m.tags) ? m.tags.filter((t): t is string => typeof t === "string") : undefined,
+      source: "asset-library" as const,
+    }));
+  return {
+    models,
+    hasNext: parsed.has_next === true,
+    total: typeof parsed.total === "number" ? parsed.total : models.length,
+  };
+}
+
 export async function loadAssetLibraryModels(): Promise<AssetLibraryModel[]> {
   const [libraryModels, generatedEntries] = await Promise.all([
     (async () => {

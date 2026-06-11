@@ -76,7 +76,7 @@ import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browser
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
 import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
-import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
+import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import "./styles.css";
 
@@ -4083,8 +4083,47 @@ function App(): React.ReactElement {
     }
   };
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
+  // Store browse/search (server-side over the 3D Asset Manager): debounced query + paged results.
+  const [assetSearch, setAssetSearch] = useState("");
+  const [assetBrowse, setAssetBrowse] = useState<AssetLibraryModel[]>([]);
+  const [assetBrowsePage, setAssetBrowsePage] = useState(1);
+  const [assetBrowseHasNext, setAssetBrowseHasNext] = useState(false);
+  const [assetBrowseTotal, setAssetBrowseTotal] = useState(0);
+  const [assetBrowseLoading, setAssetBrowseLoading] = useState(false);
+  const [assetBrowseSort, setAssetBrowseSort] = useState<AssetBrowseSort>("newest");
+  const assetBrowseSeq = useRef(0);
+
+  const runAssetBrowse = useCallback(
+    async (query: string, page: number, append: boolean, sort: AssetBrowseSort) => {
+      const seq = ++assetBrowseSeq.current;
+      setAssetBrowseLoading(true);
+      try {
+        const result = await browseAssetLibrary(query, page, sort);
+        if (assetBrowseSeq.current !== seq) return; // a newer query superseded this one
+        setAssetBrowse((prev) => (append ? [...prev, ...result.models] : result.models));
+        setAssetBrowsePage(page);
+        setAssetBrowseHasNext(result.hasNext);
+        setAssetBrowseTotal(result.total);
+      } catch {
+        if (assetBrowseSeq.current === seq && !append) setAssetBrowse([]);
+      } finally {
+        if (assetBrowseSeq.current === seq) setAssetBrowseLoading(false);
+      }
+    },
+    [],
+  );
+
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
   const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
+  // Debounced live search whenever the Assets panel's Search tab is showing.
+  useEffect(() => {
+    if (!assetPanelOpen || assetPanelTab !== "search") return;
+    const id = window.setTimeout(
+      () => void runAssetBrowse(assetSearch, 1, false, assetBrowseSort),
+      assetSearch ? 350 : 0,
+    );
+    return () => window.clearTimeout(id);
+  }, [assetPanelOpen, assetPanelTab, assetSearch, assetBrowseSort, runAssetBrowse]);
   const [openToolMenus, setOpenToolMenus] = useState<ToolMenu[]>([]);
   const [createPromptOpen, setCreatePromptOpen] = useState(false);
   const [createPromptFocused, setCreatePromptFocused] = useState(false);
@@ -5369,28 +5408,119 @@ function App(): React.ReactElement {
             )}
             {assetPanelTab === "search" && (
               <div className="inventory-list asset-list">
-                {assetLibrary.length > 0 ? (
-                  assetLibrary.map((model) => (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0 6px" }}>
+                  <Search size={14} style={{ opacity: 0.6, flex: "none" }} />
+                  <input
+                    type="text"
+                    value={assetSearch}
+                    onChange={(e) => setAssetSearch(e.target.value)}
+                    placeholder="Search the asset store…"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 12,
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      background: "rgba(0,0,0,0.3)",
+                      color: "#eef2ea",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, paddingBottom: 6 }}>
+                  {(
+                    [
+                      ["newest", "Newest"],
+                      ["downloads", "Popular"],
+                      ["name", "A–Z"],
+                    ] as Array<[AssetBrowseSort, string]>
+                  ).map(([key, label]) => (
                     <button
-                      key={model.id}
+                      key={key}
                       type="button"
-                      className="inventory-item"
-                      onClick={() => worldRef.current?.addLibraryAsset(model)}
+                      onClick={() => setAssetBrowseSort(key)}
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 9px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: assetBrowseSort === key ? "rgba(111,174,70,0.3)" : "rgba(255,255,255,0.05)",
+                        color: "#e7eee2",
+                        cursor: "pointer",
+                      }}
                     >
-                      <Box size={16} />
-                      <span>
-                        <strong>{model.name.slice(0, 30)}</strong>
-                        <small>
-                          {(model.file_format ?? "model").toUpperCase()}
-                          {typeof model.download_count === "number"
-                            ? ` · ${model.download_count} downloads`
-                            : ""}
-                        </small>
-                      </span>
+                      {label}
                     </button>
-                  ))
-                ) : (
-                  <span className="inventory-empty">No library assets loaded yet.</span>
+                  ))}
+                  {assetBrowseTotal > 0 && (
+                    <span style={{ fontSize: 10, opacity: 0.55, marginLeft: "auto" }}>
+                      {assetBrowse.length}/{assetBrowseTotal}
+                    </span>
+                  )}
+                </div>
+                {assetBrowse.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className="inventory-item"
+                    onClick={() => worldRef.current?.addLibraryAsset(model)}
+                  >
+                    {model.hasThumbnail ? (
+                      <img
+                        src={tellusAssetLibraryUrl(
+                          `/api/assets/model/${encodeURIComponent(model.id)}/thumbnail`,
+                        )}
+                        alt=""
+                        loading="lazy"
+                        width={42}
+                        height={42}
+                        style={{
+                          width: 42,
+                          height: 42,
+                          flex: "none",
+                          objectFit: "cover",
+                          borderRadius: 6,
+                          background: "rgba(0,0,0,0.35)",
+                        }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <Box size={16} />
+                    )}
+                    <span>
+                      <strong>{model.name.slice(0, 34)}</strong>
+                      <small>
+                        {(model.file_format ?? "model").toUpperCase()}
+                        {model.hasGameOptimized ? " · game-optimized" : ""}
+                        {typeof model.download_count === "number" && model.download_count > 0
+                          ? ` · ${model.download_count}↓`
+                          : ""}
+                        {model.tags && model.tags.length > 0
+                          ? ` · ${model.tags.slice(0, 3).join(", ")}`
+                          : ""}
+                      </small>
+                    </span>
+                  </button>
+                ))}
+                {assetBrowse.length === 0 && !assetBrowseLoading && (
+                  <span className="inventory-empty">
+                    {assetSearch ? `Nothing matched “${assetSearch}”.` : "No library assets loaded yet."}
+                  </span>
+                )}
+                {assetBrowseLoading && (
+                  <span className="inventory-empty">Searching…</span>
+                )}
+                {assetBrowseHasNext && !assetBrowseLoading && (
+                  <button
+                    type="button"
+                    className="inventory-item"
+                    style={{ justifyContent: "center", fontWeight: 600 }}
+                    onClick={() => void runAssetBrowse(assetSearch, assetBrowsePage + 1, true, assetBrowseSort)}
+                  >
+                    Load more
+                  </button>
                 )}
               </div>
             )}
