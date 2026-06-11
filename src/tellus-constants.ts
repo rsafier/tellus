@@ -28,7 +28,11 @@ export function worldScaleForId(worldId: string): number {
   const id = worldId.toLowerCase();
   if (/^(mega|giant)[-_]/.test(id)) return 5;
   if (/^(large|big|xl)[-_]/.test(id)) return 3;
-  return 1;
+  // Default worlds are 2× the classic island (144 radius, 4× area) — operator wanted BIG as the
+  // baseline. `classic-*` opts back into the original 72-radius island. Mirrored in the server's
+  // TellusWorldScale — keep in lockstep.
+  if (/^classic[-_]/.test(id)) return 1;
+  return 2;
 }
 
 export function setWorldScale(scale: number): void {

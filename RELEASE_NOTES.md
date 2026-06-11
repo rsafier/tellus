@@ -4,6 +4,14 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.10 — 2026-06-11
+- **Every world is now BIGGER by default: 2× radius, 4× the area** — including `main`. The name ladder
+  is now: default **2×** (144 radius) · `large-*`/`big-*`/`xl-*` **3×** · `mega-*`/`giant-*` **5×** ·
+  `classic-*` opts back into the original 72-radius island. Walk speed scales up (~1.45×) so it stays
+  traversable; terrain renders at the full 384² density. Existing placed objects keep their absolute
+  coordinates, so current builds sit in the inner region of the expanded island — fresh frontier all
+  around. (Server grounding mirrors the change in Hyades 0.5.184.)
+
 ## 0.7.9 — 2026-06-11
 - **Move button — no modifier needed.** The selected-object panel gains a **Move** toggle: while
   active, click or drag anywhere in the world and the object goes there (click = teleport, drag =
