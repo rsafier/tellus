@@ -181,6 +181,10 @@ export interface TellusWorldApi {
   // Explicit Move mode: while set, any press/drag on the world repositions that thing (camera orbit
   // suspended). Pass null to exit. Driven by the selected-object "Move" button.
   setMoveMode(id: string | null): void;
+  // Agent vision: render the agent avatar's first-person view into a small offscreen target and
+  // return it as a JPEG data URL (null when the avatar isn't present). The app uploads this to
+  // Hyades so the agent's LLM turn can actually SEE — no headless browser involved.
+  captureAgentView(visitorId: string): Promise<string | null>;
   // Live counters for the procedural vegetation + ambient physics (debug overlay).
   getAmbientStats(): {
     vegetation: { tier: number; chunks: number; grassIndices: number; trees: number };

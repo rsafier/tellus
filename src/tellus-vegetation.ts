@@ -93,25 +93,27 @@ export interface VegetationSystem {
 
 const CHUNK = 12;
 const SECTOR = 72;
-const MAX_TUFTS = 470;
+const MAX_TUFTS = 320;
 const MAX_FLOWERS = 48;
 const MAX_EXTRAS = 24;
-const TUFT_CANDIDATES = 640;
+const TUFT_CANDIDATES = 460;
 
 // Quality tiers — radius streams fewer chunks AND trims the per-chunk cap. The accepted-candidate
 // prefix is tier-independent, so tier flips trim/extend growth without reshuffling it.
 // The controller targets a 30fps floor (operator call: "30fps or greater, no issues") — it sheds
 // below ~32 and keeps climbing toward GIGA whenever there's sustained headroom, so strong GPUs fill
 // a huge radius and weak ones settle wherever they hold 30+.
+// Operator-tuned: RANGE is the luxury, thickness isn't — densities stay moderate at every tier so
+// huge radii cost less (cover thins; the distance fade hides it).
 const TIERS = [
-  { radius: 18, density: 0.45 }, // 0 MIN
-  { radius: 27, density: 0.7 }, // 1 LOW
-  { radius: 36, density: 0.85 }, // 2 MED
-  { radius: 48, density: 1.0 }, // 3 HIGH
-  { radius: 64, density: 1.1 }, // 4 ULTRA
-  { radius: 84, density: 1.25 }, // 5 GIGA — the WebGPU DEFAULT (operator: "giga is not even a problem")
-  { radius: 108, density: 1.25 }, // 6 TERA
-  { radius: 136, density: 1.25 }, // 7 COSMIC (~440 active chunks; only with sustained headroom)
+  { radius: 18, density: 0.35 }, // 0 MIN
+  { radius: 27, density: 0.5 }, // 1 LOW
+  { radius: 36, density: 0.6 }, // 2 MED
+  { radius: 48, density: 0.7 }, // 3 HIGH
+  { radius: 64, density: 0.78 }, // 4 ULTRA
+  { radius: 84, density: 0.85 }, // 5 GIGA — the WebGPU default
+  { radius: 108, density: 0.85 }, // 6 TERA
+  { radius: 136, density: 0.85 }, // 7 COSMIC (only with sustained headroom)
 ] as const;
 
 const GRASS_BY_PAINT: Record<string, { accept: number; tint: number; tall: number }> = {
@@ -289,6 +291,8 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
   let tier = useWebGPU ? 5 : 1;
   const maxTier = useWebGPU ? 7 : 2;
   let tierGoodSince = 0;
+  let tierLowSince = 0;
+  let lastTierDropAt = 0;
   let lastDiffAt = 0;
   let lastDiffX = Infinity;
   let lastDiffZ = Infinity;
@@ -601,16 +605,25 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
     uFade.value.set(TIERS[tier].radius * 0.7, TIERS[tier].radius);
 
     if (fps > 0) {
-      if (fps < 32 && tier > 0) {
-        tier--;
+      // Hitch-proof shedding: a single GLB-decode stall used to crash several tiers in under a
+      // second (outer chunks popped off, then slowly re-grew). Dropping now requires fps < 32
+      // SUSTAINED for 1.2s, at most one tier per 2.5s.
+      if (fps < 32) {
+        if (tierLowSince === 0) tierLowSince = nowMs;
+        if (tier > 0 && nowMs - tierLowSince > 1200 && nowMs - lastTierDropAt > 2500) {
+          tier--;
+          lastTierDropAt = nowMs;
+        }
         tierGoodSince = 0;
       } else if (fps > 42 && tier < maxTier) {
+        tierLowSince = 0;
         if (tierGoodSince === 0) tierGoodSince = nowMs;
         else if (nowMs - tierGoodSince > 3000) {
           tier++;
           tierGoodSince = 0;
         }
       } else {
+        tierLowSince = 0;
         tierGoodSince = 0;
       }
     }

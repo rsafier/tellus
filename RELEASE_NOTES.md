@@ -4,6 +4,20 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.11 — 2026-06-11
+- **Agent vision — your agent can SEE now.** While your agent runs, the client renders its
+  first-person view into a small offscreen target every ~12s (256×144 JPEG, ~10KB) and ships it to
+  Hyades; the agent's next LLM turn attaches the image, so it reasons about what's actually in front
+  of it. No headless browser anywhere — the owner's own client is the camera (and free agents only
+  run while the owner is present anyway). Works on WebGPU and WebGL.
+- **Fix: vegetation no longer vanishes when placing/moving items.** A GLB-decode frame hitch tanked
+  the FPS sample and the quality controller crashed several tiers in under a second — outer chunks
+  popped off, then slowly re-grew. Dropping a tier now requires fps < 32 sustained for 1.2s (max one
+  tier per 2.5s); momentary hitches change nothing.
+- **Density rebalance: range over thickness.** Tier radii unchanged (up to 136u) but grass cover is
+  ~30% thinner across the board, and the terrain mesh uses a FIXED ~50K-vertex budget (224²) that
+  stretches with world size instead of multiplying — bigger worlds for less GPU.
+
 ## 0.7.10 — 2026-06-11
 - **Every world is now BIGGER by default: 2× radius, 4× the area** — including `main`. The name ladder
   is now: default **2×** (144 radius) · `large-*`/`big-*`/`xl-*` **3×** · `mega-*`/`giant-*` **5×** ·

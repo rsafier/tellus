@@ -393,12 +393,10 @@ function createTellusWorld(
     skyboxTintMaterials.add(fallbackSky.material);
   }
   const useWebGPU = "gpu" in navigator;
-  // Visual terrain density (decoupled from the synced 97² sculpt grid): ~3× per axis on WebGPU
-  // (~83K vertices classic, capped at 384² on big worlds), 2× on the WebGL preview.
-  const terrainRenderSegments = Math.min(
-    TERRAIN_SEGMENTS * (useWebGPU ? 3 : 2) * WORLD_SCALE,
-    useWebGPU ? 384 : 192,
-  );
+  // Visual terrain density (decoupled from the synced 97² sculpt grid). FIXED vertex budget no
+  // matter the world scale — bigger worlds stretch the same ~50K-vertex mesh instead of multiplying
+  // it (operator: range over thickness; worlds get larger for less).
+  const terrainRenderSegments = useWebGPU ? 224 : 144;
   const ocean = createOceanSurface(useWebGPU);
   const archipelago = createDistantArchipelago();
   // Ambient procedural vegetation (wind-swayed grass/flowers streamed around the player + island-wide
@@ -3049,28 +3047,106 @@ function createTellusWorld(
     agentViewportVisitorId = id && id.trim() ? id.trim() : null;
   };
 
+  // Position povCamera at a remote avatar's head looking along its facing. Shared by the on-screen
+  // PiP and the agent-vision capture. Returns false when the avatar isn't present.
+  const poseAgentPovCamera = (visitorId: string): boolean => {
+    const avatar = remoteVisitorMeshes.get(visitorId);
+    if (!avatar) return false;
+    avatar.getWorldPosition(povEye);
+    povEye.y += 2.4;
+    const facing = avatar.rotation.y;
+    povForward.set(Math.sin(facing), 0, Math.cos(facing)).normalize();
+    povLookAt.copy(povEye).addScaledVector(povForward, 8).add(POV_LOOK_DROP);
+    povCamera.position.copy(povEye);
+    povCamera.lookAt(povLookAt);
+    povCamera.updateMatrixWorld();
+    return true;
+  };
+
+  // ── Agent vision capture: render the agent's POV into a small offscreen target and return a JPEG
+  // data URL. The owner's client ships this to Hyades so the agent's LLM turn can SEE — no headless
+  // browser anywhere. Works on both backends (async readback on WebGPU, sync on WebGL). ──
+  const AGENT_VIEW_W = 256;
+  const AGENT_VIEW_H = 144;
+  let agentViewTarget: THREE.WebGLRenderTarget | null = null;
+  let agentViewCanvas: HTMLCanvasElement | null = null;
+  let agentViewBusy = false;
+  const captureAgentView = async (visitorId: string): Promise<string | null> => {
+    if (!renderer || agentViewBusy || destroyed) return null;
+    if (!poseAgentPovCamera(visitorId)) return null;
+    agentViewBusy = true;
+    try {
+      agentViewTarget ??= new THREE.WebGLRenderTarget(AGENT_VIEW_W, AGENT_VIEW_H);
+      const prevTarget = renderer.getRenderTarget() as THREE.WebGLRenderTarget | null;
+      // celestials follow the player camera — recenter them on the POV for this off-screen draw
+      povSkyDelta.copy(povCamera.position).sub(camera.position);
+      syncExternalSkyboxToCamera(povCamera.position);
+      if (moonModel) moonModel.position.add(povSkyDelta);
+      moonCloudVeil.group.position.add(povSkyDelta);
+      try {
+        renderer.setRenderTarget(agentViewTarget);
+        renderer.render(scene, povCamera);
+      } finally {
+        renderer.setRenderTarget(prevTarget);
+        if (moonModel) moonModel.position.sub(povSkyDelta);
+        moonCloudVeil.group.position.sub(povSkyDelta);
+        syncExternalSkyboxToCamera(camera.position);
+      }
+      const gpuRenderer = renderer as unknown as {
+        readRenderTargetPixelsAsync?: (
+          rt: THREE.WebGLRenderTarget,
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+        ) => Promise<Uint8Array | Uint8ClampedArray>;
+        readRenderTargetPixels?: (
+          rt: THREE.WebGLRenderTarget,
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          buffer: Uint8Array,
+        ) => void;
+      };
+      let pixels: Uint8Array | Uint8ClampedArray;
+      if (typeof gpuRenderer.readRenderTargetPixelsAsync === "function") {
+        pixels = await gpuRenderer.readRenderTargetPixelsAsync(agentViewTarget, 0, 0, AGENT_VIEW_W, AGENT_VIEW_H);
+      } else if (typeof gpuRenderer.readRenderTargetPixels === "function") {
+        const buf = new Uint8Array(AGENT_VIEW_W * AGENT_VIEW_H * 4);
+        gpuRenderer.readRenderTargetPixels(agentViewTarget, 0, 0, AGENT_VIEW_W, AGENT_VIEW_H, buf);
+        pixels = buf;
+      } else {
+        return null;
+      }
+      agentViewCanvas ??= document.createElement("canvas");
+      agentViewCanvas.width = AGENT_VIEW_W;
+      agentViewCanvas.height = AGENT_VIEW_H;
+      const ctx2d = agentViewCanvas.getContext("2d");
+      if (!ctx2d) return null;
+      const img = ctx2d.createImageData(AGENT_VIEW_W, AGENT_VIEW_H);
+      // flip Y (GPU readback is bottom-up)
+      for (let y = 0; y < AGENT_VIEW_H; y++) {
+        const src = (AGENT_VIEW_H - 1 - y) * AGENT_VIEW_W * 4;
+        img.data.set(pixels.subarray(src, src + AGENT_VIEW_W * 4), y * AGENT_VIEW_W * 4);
+      }
+      ctx2d.putImageData(img, 0, 0);
+      return agentViewCanvas.toDataURL("image/jpeg", 0.55);
+    } catch {
+      return null;
+    } finally {
+      agentViewBusy = false;
+    }
+  };
+
   // Render the agent POV picture-in-picture: a small second view of the scene from the target avatar's head,
   // looking forward along its facing. Runs AFTER the main render; any failure is swallowed so a bad PiP frame
   // never breaks the main loop. Works for both WebGL and WebGPU renderers (both expose scissor/viewport/render).
   const renderAgentViewport = () => {
     if (!renderer || !agentViewportVisitorId) return;
-    const avatar = remoteVisitorMeshes.get(agentViewportVisitorId);
-    if (!avatar) return;
+    if (!poseAgentPovCamera(agentViewportVisitorId)) return;
     let skyShifted = false;
     try {
-      // Eye = avatar world position + head offset; forward derived from the group's facing (rotation.y).
-      avatar.getWorldPosition(povEye);
-      povEye.y += 2.4;
-      const facing = avatar.rotation.y;
-      povForward.set(Math.sin(facing), 0, Math.cos(facing)).normalize();
-      // Look slightly ahead and a touch down, so the PiP frames the world in front of the agent.
-      povLookAt
-        .copy(povEye)
-        .addScaledVector(povForward, 8)
-        .add(POV_LOOK_DROP);
-      povCamera.position.copy(povEye);
-      povCamera.lookAt(povLookAt);
-      povCamera.updateMatrixWorld();
 
       // The skybox dome + moon + cloud veil are repositioned every frame to follow the PLAYER camera
       // (updateCamera / updateDayNightCycle). Without this they stay centered on the player, so the PiP
@@ -3698,6 +3774,7 @@ function createTellusWorld(
     getP2pStats: () => latestP2pStats,
     getSelfStream: () => selfStream,
     setAgentViewport,
+    captureAgentView,
     throwGenerated,
     setMoveMode,
     getAmbientStats: () => ({
@@ -3706,6 +3783,7 @@ function createTellusWorld(
     }),
     destroy: () => {
       destroyed = true;
+      agentViewTarget?.dispose();
       vegetation.dispose();
       ambientPhysics.dispose();
       // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
@@ -4132,6 +4210,35 @@ function App(): React.ReactElement {
       world.setAgentViewport(null);
     }
   }, [agentViewportOn, agentStatus?.visitorId]);
+
+  // Agent vision uplink: while the agent runs, periodically render its POV client-side and ship a
+  // small JPEG to Hyades (the LLM turn attaches it — the agent SEES without any headless browser).
+  useEffect(() => {
+    const visitorId = agentStatus?.visitorId;
+    const running = Boolean(agentStatus?.optedIn && agentStatus?.enabled && visitorId);
+    if (!running || !visitorId) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const image = await worldRef.current?.captureAgentView(visitorId);
+        if (cancelled || !image) return;
+        await fetch(tellusAgentUrl("view"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image }),
+        });
+      } catch {
+        /* best effort — vision is a bonus sense */
+      }
+    };
+    const id = window.setInterval(() => void tick(), 12_000);
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [agentStatus?.optedIn, agentStatus?.enabled, agentStatus?.visitorId]);
 
   // The chat thread and viewport persist across panel open/close — the agent keeps running either
   // way, so closing the tab is just hiding the controls.
