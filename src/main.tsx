@@ -88,6 +88,7 @@ installSessionFetch();
 
 // Per-user embodied-agent status shape returned by the Hyades world agent endpoints (camelCase).
 interface AgentStatus {
+  worldId?: string;
   enabled: boolean;
   optedIn: boolean;
   offlinePersistence: boolean;
@@ -4154,6 +4155,29 @@ function App(): React.ReactElement {
     if (status) setMemoriesEditing(false); // saved — drop back to the live read-only view
   }, [runAgentAction, agentPersonaDraft]);
 
+  // Persona portability: each world has its OWN agent grain; the default persona is what a brand-new
+  // world's agent seeds from (server: POST /api/tellus/user/default-persona; the per-world copy is
+  // independent afterwards). Saves the per-world persona too so "Set as default" never loses the edit.
+  const onAgentSaveDefaultPersona = useCallback(async () => {
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      await runAgentAction("persona", { text: agentPersonaDraft, replace: true });
+      const base = runtimeConfig.worldApiBase || runtimeConfig.apiBase || "";
+      const res = await fetch(`${base}/api/tellus/user/default-persona?userId=${encodeURIComponent(tellusUserId())}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: agentPersonaDraft }),
+      });
+      if (!res.ok) throw new Error(`default persona save failed (${res.status})`);
+      setMemoriesEditing(false);
+    } catch (error) {
+      setAgentError(error instanceof Error ? error.message : "default persona save failed");
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [runAgentAction, agentPersonaDraft]);
+
   // Edit history of the agent's self-section (its own `remember` writes + your persona saves).
   const loadMemoriesLog = useCallback(async () => {
     setMemoriesLog(null);
@@ -5306,7 +5330,12 @@ function App(): React.ReactElement {
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <strong style={{ fontSize: 13 }}>Your Agent</strong>
+              <strong style={{ fontSize: 13 }}>
+                Your Agent{" "}
+                <span style={{ fontSize: 10, opacity: 0.6, fontWeight: 500 }} title="Each world has its own agent — its memories live in that world. Use 'Set as default' in Personality to carry a persona into new worlds.">
+                  in “{agentStatus?.worldId || activeWorldId || runtimeConfig.worldId}”
+                </span>
+              </strong>
               {(() => {
                 const optedIn = agentStatus?.optedIn ?? false;
                 const running =
@@ -5397,27 +5426,40 @@ function App(): React.ReactElement {
                   fontWeight: 600,
                 }}
               >
-                {memoriesOpen ? "▾" : "▸"} Memories
+                {memoriesOpen ? "▾" : "▸"} Personality &amp; memories
               </button>
               {!memoriesOpen ? (
-                <pre
-                  style={{
-                    margin: 0,
-                    maxHeight: 64,
-                    overflowY: "auto",
-                    background: "rgba(0,0,0,0.32)",
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    borderRadius: 6,
-                    padding: "6px 8px",
-                    fontSize: 11,
-                    fontFamily: "inherit",
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                    opacity: 0.85,
-                  }}
-                >
-                  {agentStatus?.selfSection?.trim() || "No memories yet."}
-                </pre>
+                <>
+                  <pre
+                    style={{
+                      margin: 0,
+                      maxHeight: 64,
+                      overflowY: "auto",
+                      background: "rgba(0,0,0,0.32)",
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      fontSize: 11,
+                      fontFamily: "inherit",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      opacity: 0.85,
+                    }}
+                  >
+                    {agentStatus?.selfSection?.trim() || "No personality set — click Edit to describe your agent."}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAgentPersonaDraft(agentStatus?.selfSection ?? "");
+                      setMemoriesOpen(true);
+                      setMemoriesEditing(true);
+                    }}
+                    style={{ ...p2pBtnStyle(false), alignSelf: "flex-start" }}
+                  >
+                    Edit personality
+                  </button>
+                </>
               ) : memoriesEditing ? (
                 <>
                   <textarea
@@ -5455,6 +5497,15 @@ function App(): React.ReactElement {
                       style={p2pBtnStyle(false)}
                     >
                       Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={agentBusy}
+                      title="Save this text as your default persona — your agent in any NEW world starts with it (each world keeps its own copy afterwards)."
+                      onClick={() => void onAgentSaveDefaultPersona()}
+                      style={{ ...p2pBtnStyle(false), opacity: agentBusy ? 0.6 : 1 }}
+                    >
+                      Set as default
                     </button>
                   </div>
                 </>

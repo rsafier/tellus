@@ -202,7 +202,23 @@ export async function loadRuntimeConfigFile(path: string): Promise<void> {
   applyRuntimeConfig(await readJsonResponse<unknown>(response));
 }
 
+// Readiness signal: API-base-dependent modules (tellus-auth) wait on this so a boot-time call never
+// fires against the page origin before /tellus-config.json has set worldApiBase (the auth/status-404
+// boot race). Resolved no matter how loading ends.
+let runtimeConfigReadyResolve: (() => void) | undefined;
+export const runtimeConfigReady: Promise<void> = new Promise((resolve) => {
+  runtimeConfigReadyResolve = resolve;
+});
+
 export async function loadRuntimeConfig(): Promise<void> {
+  try {
+    await loadRuntimeConfigInner();
+  } finally {
+    runtimeConfigReadyResolve?.();
+  }
+}
+
+async function loadRuntimeConfigInner(): Promise<void> {
   await loadRuntimeConfigFile("/tellus-config.json");
   if (
     window.location.hostname === "localhost" ||

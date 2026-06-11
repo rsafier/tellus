@@ -7,7 +7,7 @@
 // existing call sites pick it up). The /live WebSocket cannot carry headers — it keeps the soft
 // ?userId= identity, which tellusUserId() switches to the accountId while logged in.
 
-import { runtimeConfig } from "./tellus-runtime-config";
+import { runtimeConfig, runtimeConfigReady } from "./tellus-runtime-config";
 
 // ── Wire shapes ──────────────────────────────────────────────────────────────
 
@@ -277,7 +277,20 @@ export function installSessionFetch(): void {
   };
 }
 
-async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
+/** Boot race guard: wait (bounded) for the runtime config so URLs are built against the real API base
+ * rather than the page origin. No-op once the base is known. */
+async function ensureApiRoot(): Promise<void> {
+  if (apiRoot()) return;
+  await Promise.race([runtimeConfigReady, new Promise((r) => setTimeout(r, 5000))]);
+}
+
+async function apiJson<T>(urlOrBuilder: string | (() => string), init?: RequestInit): Promise<T> {
+  await ensureApiRoot();
+  const url = typeof urlOrBuilder === "function" ? urlOrBuilder() : urlOrBuilder;
+  return await apiJsonAt<T>(url, init);
+}
+
+async function apiJsonAt<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const token = sessionToken();
@@ -298,7 +311,7 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
 // ── Auth status / logout / claim ─────────────────────────────────────────────
 
 export async function authStatus(): Promise<TellusAuthStatus> {
-  const status = await apiJson<TellusAuthStatus>(authUrl("status"));
+  const status = await apiJson<TellusAuthStatus>(() => authUrl("status"));
   if (status.authenticated && status.account) {
     updateCachedAccount(status.account);
   } else if (!status.authenticated && sessionToken()) {
@@ -310,7 +323,7 @@ export async function authStatus(): Promise<TellusAuthStatus> {
 
 export async function logout(all = false): Promise<void> {
   try {
-    await apiJson<{ ok?: boolean }>(authUrl("logout"), {
+    await apiJson<{ ok?: boolean }>(() => authUrl("logout"), {
       method: "POST",
       body: JSON.stringify({ all }),
     });
@@ -332,7 +345,7 @@ export function anonymousUserId(): string | null {
 export async function claimAnonymousId(): Promise<TellusAccount | null> {
   const userId = anonymousUserId();
   if (!userId) return getSession()?.account ?? null;
-  const body = await apiJson<{ account: TellusAccount }>(authUrl("claim"), {
+  const body = await apiJson<{ account: TellusAccount }>(() => authUrl("claim"), {
     method: "POST",
     body: JSON.stringify({ userId }),
   });
@@ -343,7 +356,7 @@ export async function claimAnonymousId(): Promise<TellusAccount | null> {
 // ── Nostr login (NIP-07 + NIP-46 bunker) ─────────────────────────────────────
 
 async function fetchNonce(): Promise<string> {
-  const body = await apiJson<{ nonce: string; expiresAt?: string }>(authUrl("nonce"));
+  const body = await apiJson<{ nonce: string; expiresAt?: string }>(() => authUrl("nonce"));
   if (!body.nonce) throw new Error("Auth nonce unavailable.");
   return body.nonce;
 }
@@ -353,7 +366,7 @@ function nonceEventTemplate(nonce: string): NostrEventTemplate {
 }
 
 async function postSignedNonceEvent(route: "nostr" | "link/nostr", event: SignedNostrEvent): Promise<LoginResponse | { account: TellusAccount }> {
-  return await apiJson<LoginResponse & { account: TellusAccount }>(authUrl(route), {
+  return await apiJson<LoginResponse & { account: TellusAccount }>(() => authUrl(route), {
     method: "POST",
     body: JSON.stringify(event),
   });
@@ -527,7 +540,7 @@ export async function maybeResolveNip05(): Promise<void> {
       /* ignore */
     }
     if (!claim) return;
-    const body = await apiJson<{ account: TellusAccount }>(authUrl("nip05"), {
+    const body = await apiJson<{ account: TellusAccount }>(() => authUrl("nip05"), {
       method: "POST",
       body: JSON.stringify({ nip05: claim }),
     });
@@ -607,7 +620,7 @@ function requirePasskeySupport(): void {
 
 export async function passkeyRegister(label?: string): Promise<TellusAccount> {
   requirePasskeySupport();
-  const begin = await apiJson<PasskeyBeginResponse>(authUrl("passkey/register/begin"), {
+  const begin = await apiJson<PasskeyBeginResponse>(() => authUrl("passkey/register/begin"), {
     method: "POST",
     body: JSON.stringify({ label: label || undefined }),
   });
@@ -631,7 +644,7 @@ export async function passkeyRegister(label?: string): Promise<TellusAccount> {
       attestationObject: bufferToBase64url(attestation.attestationObject),
     },
   };
-  const body = await apiJson<LoginResponse>(authUrl("passkey/register/finish"), {
+  const body = await apiJson<LoginResponse>(() => authUrl("passkey/register/finish"), {
     method: "POST",
     body: JSON.stringify({ ceremonyId: begin.ceremonyId, credential, label: label || undefined }),
   });
@@ -641,7 +654,7 @@ export async function passkeyRegister(label?: string): Promise<TellusAccount> {
 
 export async function passkeyLogin(): Promise<TellusAccount> {
   requirePasskeySupport();
-  const begin = await apiJson<PasskeyBeginResponse>(authUrl("passkey/login/begin"), {
+  const begin = await apiJson<PasskeyBeginResponse>(() => authUrl("passkey/login/begin"), {
     method: "POST",
     body: JSON.stringify({}),
   });
@@ -665,7 +678,7 @@ export async function passkeyLogin(): Promise<TellusAccount> {
       userHandle: assertion.userHandle ? bufferToBase64url(assertion.userHandle) : null,
     },
   };
-  const body = await apiJson<LoginResponse>(authUrl("passkey/login/finish"), {
+  const body = await apiJson<LoginResponse>(() => authUrl("passkey/login/finish"), {
     method: "POST",
     body: JSON.stringify({ ceremonyId: begin.ceremonyId, credential }),
   });
@@ -676,17 +689,17 @@ export async function passkeyLogin(): Promise<TellusAccount> {
 // ── Payments (premium checkout) ──────────────────────────────────────────────
 
 export async function getProducts(): Promise<PayProduct[]> {
-  const body = await apiJson<{ products?: PayProduct[] }>(payUrl("products"));
+  const body = await apiJson<{ products?: PayProduct[] }>(() => payUrl("products"));
   return Array.isArray(body.products) ? body.products : [];
 }
 
 export async function startCheckout(productId: string): Promise<PayCheckout> {
-  return await apiJson<PayCheckout>(payUrl("checkout"), {
+  return await apiJson<PayCheckout>(() => payUrl("checkout"), {
     method: "POST",
     body: JSON.stringify({ productId }),
   });
 }
 
 export async function getCheckout(id: string): Promise<PayCheckout> {
-  return await apiJson<PayCheckout>(payUrl(`checkout/${encodeURIComponent(id)}`));
+  return await apiJson<PayCheckout>(() => payUrl(`checkout/${encodeURIComponent(id)}`));
 }

@@ -4,6 +4,17 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.3 — 2026-06-11
+- **Logged-in world loads again** (with hyades 0.5.193's catch-all preflights). Also fixed a boot
+  race where auth/status fired before the runtime config set the API base (404 on the page origin) —
+  API calls now wait for config readiness.
+- **Personality editing is discoverable.** The agent panel's "Memories" block is now
+  **"Personality & memories"** with an always-visible **Edit personality** button (it was hidden
+  behind the collapsed toggle).
+- **You can see which world your agent is in** — the panel header reads "Your Agent in 'main'".
+  Agents are per-world (each world keeps its own memories); the new **Set as default** button saves
+  your persona as the cross-world default, so your agent in any NEW world starts with it.
+
 ## 0.8.2 — 2026-06-11
 - **Fix: assets vanished (and "Add passkey" failed) while logged in.** Session-carrying calls were
   failing the CORS preflight (hyades 0.5.192 now allows the `X-Tellus-Session` header). The client
