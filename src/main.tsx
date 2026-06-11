@@ -27,6 +27,8 @@ import {
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { createVegetation } from "./tellus-vegetation";
+import { PROCEDURAL_CATALOG } from "./tellus-veg-archetypes";
+import { makeProceduralModelUrl } from "./tellus-procedural-assets";
 import { createAmbientPhysics, resolveObstacles, type ObstacleCircle } from "./tellus-physics";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
@@ -69,11 +71,11 @@ import {
   isWorldGeneratedThing,
 } from "./world-protocol";
 import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps } from "./tellus-types";
-import { WORLD_RADIUS, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
+import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
-import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
+import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import "./styles.css";
@@ -366,13 +368,13 @@ function createTellusWorld(
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xa7c3ef);
-  scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
+  scene.fog = new THREE.Fog(0xa7c3ef, 72 * WORLD_SCALE, 230 * WORLD_SCALE);
 
-  const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
+  const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720 * WORLD_SCALE);
   // Agent POV picture-in-picture: when set to a remote avatar's visitorId we render a small second view of
   // the scene from that avatar's head, looking forward along its facing. Reusable camera + scratch vectors.
   let agentViewportVisitorId: string | null = null;
-  const povCamera = new THREE.PerspectiveCamera(62, 220 / 140, 0.1, 720);
+  const povCamera = new THREE.PerspectiveCamera(62, 220 / 140, 0.1, 720 * WORLD_SCALE);
   const povEye = new THREE.Vector3();
   const povForward = new THREE.Vector3();
   const povLookAt = new THREE.Vector3();
@@ -380,7 +382,7 @@ function createTellusWorld(
   // Scratch: the player-camera → POV-camera offset, used to re-center the camera-following celestials
   // (skybox dome, moon) on the POV camera for the PiP render so they don't stay locked to the player.
   const povSkyDelta = new THREE.Vector3();
-  const fallbackSky = createSkyDome();
+  const fallbackSky = createSkyDome(320 * WORLD_SCALE);
   if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
     skyboxTintMaterials.add(fallbackSky.material);
   }
@@ -402,6 +404,12 @@ function createTellusWorld(
         pdx * pdx + pdz * pdz < (POND_RADIUS + 0.6) * (POND_RADIUS + 0.6) &&
         h < pondWaterLevel() + 0.35
       );
+    },
+    pondRing: {
+      x: POND_CENTER.x,
+      z: POND_CENTER.z,
+      radius: POND_RADIUS,
+      level: pondWaterLevel(),
     },
   });
   const ambientPhysics = createAmbientPhysics({
@@ -854,15 +862,18 @@ function createTellusWorld(
       refreshDistantIslandGeometry(distantIsland);
     } else {
       const targetHeight = terrainHeight(center.x, center.z);
+      // The central brush radius scales with the world so it covers the same grid cells as the
+      // classic brush — keeps the math identical to the server's classic-space sculpt port.
+      const brushRadius = TERRAIN_SCULPT_RADIUS * WORLD_SCALE;
       for (let zIndex = 0; zIndex <= TERRAIN_SEGMENTS; zIndex++) {
         const z = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
         for (let xIndex = 0; xIndex <= TERRAIN_SEGMENTS; xIndex++) {
           const x = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
           if (Math.hypot(x, z) > WORLD_RADIUS) continue;
           const distance = Math.hypot(x - center.x, z - center.z);
-          if (distance > TERRAIN_SCULPT_RADIUS) continue;
+          if (distance > brushRadius) continue;
           const falloff =
-            (1 + Math.cos((distance / TERRAIN_SCULPT_RADIUS) * Math.PI)) * 0.5;
+            (1 + Math.cos((distance / brushRadius) * Math.PI)) * 0.5;
           const index = terrainGridIndex(xIndex, zIndex);
           if (paintCode) {
             if (falloff > 0.18) terrainPaint[index] = paintCode;
@@ -2599,7 +2610,7 @@ function createTellusWorld(
       playerAirborne = true;
     }
     if (!hasInput && !playerAirborne) return;
-    if (hasInput) movement.normalize().multiplyScalar(PLAYER_SPEED * delta);
+    if (hasInput) movement.normalize().multiplyScalar(scaledPlayerSpeed() * delta);
     if (sailingThingId) {
       playerAirborne = false;
       playerVy = 0;
@@ -2874,8 +2885,8 @@ function createTellusWorld(
     }
     if (scene.fog instanceof THREE.Fog) {
       scene.fog.color.copy(backgroundColor);
-      scene.fog.near = 54 + daylight * 18;
-      scene.fog.far = 176 + daylight * 54;
+      scene.fog.near = (54 + daylight * 18) * WORLD_SCALE;
+      scene.fog.far = (176 + daylight * 54) * WORLD_SCALE;
     }
 
     skyboxTint
@@ -4264,6 +4275,10 @@ function App(): React.ReactElement {
     const container = containerRef.current;
     if (!container || !activeWorldId) return;
     runtimeConfig.worldId = activeWorldId;
+    // World scale BEFORE any terrain/state work: derived from the world NAME (large-* → 3×,
+    // mega-* → 5×) so every client — and the Hyades terrain port — agrees with no protocol change.
+    setWorldScale(worldScaleForId(activeWorldId));
+    rebuildDistantIslandSpecs();
     let cancelled = false;
     let world: TellusWorldApi | null = null;
     void loadTellusState()
@@ -5298,7 +5313,46 @@ function App(): React.ReactElement {
                 <Backpack size={15} />
                 <span>Mine</span>
               </button>
+              <button
+                type="button"
+                className={assetPanelTab === "procedural" ? "active" : ""}
+                onClick={() => setAssetPanelTab("procedural")}
+              >
+                <Mountain size={15} />
+                <span>Nature</span>
+              </button>
             </nav>
+            {assetPanelTab === "procedural" && (
+              <div className="inventory-list asset-list">
+                <span className="inventory-empty" style={{ paddingBottom: 4 }}>
+                  Procedural nature — built instantly, no generation cost. Every placement gets a
+                  fresh random look.
+                </span>
+                {PROCEDURAL_CATALOG.map((arch) => (
+                  <button
+                    key={arch.id}
+                    type="button"
+                    className="inventory-item"
+                    onClick={() => {
+                      const seed = (Math.random() * 0xffffffff) >>> 0;
+                      worldRef.current?.addLibraryAsset({
+                        id: `proc-${arch.id}-${seed.toString(16)}`,
+                        name: arch.label,
+                        description: arch.label,
+                        modelUrl: makeProceduralModelUrl(arch.id, seed),
+                        source: "generated",
+                      });
+                    }}
+                  >
+                    <span style={{ fontSize: 16, width: 16, textAlign: "center" }}>{arch.emoji}</span>
+                    <span>
+                      <strong>{arch.label}</strong>
+                      <small>procedural · tap again for a new variation</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {assetPanelTab === "search" && (
               <div className="inventory-list asset-list">
                 {assetLibrary.length > 0 ? (

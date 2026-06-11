@@ -39,7 +39,7 @@ export type GeneratedKind =
   | "object";
 
 export type ToolName = "generate" | "interact";
-export type AssetPanelTab = "search" | "world-assets" | "inventory";
+export type AssetPanelTab = "search" | "world-assets" | "inventory" | "procedural";
 export type ToolMenu = "terrain";
 
 export interface Vec3 {

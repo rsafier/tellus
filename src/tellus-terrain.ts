@@ -10,6 +10,8 @@ import type {
 } from "./tellus-types";
 import {
   WORLD_RADIUS,
+  WORLD_SCALE,
+  CLASSIC_WORLD_RADIUS,
   OCEAN_RADIUS,
   SEA_LEVEL,
   DISTANT_ISLAND_COUNT,
@@ -185,7 +187,8 @@ export function createDistantIslandSpec(index: number): DistantIslandSpec {
   const seed = 1800 + index * 43;
   const angle =
     (index / DISTANT_ISLAND_COUNT) * Math.PI * 2 + rand(900 + index) * 0.32;
-  const distance = 58 + rand(1400 + index) * 72;
+  // The archipelago ring scales with the world (else a large island would swallow it).
+  const distance = (58 + rand(1400 + index) * 72) * WORLD_SCALE;
   const isDestinationIsland = index % 5 === 1 || index % 7 === 4;
   const size = isDestinationIsland
     ? 2.05 + rand(2500 + index) * 0.85
@@ -213,10 +216,19 @@ export function createDistantIslandSpec(index: number): DistantIslandSpec {
   };
 }
 
-export const distantIslandSpecs = Array.from(
+export let distantIslandSpecs = Array.from(
   { length: DISTANT_ISLAND_COUNT },
   (_, index) => createDistantIslandSpec(index),
 );
+
+/** Rebuild the archipelago for the current world scale (call AFTER setWorldScale, BEFORE the world
+ * loads — saved island sculpts are re-applied on top by the subsequent state load). */
+export function rebuildDistantIslandSpecs(): void {
+  distantIslandSpecs = Array.from(
+    { length: DISTANT_ISLAND_COUNT },
+    (_, index) => createDistantIslandSpec(index),
+  );
+}
 
 export function distantIslandLocalRadius(
   spec: DistantIslandSpec,
@@ -500,19 +512,24 @@ export function movedVehiclePosition(
 }
 
 export function baseTerrainHeight(x: number, z: number): number {
-  const r = Math.hypot(x, z);
+  // Classic-space transform: the feature math always runs at the classic 72-radius scale, so on a
+  // scaled-up world the mountain/ridge/pond stretch with the island (heights unchanged). The Hyades
+  // server's terrain port applies the IDENTICAL transform — keep the two in lockstep.
+  const cx = x / WORLD_SCALE;
+  const cz = z / WORLD_SCALE;
+  const r = Math.hypot(cx, cz);
   const mountain = Math.max(0, 1 - r / 20);
   const mound = Math.pow(mountain, 2.2) * 21;
-  const shoulder = Math.exp(-((x + 16) ** 2 + (z - 12) ** 2) / 190) * 4.2;
-  const southernRise = Math.exp(-((x - 9) ** 2 + (z + 24) ** 2) / 160) * 3.1;
+  const shoulder = Math.exp(-((cx + 16) ** 2 + (cz - 12) ** 2) / 190) * 4.2;
+  const southernRise = Math.exp(-((cx - 9) ** 2 + (cz + 24) ** 2) / 160) * 3.1;
   const ridge =
-    Math.sin(x * 0.22 + z * 0.08) * 1.05 +
-    Math.cos(z * 0.2 - x * 0.06) * 0.72 +
-    Math.sin((x + z) * 0.11) * 0.42;
-  const rimStart = WORLD_RADIUS * 0.72;
-  const rimWidth = WORLD_RADIUS * 0.28;
+    Math.sin(cx * 0.22 + cz * 0.08) * 1.05 +
+    Math.cos(cz * 0.2 - cx * 0.06) * 0.72 +
+    Math.sin((cx + cz) * 0.11) * 0.42;
+  const rimStart = CLASSIC_WORLD_RADIUS * 0.72;
+  const rimWidth = CLASSIC_WORLD_RADIUS * 0.28;
   const rimDrop = Math.max(0, (r - rimStart) / rimWidth) * 5.8;
-  const pond = Math.exp(-((x - 18) ** 2 + (z + 12) ** 2) / 65) * 2.5;
+  const pond = Math.exp(-((cx - 18) ** 2 + (cz + 12) ** 2) / 65) * 2.5;
   return mound + shoulder + southernRise + ridge - rimDrop - pond - 0.65;
 }
 
@@ -523,12 +540,15 @@ export function terrainHeight(x: number, z: number): number {
 export function terrainKind(x: number, z: number, y: number): TerrainKind {
   const painted = centralTerrainPaintAt(x, z);
   if (painted) return painted;
-  const pondDistance = Math.hypot(x - 18, z + 12);
+  // Classic-space: kind bands follow the scaled island features (matches the server port).
+  const cx = x / WORLD_SCALE;
+  const cz = z / WORLD_SCALE;
+  const pondDistance = Math.hypot(cx - 18, cz + 12);
   if (pondDistance < 7 && y < 1.9) return "water";
   if (y > 13.5) return "snow";
   if (y > 6.8) return "rock";
-  const pathBand = Math.abs(Math.sin(Math.atan2(z, x) * 3 + 0.5)) < 0.13;
-  if (pathBand && Math.hypot(x, z) > 8) return "dirt";
+  const pathBand = Math.abs(Math.sin(Math.atan2(cz, cx) * 3 + 0.5)) < 0.13;
+  if (pathBand && Math.hypot(cx, cz) > 8) return "dirt";
   return "meadow";
 }
 

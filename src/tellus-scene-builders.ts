@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
+import { buildProceduralModel, isProceduralModelUrl } from "./tellus-procedural-assets";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import {
   color,
@@ -330,8 +331,8 @@ export function createDistantArchipelago(): THREE.Group {
   return group;
 }
 
-export function createSkyDome(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(320, 48, 24);
+export function createSkyDome(radius = 320): THREE.Mesh {
+  const geometry = new THREE.SphereGeometry(radius, 48, 24);
   const material = new THREE.MeshBasicMaterial({
     color: 0xa9c8f2,
     side: THREE.BackSide,
@@ -688,6 +689,23 @@ export function assetTargetHeight(thing: GeneratedThing): number {
 }
 
 export async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
+  // procedural:// assets build locally (no fetch) and then ride the exact same fit/rotate/place
+  // pipeline as a downloaded GLB.
+  if (isProceduralModelUrl(url)) {
+    const procedural = buildProceduralModel(url);
+    if (procedural) {
+      procedural.name = `procedural-${thing.id}`;
+      const fittedProc = fitModelToHeight(procedural, assetTargetHeight(thing));
+      fittedProc.userData = { ...fittedProc.userData, tellusId: thing.id, kind: thing.kind };
+      applyThingRotation(fittedProc, thing);
+      if (isFreeMovingVehicle(thing)) {
+        fittedProc.position.set(thing.position.x, thing.position.y, thing.position.z);
+      } else {
+        placeObjectAboveGround(fittedProc, thing.position, 0.08);
+      }
+      return fittedProc;
+    }
+  }
   const { model, animations } = await loadGeneratedGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
   const fitted = fitModelToHeight(model, assetTargetHeight(thing));

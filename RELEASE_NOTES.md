@@ -4,6 +4,24 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.0 — 2026-06-10
+- **Scaled worlds.** Name a world `large-…` (or `big-`/`xl-`) and it's **3× the radius — 9× the
+  area**; `mega-`/`giant-` is 5×/25×. The whole island scales: mountain, ridge, pond, archipelago
+  ring, fog, camera, sky, minimap — and you walk ~2–3× faster so it still feels traversable. Zero
+  protocol change (the terrain grid stretches; sync payloads are identical) and the Hyades terrain
+  port applies the same math, so server grounding + embodied agents stay correct. The public
+  **large-world** is live — pick it from the world switcher.
+- **Way higher procedural limits + 10 new species.** The vegetation system now grows palms (beach),
+  tall pines & birches, dead trees, bushes, ferns, **reeds along the waterline and pond shore**,
+  mushrooms, rare crystal clusters on rock/snow, and walk-blocking boulders — all biome-aware. Trees
+  and rocks moved to 72u **sectors** (frustum-culled, rebuilt one per frame) so huge worlds don't pay
+  for off-screen forests, and a new **ULTRA quality tier** (denser, 54u grass radius) engages on
+  WebGPU when the FPS has sustained headroom.
+- **Place procedural nature like assets.** A new **Nature** tab in the Assets panel places any
+  archetype instantly — `procedural://` model URLs ride the normal object pipeline, so they sync to
+  every client, and you can move, scale, clone, **throw**, and delete them like anything else. Every
+  placement rolls a fresh seed/tint variation. Zero generation cost, zero backend involvement.
+
 ## 0.6.0 — 2026-06-10
 - **Procedural vegetation (Crysis-style ground cover).** The island now grows wind-swayed grass and
   flowers streamed in chunks around you, plus ~100+ procedural low-poly trees and rock scatter — all
