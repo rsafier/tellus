@@ -4,6 +4,20 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.5 — 2026-06-11
+- **Avatar picker.** A new **Avatar** toolbelt button opens a picker (works anonymously — no login):
+  the classic TV-head, the three rigged VRM robots (Bluebot / Blue / Blue Atlantean), and five
+  **animated GLB animals** driven by their embedded clips — Shiba (Idle/Walk), Husky
+  (Idle_Breathing/Run_Loop), Baby Wolf (Idle/Walk/Jump), Baby Fox (Idle/Walk/Jump) and Baby
+  Reindeer (Idle/Walk/Gallop_Jump). Clip selection is heuristic (walk/run/trot → locomotion,
+  idle/breath → idle, jump → airborne; emote/action clips are never picked), animals fit by height
+  with grounded feet, and the same idle⇄walk state machine (speed-matched stride, jump hold) drives
+  every kind. Picks persist in localStorage `tellus.avatarId`, swap your rig instantly, and ride
+  `presence.update` as `avatarId` (hyades 0.5.196) so **other players see your pick** (mid-rollout
+  servers that don't echo it yet just keep showing the deterministic robot). Tiles render store
+  thumbnails with a colored-initial fallback; game-optimized GLBs are preferred (~25× smaller) with
+  fallback to the original download.
+
 ## 0.8.4 — 2026-06-11
 - **Rigged VRM robot avatars.** Players and agents now render as rigged VRM robots streamed from
   the asset store (Bluebot / Blue / Blue Atlantean — each visitor deterministically keeps the same

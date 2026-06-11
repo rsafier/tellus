@@ -57,9 +57,10 @@ const REMOTE_AIRBORNE_DY = 1.05;
 // so the overall silhouette height stays ≈ the old avatar.
 const VRM_BODY_HEIGHT_RATIO = 0.72;
 
+// The rig contract main.tsx drives — implemented by BOTH the VRM robots (here) and the animated
+// GLB animals (tellus-avatar-catalog.ts), so the main.tsx code paths never fork on avatar kind.
 export interface AvatarRig {
   root: THREE.Group;
-  vrm: VRM;
   mixer: THREE.AnimationMixer;
   actions: Record<RigClipName, THREE.AnimationAction | undefined>;
   /** Crossfade to a clip (no-op when the clip is missing or already current). */
@@ -69,7 +70,7 @@ export interface AvatarRig {
   setAirborne(airborne: boolean): void;
   /** Feed a remote presence target — derives speed/airborne from successive update deltas. */
   notePresenceUpdate(x: number, y: number, z: number, nowMs: number): void;
-  /** Advance mixer + VRM (spring bones, normalized→raw bone copy). Call once per frame. */
+  /** Advance mixer (+ VRM spring bones on the VRM path). Call once per frame. */
   update(dt: number): void;
   dispose(): void;
 }
@@ -82,7 +83,7 @@ export function classicAvatarRequested(): boolean {
   }
 }
 
-function assetDownloadUrl(id: string): string {
+export function assetDownloadUrl(id: string): string {
   return `${runtimeConfig.worldApiBase}/api/assets/download/${encodeURIComponent(id)}`;
 }
 
@@ -189,17 +190,18 @@ async function loadOptionalClip(
   }
 }
 
-// ── The rig (state machine: idle ⇄ walk, + airborne hold) ──────────────────────────────────────
-class VrmAvatarRig implements AvatarRig {
+// ── The shared rig state machine (idle ⇄ walk, + airborne hold) ────────────────────────────────
+// Subclasses provide the actions (VRMA-retargeted clips for VRM robots; embedded GLB clips for the
+// animals) and any per-frame extra work via afterMixerUpdate (VRM spring bones).
+export abstract class LocomotionAvatarRig implements AvatarRig {
   root: THREE.Group;
-  vrm: VRM;
   mixer: THREE.AnimationMixer;
   actions: Record<RigClipName, THREE.AnimationAction | undefined>;
 
-  private current: RigClipName | undefined;
-  private airborne = false;
-  private smoothedSpeed = 0;
-  private walking = false;
+  protected current: RigClipName | undefined;
+  protected airborne = false;
+  protected smoothedSpeed = 0;
+  protected walking = false;
   // Remote-presence inference (only used when notePresenceUpdate is being fed).
   private remoteDriven = false;
   private lastTarget = new THREE.Vector3();
@@ -207,21 +209,12 @@ class VrmAvatarRig implements AvatarRig {
   private remoteSpeed = 0;
   private remoteSpeedUntilMs = 0;
   private remoteAirborneUntilMs = 0;
-  private disposed = false;
+  protected disposed = false;
 
-  constructor(root: THREE.Group, vrm: VRM, clips: Partial<Record<RigClipName, VRMAnimation>>) {
+  protected constructor(root: THREE.Group, mixer: THREE.AnimationMixer) {
     this.root = root;
-    this.vrm = vrm;
-    this.mixer = new THREE.AnimationMixer(vrm.scene);
+    this.mixer = mixer;
     this.actions = { idle: undefined, walk: undefined, jump: undefined, wave: undefined };
-    for (const name of ["idle", "walk", "jump", "wave"] as const) {
-      const animation = clips[name];
-      if (!animation) continue;
-      const clip = createVRMAnimationClip(animation, vrm);
-      clip.name = name;
-      this.actions[name] = this.mixer.clipAction(clip);
-    }
-    this.play("idle", 0);
   }
 
   play(name: RigClipName, fadeSec = 0.25): void {
@@ -300,22 +293,17 @@ class VrmAvatarRig implements AvatarRig {
       );
     }
     this.mixer.update(dt);
-    this.vrm.update(dt);
+    this.afterMixerUpdate(dt);
   }
 
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.mixer.stopAllAction();
-    this.mixer.uncacheRoot(this.vrm.scene);
-    this.vrm.scene.parent?.remove(this.vrm.scene);
-    VRMUtils.deepDispose(this.vrm.scene);
-  }
+  /** Per-frame hook after the mixer advanced (VRM spring bones / normalized→raw copy). */
+  protected afterMixerUpdate(_dt: number): void {}
 
-  // No jump VRMA yet: hold the walk clip mid-stride while airborne (reads as a leap); falls back
-  // to idle if even the walk clip is missing. A real jump clip (CLIP_IDS.jump) takes over as soon
-  // as one is configured.
-  private enterAirborne(): void {
+  abstract dispose(): void;
+
+  // No jump clip: hold the walk clip mid-stride while airborne (reads as a leap); falls back
+  // to idle if even the walk clip is missing. A real jump clip takes over as soon as one exists.
+  protected enterAirborne(): void {
     if (this.actions.jump) {
       this.play("jump", 0.1);
       return;
@@ -331,7 +319,7 @@ class VrmAvatarRig implements AvatarRig {
     }
   }
 
-  private exitAirborne(): void {
+  protected exitAirborne(): void {
     const walk = this.actions.walk;
     if (walk) walk.paused = false;
     // Land into whatever locomotion currently calls for.
@@ -339,7 +327,38 @@ class VrmAvatarRig implements AvatarRig {
   }
 }
 
-// ── Mounting: swap the procedural body for the VRM inside the existing group ───────────────────
+// ── The VRM robot rig: VRMA clips retargeted onto the loaded VRM ───────────────────────────────
+class VrmAvatarRig extends LocomotionAvatarRig {
+  private readonly vrm: VRM;
+
+  constructor(root: THREE.Group, vrm: VRM, clips: Partial<Record<RigClipName, VRMAnimation>>) {
+    super(root, new THREE.AnimationMixer(vrm.scene));
+    this.vrm = vrm;
+    for (const name of ["idle", "walk", "jump", "wave"] as const) {
+      const animation = clips[name];
+      if (!animation) continue;
+      const clip = createVRMAnimationClip(animation, vrm);
+      clip.name = name;
+      this.actions[name] = this.mixer.clipAction(clip);
+    }
+    this.play("idle", 0);
+  }
+
+  protected override afterMixerUpdate(dt: number): void {
+    this.vrm.update(dt);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.mixer.stopAllAction();
+    this.mixer.uncacheRoot(this.vrm.scene);
+    this.vrm.scene.parent?.remove(this.vrm.scene);
+    VRMUtils.deepDispose(this.vrm.scene);
+  }
+}
+
+// ── Mounting: swap the procedural body for a rigged model inside the existing group ────────────
 function localTopOf(parts: THREE.Object3D[]): number {
   let top = 0;
   for (const part of parts) {
@@ -353,34 +372,84 @@ function localTopOf(parts: THREE.Object3D[]): number {
   return top;
 }
 
-function mountVrmOnAvatar(group: THREE.Group, vrm: VRM): void {
+interface ClassicTvLayout {
+  tvY: number;
+  screenY: number;
+  markerY: number;
+}
+
+// Capture the procedural TV/screen/marker heights ONCE (before any mount floats them above a rigged
+// model) so restoreProceduralAvatar can put the classic robot back exactly when the user swaps.
+function rememberClassicLayout(group: THREE.Group): void {
+  if (group.userData.classicTvLayout) return;
+  const tvBox = group.userData.tvBoxRef as THREE.Object3D | undefined;
+  const screen = group.userData.tvScreenRef as THREE.Mesh | undefined;
+  const marker = group.userData.markerRef as THREE.Object3D | undefined;
+  group.userData.classicTvLayout = {
+    tvY: tvBox?.position.y ?? 2.5,
+    screenY: screen?.position.y ?? 2.5,
+    markerY: marker?.position.y ?? 3.0,
+  } satisfies ClassicTvLayout;
+}
+
+/** Un-hide the procedural TV-head robot and re-seat the TV/screen/marker at their classic heights.
+ * Safe to call on a group that was never upgraded. (Rig disposal already removed the mounted model.) */
+export function restoreProceduralAvatar(group: THREE.Group): void {
+  const layout = group.userData.classicTvLayout as ClassicTvLayout | undefined;
+  if (layout) {
+    const tvBox = group.userData.tvBoxRef as THREE.Object3D | undefined;
+    const screen = group.userData.tvScreenRef as THREE.Mesh | undefined;
+    const marker = group.userData.markerRef as THREE.Object3D | undefined;
+    if (tvBox) tvBox.position.y = layout.tvY;
+    if (screen) screen.position.y = layout.screenY;
+    if (marker) marker.position.y = layout.markerY;
+  }
+  const bodyParts = (group.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
+  for (const part of bodyParts) part.visible = true;
+}
+
+/**
+ * Mount a rigged model (VRM robot or GLB animal) inside a procedural-avatar group: scale it to
+ * `heightRatio` of the robot's feet→TV-top height, ground its feet on the group origin, hide the
+ * procedural body parts and float the TV + presence ring above it (the TV screen stays live —
+ * P2P video keeps riding `group.userData.tvScreenRef`). `headLocalY` (computed AFTER the model is
+ * added, in group-local space) lets the VRM path float the TV above the actual head bone.
+ */
+export function mountModelOnAvatar(
+  group: THREE.Group,
+  model: THREE.Object3D,
+  heightRatio: number,
+  headLocalY?: () => number | undefined,
+): void {
+  rememberClassicLayout(group);
   const bodyParts = (group.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
   const tvBox = group.userData.tvBoxRef as THREE.Object3D | undefined;
   const screen = group.userData.tvScreenRef as THREE.Mesh | undefined;
   const marker = group.userData.markerRef as THREE.Object3D | undefined;
 
-  // Measure the procedural robot (feet→TV-top) so the upgraded avatar keeps the same height.
+  // Measure the procedural robot (feet→TV-top) so the upgraded avatar keeps a comparable height.
   const bodyTop = Math.max(1, localTopOf(tvBox ? [...bodyParts, tvBox] : bodyParts));
 
-  vrm.scene.updateMatrixWorld(true);
-  const bounds = new THREE.Box3().setFromObject(vrm.scene);
+  model.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(model);
   const rawHeight = Math.max(0.01, bounds.max.y - bounds.min.y);
-  const targetHeight = bodyTop * VRM_BODY_HEIGHT_RATIO;
+  const targetHeight = bodyTop * heightRatio;
   const scale = targetHeight / rawHeight;
-  vrm.scene.scale.setScalar(scale);
-  vrm.scene.position.y = -bounds.min.y * scale; // feet on the group origin, like the old robot
+  model.scale.setScalar(scale);
+  // Feet on the group origin, body centered over it (animals' rest pose can be offset on x/z).
+  model.position.set(
+    -((bounds.min.x + bounds.max.x) / 2) * scale,
+    -bounds.min.y * scale,
+    -((bounds.min.z + bounds.max.z) / 2) * scale,
+  );
 
-  group.add(vrm.scene);
+  group.add(model);
   group.updateMatrixWorld(true);
 
-  // Float the TV (and its screen — P2P video keeps working untouched) above the VRM's head.
+  // Float the TV (and its screen — P2P video keeps working untouched) above the model's head.
   let headTopY = targetHeight;
-  const head = vrm.humanoid?.getNormalizedBoneNode("head");
-  if (head) {
-    const headPos = head.getWorldPosition(new THREE.Vector3());
-    group.worldToLocal(headPos);
-    headTopY = Math.max(headTopY, headPos.y + 0.35);
-  }
+  const headY = headLocalY?.();
+  if (headY !== undefined) headTopY = Math.max(headTopY, headY + 0.35);
   const tvCenterY = headTopY + 0.5;
   if (tvBox) tvBox.position.y = tvCenterY;
   if (screen) screen.position.y = tvCenterY; // keeps its +Z offset flush on the TV front
@@ -389,21 +458,34 @@ function mountVrmOnAvatar(group: THREE.Group, vrm: VRM): void {
   for (const part of bodyParts) part.visible = false;
 }
 
+function mountVrmOnAvatar(group: THREE.Group, vrm: VRM): void {
+  mountModelOnAvatar(group, vrm.scene, VRM_BODY_HEIGHT_RATIO, () => {
+    const head = vrm.humanoid?.getNormalizedBoneNode("head");
+    if (!head) return undefined;
+    const headPos = head.getWorldPosition(new THREE.Vector3());
+    group.worldToLocal(headPos);
+    return headPos.y;
+  });
+}
+
 /**
  * Upgrade a procedural TV-head avatar group to a rigged VRM robot. Resolves null (procedural
- * avatar untouched) when: the classic escape hatch is set, no API base is configured, or anything
- * about the load fails. idle+walk clips are required; wave/jump are best-effort.
+ * avatar untouched) when: the classic escape hatch is set (deterministic picks only — an explicit
+ * `storeId` from the avatar picker overrides it), no API base is configured, or anything about
+ * the load fails. idle+walk clips are required; wave/jump are best-effort.
  */
 export async function attachVrmAvatar(
   group: THREE.Group,
   visitorId: string,
   rendererIsWebGPU: boolean,
+  storeId?: string,
+  stillWanted?: () => boolean,
 ): Promise<AvatarRig | null> {
-  if (classicAvatarRequested()) return null;
+  if (!storeId && classicAvatarRequested()) return null;
   if (!runtimeConfig.worldApiBase) return null;
   try {
     const [vrm, idle, walk, jump, wave] = await Promise.all([
-      loadVrm(assetDownloadUrl(pickAvatarId(visitorId)), rendererIsWebGPU),
+      loadVrm(assetDownloadUrl(storeId ?? pickAvatarId(visitorId)), rendererIsWebGPU),
       loadOptionalClip(CLIP_IDS.idle, rendererIsWebGPU),
       loadOptionalClip(CLIP_IDS.walk, rendererIsWebGPU),
       loadOptionalClip(CLIP_IDS.jump, rendererIsWebGPU),
@@ -412,6 +494,12 @@ export async function attachVrmAvatar(
     if (!idle || !walk) {
       VRMUtils.deepDispose(vrm.scene);
       throw new Error("idle/walk animation clips unavailable");
+    }
+    // A newer selection (or a prune) superseded this load while it was in flight — never mount a
+    // stale model over the current one (mounting also repositions the floating TV).
+    if (stillWanted && !stillWanted()) {
+      VRMUtils.deepDispose(vrm.scene);
+      return null;
     }
     mountVrmOnAvatar(group, vrm);
     return new VrmAvatarRig(group, vrm, { idle, walk, jump, wave });

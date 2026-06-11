@@ -172,6 +172,12 @@ export interface TellusWorldApi {
   setMicEnabled(on: boolean): void;
   getP2pStats(): MeshStats | null;
   getSelfStream(): MediaStream | null;
+  // ── Avatar picker ──
+  // Select a catalog avatar ("classic" | "vrm:<storeId>" | "glb:<storeId>"; "" = deterministic
+  // default). Rebuilds the local rig immediately, persists to localStorage and broadcasts over
+  // presence so other players swap your avatar too.
+  setAvatarSelection(avatarId: string): void;
+  getAvatarSelection(): string;
   // Picture-in-picture POV view of the scene from a remote-presence avatar (the player's server-side agent).
   // Pass the agent's visitorId to show its viewport; pass null to hide it.
   setAgentViewport(visitorId: string | null): void;
@@ -299,6 +305,8 @@ declare global {
     // Diagnostics for the rigged-VRM avatar upgrade (consumed by smoke tests / the console).
     __tellusAvatarDebug?: () => {
       localVisitorId: string;
+      /** The applied catalog selection for the local player ("" = deterministic default). */
+      localAvatarId: string;
       rigIds: string[];
       localSkinnedMeshes: number;
       localBodyHidden: boolean;
