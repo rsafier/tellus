@@ -515,6 +515,11 @@ export async function loadGeneratedGltfObject(
     cached = createGltfLoader()
       .loadAsync(url)
       .then((gltf) => ({ scene: gltf.scene, animations: gltf.animations }));
+    // Drop failed loads from the cache so a transient error (network, decoder not ready yet) can be
+    // retried instead of pinning a rejected promise for the whole session.
+    cached.catch(() => {
+      if (generatedGltfCache.get(url) === cached) generatedGltfCache.delete(url);
+    });
     generatedGltfCache.set(url, cached);
   }
   const { scene, animations } = await cached;

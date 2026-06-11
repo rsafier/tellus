@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type {
   AssetForgePipelineStart,
@@ -29,9 +30,27 @@ export const dracoLoader = new DRACOLoader().setDecoderPath(
   "https://www.gstatic.com/draco/versioned/decoders/1.5.7/",
 );
 
+// KTX2/Basis textures (KHR_texture_basisu) — the asset store's game-optimized GLBs compress their
+// textures to KTX2, so without this loader any TEXTURED game-optimized model fails to parse
+// (untextured ones only need meshopt). Transcoder wasm is self-hosted under /basis/; the loader
+// must learn the GPU's transcode targets once the renderer exists — main.tsx calls
+// configureKtx2Support(renderer) right after renderer init (async-aware for WebGPURenderer).
+export const ktx2Loader = new KTX2Loader().setTranscoderPath("/basis/");
+
+export function configureKtx2Support(renderer: unknown): void {
+  try {
+    // Plain detectSupport works for BOTH renderers in r183 — main.tsx already awaits renderer.init()
+    // on the WebGPU path before calling this.
+    ktx2Loader.detectSupport(renderer as THREE.WebGLRenderer);
+  } catch (error) {
+    console.warn("KTX2 support detection failed — textured game-optimized models may not load", error);
+  }
+}
+
 export function createGltfLoader(): GLTFLoader {
   return new GLTFLoader()
     .setDRACOLoader(dracoLoader)
+    .setKTX2Loader(ktx2Loader)
     .setMeshoptDecoder(MeshoptDecoder);
 }
 

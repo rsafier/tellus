@@ -4,6 +4,14 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.4 — 2026-06-10
+- **Fix: TEXTURED game-optimized models (Mars etc.) failed to load.** The store's game-optimized GLBs
+  compress textures to KTX2/Basis (`KHR_texture_basisu`) — untextured models (ores, flowers) only need
+  meshopt and worked, but anything with textures failed to parse because no KTX2 loader was wired.
+  Tellus now ships the Basis transcoder (self-hosted under `/basis/`), attaches a `KTX2Loader` to the
+  GLTF pipeline, and detects the GPU's transcode targets at renderer init (WebGPU + WebGL). Failed GLB
+  loads are also no longer cached for the whole session, so transient errors retry.
+
 ## 0.7.3 — 2026-06-10
 - **Real 3D Asset Manager integration: search, thumbnails, the whole store.** The Assets panel's
   Search tab previously showed a fixed 24-model slice — most of the store (275+ models, including all
