@@ -4563,13 +4563,17 @@ function App(): React.ReactElement {
     }
     let cancelled = false;
     let objectUrl: string | null = null;
+    // A single failed poll must not blank the view (the headless camera occasionally pays a
+    // recreate+warmup cycle) — keep the LAST frame and only declare failure after 3 misses in a row.
+    let misses = 0;
     const tick = async () => {
       if (cancelled || document.visibilityState === "hidden") return; // pause while the tab is hidden
       try {
         const res = await fetch(`${tellusAgentUrl("view")}&t=${Date.now()}`, { cache: "no-store" });
         if (cancelled) return;
         if (!res.ok) {
-          setAgentRemoteViewFailed(true);
+          misses += 1;
+          if (misses >= 3) setAgentRemoteViewFailed(true);
           return;
         }
         const blob = await res.blob();
@@ -4577,10 +4581,14 @@ function App(): React.ReactElement {
         const next = URL.createObjectURL(blob);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         objectUrl = next;
+        misses = 0;
         setAgentRemoteViewSrc(next);
         setAgentRemoteViewFailed(false);
       } catch {
-        if (!cancelled) setAgentRemoteViewFailed(true);
+        if (!cancelled) {
+          misses += 1;
+          if (misses >= 3) setAgentRemoteViewFailed(true);
+        }
       }
     };
     void tick();

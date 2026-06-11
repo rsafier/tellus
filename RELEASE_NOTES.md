@@ -4,6 +4,11 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.6 — 2026-06-11
+- **Remote view stops flickering.** A single failed snapshot poll no longer blanks the agent's
+  "(remote view)" — the last frame stays up and failure only shows after 3 consecutive misses
+  (pairs with hyades 0.5.197's fresh-capture-per-poll, which also un-freezes the picture).
+
 ## 0.8.5 — 2026-06-11
 - **Avatar picker.** A new **Avatar** toolbelt button opens a picker (works anonymously — no login):
   the classic TV-head, the three rigged VRM robots (Bluebot / Blue / Blue Atlantean), and five
