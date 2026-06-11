@@ -1,5 +1,6 @@
 import { runtimeConfig } from "./tellus-runtime-config";
 import { browserUuid } from "./tellus-utils";
+import { sessionAccountId } from "./tellus-auth";
 
 let pageVisitorId: string | undefined;
 let stableUserId: string | undefined;
@@ -10,7 +11,7 @@ export function tellusWorldHttpUrl(route: "state" | "action"): string {
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}?userId=${encodeURIComponent(tellusUserId())}`;
 }
 
-export function tellusAgentUrl(action: "start" | "stop" | "persona" | "status" | "transcript" | "say" | "view"): string {
+export function tellusAgentUrl(action: "start" | "stop" | "persona" | "status" | "transcript" | "say" | "view" | "memories"): string {
   // Per-user embodied-agent control endpoints; carry the stable user id (missing => 401 from the backend).
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/agent/${action}?userId=${encodeURIComponent(tellusUserId())}`;
 }
@@ -41,6 +42,10 @@ export function tellusVisitorId(): string {
 }
 
 export function tellusUserId(): string {
+  // Logged in => the account IS the identity (worlds/agents bind to it). The anonymous uuid below
+  // stays untouched in localStorage ("tellus.userId") so it can be CLAIMED onto the account later.
+  const accountId = sessionAccountId();
+  if (accountId) return accountId;
   if (stableUserId) return stableUserId;
   const storageKey = "tellus.userId";
   const existing = window.localStorage.getItem(storageKey);
