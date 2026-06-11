@@ -175,6 +175,9 @@ export interface TellusWorldApi {
   // Picture-in-picture POV view of the scene from a remote-presence avatar (the player's server-side agent).
   // Pass the agent's visitorId to show its viewport; pass null to hide it.
   setAgentViewport(visitorId: string | null): void;
+  // True when that remote-presence avatar mesh is currently in the scene (false => the PiP falls
+  // back to the server-held remote-view snapshot instead of a locally rendered POV).
+  hasVisitorAvatar(visitorId: string): boolean;
   // Ballistic throw of a placed thing (tumbles, bounces off terrain or splashes + floats, then
   // settles; the rest pose publishes through the normal upsert path). Bound to G when selected.
   throwGenerated(id: string): void;

@@ -78,7 +78,13 @@ import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tel
 import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, configureKtx2Support, textureFailedModelUrls, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
+import { installSessionFetch } from "./tellus-auth";
+import { AuthControls, PremiumUpsellChip } from "./tellus-auth-ui";
 import "./styles.css";
+
+// Attach X-Tellus-Session to every Hyades API call (agent endpoints, world meta PATCH, state, pay)
+// before ANY fetch fires — the /live WebSocket keeps the soft ?userId= identity instead.
+installSessionFetch();
 
 // Per-user embodied-agent status shape returned by the Hyades world agent endpoints (camelCase).
 interface AgentStatus {
@@ -111,6 +117,20 @@ interface AgentTranscriptMessage {
 // Shape of GET .../agent/transcript — last 40 of the agent's conversation turns.
 interface AgentTranscriptResponse {
   messages?: AgentTranscriptMessage[];
+}
+
+// One entry of the agent's self-section ("Memories") edit log, from GET .../agent/memories.
+interface AgentMemoryEntry {
+  editedAt?: string;
+  editedBy?: string;
+  newValue?: string;
+}
+
+// Shape of GET .../agent/memories — current self-section + recent edit log.
+interface AgentMemoriesResponse {
+  selfSection?: string;
+  log?: AgentMemoryEntry[];
+  entries?: AgentMemoryEntry[];
 }
 
 // One line in the "Your Agent" chat thread: either something you typed ("you") or one of the agent's
@@ -3065,6 +3085,11 @@ function createTellusWorld(
     agentViewportVisitorId = id && id.trim() ? id.trim() : null;
   };
 
+  // Is that remote-presence avatar actually in the scene right now? (false => the React layer shows
+  // the server-held snapshot in the PiP instead of a locally rendered POV).
+  const hasVisitorAvatar = (visitorId: string): boolean =>
+    remoteVisitorMeshes.has(visitorId.trim());
+
   // Position povCamera at a remote avatar's head looking along its facing. Shared by the on-screen
   // PiP and the agent-vision capture. Returns false when the avatar isn't present.
   const poseAgentPovCamera = (visitorId: string): boolean => {
@@ -3792,6 +3817,7 @@ function createTellusWorld(
     getP2pStats: () => latestP2pStats,
     getSelfStream: () => selfStream,
     setAgentViewport,
+    hasVisitorAvatar,
     captureAgentView,
     throwGenerated,
     setMoveMode,
@@ -3961,6 +3987,16 @@ function App(): React.ReactElement {
   const [agentChat, setAgentChat] = useState<AgentChatLine[]>([]);
   const [agentChatInput, setAgentChatInput] = useState("");
   const [agentViewportOn, setAgentViewportOn] = useState(false);
+  // Memories block: collapsed live view vs edit (the persona textarea) vs the edit-history list.
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const [memoriesEditing, setMemoriesEditing] = useState(false);
+  const [memoriesHistoryOpen, setMemoriesHistoryOpen] = useState(false);
+  const [memoriesLog, setMemoriesLog] = useState<AgentMemoryEntry[] | null>(null);
+  // PiP fallback: when the agent's avatar mesh isn't in the local scene (asleep/remote), the POV
+  // viewport shows the latest server-held snapshot instead of a locally rendered view.
+  const [agentAvatarPresent, setAgentAvatarPresent] = useState(true);
+  const [agentRemoteViewSrc, setAgentRemoteViewSrc] = useState<string | null>(null);
+  const [agentRemoteViewFailed, setAgentRemoteViewFailed] = useState(false);
   const agentTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const agentChatSeqRef = useRef(0);
   const agentMergedKeysRef = useRef<Set<string>>(new Set());
@@ -4113,9 +4149,23 @@ function App(): React.ReactElement {
     void runAgentAction(agentStatus?.optedIn ? "stop" : "start");
   }, [runAgentAction, agentStatus?.optedIn]);
 
-  const onAgentSavePersona = useCallback(() => {
-    void runAgentAction("persona", { text: agentPersonaDraft, replace: true });
+  const onAgentSavePersona = useCallback(async () => {
+    const status = await runAgentAction("persona", { text: agentPersonaDraft, replace: true });
+    if (status) setMemoriesEditing(false); // saved — drop back to the live read-only view
   }, [runAgentAction, agentPersonaDraft]);
+
+  // Edit history of the agent's self-section (its own `remember` writes + your persona saves).
+  const loadMemoriesLog = useCallback(async () => {
+    setMemoriesLog(null);
+    try {
+      const res = await fetch(tellusAgentUrl("memories"));
+      if (!res.ok) throw new Error(`memories ${res.status}`);
+      const body = (await res.json()) as AgentMemoriesResponse;
+      setMemoriesLog(Array.isArray(body.log) ? body.log : Array.isArray(body.entries) ? body.entries : []);
+    } catch {
+      setMemoriesLog([]); // history is a bonus view — show "no edits" rather than an error
+    }
+  }, []);
 
   // Merge the agent's polled transcript into the chat thread. Content-deduped (role|text) so each agent line
   // is appended once; your "you" lines (added on send) stay interleaved in real send/reply order.
@@ -4258,6 +4308,65 @@ function App(): React.ReactElement {
       window.clearInterval(id);
     };
   }, [agentStatus?.optedIn, agentStatus?.enabled, agentStatus?.visitorId]);
+
+  // Track whether the agent's avatar mesh is actually in the local scene while the viewport is up
+  // (it can be missing when the agent runs offline-persistent or its presence hasn't synced yet).
+  useEffect(() => {
+    const visitorId = agentStatus?.visitorId;
+    if (!agentViewportOn || !visitorId) {
+      setAgentAvatarPresent(true);
+      return;
+    }
+    const check = () =>
+      setAgentAvatarPresent(worldRef.current?.hasVisitorAvatar(visitorId) ?? false);
+    check();
+    const id = window.setInterval(check, 1000);
+    return () => window.clearInterval(id);
+  }, [agentViewportOn, agentStatus?.visitorId]);
+
+  // PiP fallback active: viewport on + agent opted in, but no local avatar to render a POV from.
+  const agentRemoteViewActive =
+    agentViewportOn && (agentStatus?.optedIn ?? false) && !agentAvatarPresent;
+
+  // Poll the server-held snapshot (GET .../agent/view) every 5s while the fallback shows; fetch (not a
+  // bare <img> src) so the session header rides along, then hand the bytes to the <img> as a blob URL.
+  useEffect(() => {
+    if (!agentRemoteViewActive) {
+      setAgentRemoteViewSrc(null);
+      setAgentRemoteViewFailed(false);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    const tick = async () => {
+      if (cancelled || document.visibilityState === "hidden") return; // pause while the tab is hidden
+      try {
+        const res = await fetch(`${tellusAgentUrl("view")}&t=${Date.now()}`, { cache: "no-store" });
+        if (cancelled) return;
+        if (!res.ok) {
+          setAgentRemoteViewFailed(true);
+          return;
+        }
+        const blob = await res.blob();
+        if (cancelled) return;
+        const next = URL.createObjectURL(blob);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = next;
+        setAgentRemoteViewSrc(next);
+        setAgentRemoteViewFailed(false);
+      } catch {
+        if (!cancelled) setAgentRemoteViewFailed(true);
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setAgentRemoteViewSrc(null);
+    };
+  }, [agentRemoteViewActive]);
 
   // The chat thread and viewport persist across panel open/close — the agent keeps running either
   // way, so closing the tab is just hiding the controls.
@@ -4901,6 +5010,7 @@ function App(): React.ReactElement {
             </button>
           </div>
           <div className="top-right-cluster">
+            <AuthControls />
             <details className="world-help">
               <summary title="Controls" aria-label="Controls">
                 <CircleHelp size={16} />
@@ -5122,6 +5232,54 @@ function App(): React.ReactElement {
             </div>
           </aside>
         )}
+        {/* PiP fallback: same box the in-canvas POV viewport uses (bottom-left), showing the latest
+            server-held agent snapshot when there's no local avatar mesh to render a live POV from. */}
+        {agentRemoteViewActive && (
+          <div
+            aria-label="Agent remote view"
+            style={{
+              position: "absolute",
+              left: 16,
+              bottom: 96,
+              width: 220,
+              height: 140,
+              borderRadius: 8,
+              overflow: "hidden",
+              border: "1px solid rgba(255,255,255,0.25)",
+              background: "rgba(0,0,0,0.55)",
+              zIndex: 25,
+              pointerEvents: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {agentRemoteViewSrc && !agentRemoteViewFailed ? (
+              <img
+                src={agentRemoteViewSrc}
+                alt="Latest view from your agent"
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              <span style={{ fontSize: 11, color: "#9aa4b2", fontStyle: "italic" }}>
+                no view yet
+              </span>
+            )}
+            <span
+              style={{
+                position: "absolute",
+                left: 6,
+                bottom: 4,
+                fontSize: 10,
+                color: "#dfe7d8",
+                textShadow: "0 1px 2px rgba(0,0,0,0.8)",
+                opacity: 0.85,
+              }}
+            >
+              (remote view)
+            </span>
+          </div>
+        )}
         {agentPanelOpen && (
           <aside
             className="agent-panel"
@@ -5156,13 +5314,19 @@ function App(): React.ReactElement {
                   ((agentStatus?.ownerPresent ?? false) || (agentStatus?.offlinePersistence ?? false)) &&
                   (agentStatus?.enabled ?? false);
                 const thinking = optedIn && (agentStatus?.processing ?? false);
+                // optedIn but momentarily disabled while you're here: the server self-heals
+                // (resume-on-heartbeat), so surface that it WILL wake rather than a flat "Sleeping".
+                const willWake =
+                  optedIn && !(agentStatus?.enabled ?? false) && (agentStatus?.ownerPresent ?? false);
                 const label = !optedIn
                   ? "Stopped"
                   : thinking
                     ? "Thinking…"
                     : running
                       ? "Running"
-                      : "Sleeping";
+                      : willWake
+                        ? "Sleeping (will wake)"
+                        : "Sleeping";
                 const dot = !optedIn ? "#7a8597" : thinking ? "#9ec8ff" : running ? "#6fae46" : "#d8a64a";
                 return (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, opacity: 0.9 }}>
@@ -5197,6 +5361,8 @@ function App(): React.ReactElement {
                 );
               })()}
             </div>
+            {/* Premium upsell: logged in & not premium — Premium = the agent survives you leaving. */}
+            {!agentStatus?.offlinePersistence && <PremiumUpsellChip />}
             <button
               type="button"
               disabled={agentBusy}
@@ -5212,39 +5378,170 @@ function App(): React.ReactElement {
             >
               {agentBusy ? "…" : agentStatus?.optedIn ? "Stop" : "Start my agent"}
             </button>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11 }}>
-              Persona
-              <textarea
-                value={agentPersonaDraft}
-                onChange={(e) => setAgentPersonaDraft(e.target.value)}
-                placeholder="Describe how your agent should behave…"
-                rows={5}
+            {/* Memories: the agent's persona/self-section — ONE field (the old persona textarea moved
+                here). Live read-only view + Edit (textarea, same POST /agent/persona replace:true save
+                semantics) + a dimmed edit-history list (its own `remember` writes show up too). */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => setMemoriesOpen((open) => !open)}
                 style={{
-                  background: "rgba(0,0,0,0.4)",
+                  background: "none",
+                  border: "none",
                   color: "#dfe7d8",
-                  border: "1px solid rgba(255,255,255,0.16)",
-                  borderRadius: 6,
-                  padding: "6px 8px",
-                  fontSize: 12,
-                  resize: "vertical",
-                  fontFamily: "inherit",
+                  fontSize: 11,
+                  opacity: 0.85,
+                  textAlign: "left",
+                  padding: 0,
+                  cursor: "pointer",
+                  fontWeight: 600,
                 }}
-              />
-            </label>
-            <button
-              type="button"
-              disabled={agentBusy}
-              onClick={onAgentSavePersona}
-              style={{
-                ...p2pBtnStyle(false),
-                flex: "none",
-                width: "100%",
-                opacity: agentBusy ? 0.6 : 1,
-                cursor: agentBusy ? "default" : "pointer",
-              }}
-            >
-              Save persona
-            </button>
+              >
+                {memoriesOpen ? "▾" : "▸"} Memories
+              </button>
+              {!memoriesOpen ? (
+                <pre
+                  style={{
+                    margin: 0,
+                    maxHeight: 64,
+                    overflowY: "auto",
+                    background: "rgba(0,0,0,0.32)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 6,
+                    padding: "6px 8px",
+                    fontSize: 11,
+                    fontFamily: "inherit",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    opacity: 0.85,
+                  }}
+                >
+                  {agentStatus?.selfSection?.trim() || "No memories yet."}
+                </pre>
+              ) : memoriesEditing ? (
+                <>
+                  <textarea
+                    value={agentPersonaDraft}
+                    onChange={(e) => setAgentPersonaDraft(e.target.value)}
+                    placeholder="Describe how your agent should behave, what it should remember…"
+                    rows={6}
+                    style={{
+                      background: "rgba(0,0,0,0.4)",
+                      color: "#dfe7d8",
+                      border: "1px solid rgba(255,255,255,0.16)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      resize: "vertical",
+                      fontFamily: "inherit",
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button
+                      type="button"
+                      disabled={agentBusy}
+                      onClick={() => void onAgentSavePersona()}
+                      style={{
+                        ...p2pBtnStyle(true),
+                        opacity: agentBusy ? 0.6 : 1,
+                        cursor: agentBusy ? "default" : "pointer",
+                      }}
+                    >
+                      {agentBusy ? "…" : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMemoriesEditing(false)}
+                      style={p2pBtnStyle(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <pre
+                    style={{
+                      margin: 0,
+                      maxHeight: 150,
+                      overflowY: "auto",
+                      background: "rgba(0,0,0,0.32)",
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      fontSize: 11,
+                      fontFamily: "inherit",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {agentStatus?.selfSection?.trim() || "No memories yet."}
+                  </pre>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Seed the draft from the LIVE value at edit time — one source of truth.
+                        setAgentPersonaDraft(agentStatus?.selfSection ?? "");
+                        setMemoriesEditing(true);
+                      }}
+                      style={p2pBtnStyle(false)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemoriesHistoryOpen((open) => {
+                          if (!open) void loadMemoriesLog();
+                          return !open;
+                        });
+                      }}
+                      style={p2pBtnStyle(memoriesHistoryOpen)}
+                    >
+                      History
+                    </button>
+                  </div>
+                  {memoriesHistoryOpen && (
+                    <div
+                      style={{
+                        maxHeight: 110,
+                        overflowY: "auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        padding: "6px 8px",
+                        background: "rgba(0,0,0,0.25)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        borderRadius: 6,
+                      }}
+                    >
+                      {memoriesLog === null ? (
+                        <span style={{ fontSize: 10, opacity: 0.5, fontStyle: "italic" }}>Loading…</span>
+                      ) : memoriesLog.length === 0 ? (
+                        <span style={{ fontSize: 10, opacity: 0.5, fontStyle: "italic" }}>No edits yet.</span>
+                      ) : (
+                        memoriesLog.map((entry, index) => (
+                          <span
+                            key={`${entry.editedAt ?? ""}-${index}`}
+                            style={{
+                              fontSize: 10,
+                              opacity: 0.55,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {entry.editedAt ? `${new Date(entry.editedAt).toLocaleString()} · ` : ""}
+                            {entry.editedBy ? `${entry.editedBy}: ` : ""}
+                            {entry.newValue ?? ""}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
             <div style={{ fontSize: 11, opacity: 0.7 }}>
               tokens: {agentStatus?.tokensSpentToday ?? 0} / {agentStatus?.dailyTokenBudget ?? 0}
             </div>
