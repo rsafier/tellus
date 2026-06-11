@@ -4,6 +4,18 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.6 — 2026-06-10
+- **Object lighting: no more "dirty" look.** Placed GLB assets are PBR materials, and the scene had no
+  environment map — metallic/rough surfaces had nothing to reflect, so objects rendered muddy except
+  when the sun hit them dead-on (sunrise/noon). The scene now carries a procedural sky-horizon-ground
+  environment map (works on WebGPU and WebGL) whose intensity follows the day/night cycle — objects
+  pick up believable ambient reflections all day and gently dim at night.
+- **Drag objects to move them.** Select an object, then **press and drag it** — it follows your
+  pointer across the terrain (grounded; vehicles keep their water rules), streaming its position to
+  other players as it moves and settling with an authoritative publish on release. Dragging anywhere
+  else still orbits the camera, so: click to select, grab to move. Works with touch. The panel nudge
+  controls remain for fine adjustment.
+
 ## 0.7.5 — 2026-06-10
 - **"Clean up dead references" button** (Assets → World tab). Scans every placed object for models
   that are definitively gone — failed/stripped placements from the old loader bug, store models that

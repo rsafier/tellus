@@ -331,6 +331,45 @@ export function createDistantArchipelago(): THREE.Group {
   return group;
 }
 
+// A tiny procedural equirect environment map. PBR (MeshStandard) materials from GLB assets look
+// muddy/"dirty" without an environment to reflect — metallic surfaces especially render near-black
+// under pure analytic lights. This 64x32 sky-horizon-ground gradient gives them believable ambient
+// reflections on both renderers (WebGPU PMREMs it internally; WebGL converts equirect on upload).
+// Brightness is driven per-frame via scene.environmentIntensity (day/night curve).
+export function createEnvironmentTexture(): THREE.DataTexture {
+  const width = 64;
+  const height = 32;
+  const data = new Uint8Array(width * height * 4);
+  const zenith = new THREE.Color(0x6d9fe0);
+  const sky = new THREE.Color(0x9cc4ee);
+  const horizon = new THREE.Color(0xfdeed2);
+  const ground = new THREE.Color(0x57663f);
+  const soil = new THREE.Color(0x3a4530);
+  const c = new THREE.Color();
+  for (let y = 0; y < height; y++) {
+    const t = y / (height - 1); // 0 = top of the sphere
+    if (t < 0.5) {
+      const k = t / 0.5;
+      c.copy(zenith).lerp(sky, Math.min(1, k * 1.4)).lerp(horizon, k ** 3);
+    } else {
+      const k = (t - 0.5) / 0.5;
+      c.copy(horizon).lerp(ground, Math.min(1, k * 1.8)).lerp(soil, k * k);
+    }
+    for (let x = 0; x < width; x++) {
+      const o = (y * width + x) * 4;
+      data[o] = Math.round(c.r * 255);
+      data[o + 1] = Math.round(c.g * 255);
+      data[o + 2] = Math.round(c.b * 255);
+      data[o + 3] = 255;
+    }
+  }
+  const texture = new THREE.DataTexture(data, width, height);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 export function createSkyDome(radius = 320): THREE.Mesh {
   const geometry = new THREE.SphereGeometry(radius, 48, 24);
   const material = new THREE.MeshBasicMaterial({

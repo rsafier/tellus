@@ -77,7 +77,7 @@ import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeCo
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
 import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, configureKtx2Support, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
-import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
+import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import "./styles.css";
 
 // Per-user embodied-agent status shape returned by the Hyades world agent endpoints (camelCase).
@@ -371,6 +371,10 @@ function createTellusWorld(
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xa7c3ef);
   scene.fog = new THREE.Fog(0xa7c3ef, 72 * WORLD_SCALE, 230 * WORLD_SCALE);
+  // Ambient reflections for PBR assets (GLBs look muddy without an environment); intensity follows
+  // the day/night cycle below.
+  scene.environment = createEnvironmentTexture();
+  scene.environmentIntensity = 0.5;
 
   const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720 * WORLD_SCALE);
   // Agent POV picture-in-picture: when set to a remote avatar's visitorId we render a small second view of
@@ -2892,6 +2896,10 @@ function createTellusWorld(
       scene.fog.near = (54 + daylight * 18) * WORLD_SCALE;
       scene.fog.far = (176 + daylight * 54) * WORLD_SCALE;
     }
+    {
+      // Environment (ambient PBR reflections) brightens with the day and warms at the golden hours.
+      scene.environmentIntensity = 0.16 + daylight * 0.5 + twilight * 0.18;
+    }
 
     skyboxTint
       .copy(nightSkyboxTint)
@@ -3197,12 +3205,35 @@ function createTellusWorld(
   };
   const handlePointerDown = (event: PointerEvent) => {
     if (transformDragging) return;
+    if (selectedThingId && sailingThingId !== selectedThingId && !ambientPhysics.has(selectedThingId)) {
+      const hit = pickThingIdAtPointer(event);
+      if (hit === selectedThingId) {
+        draggingThingId = selectedThingId;
+        dragMoved = false;
+        container.style.cursor = "grabbing";
+        return; // grabbing the selected object — not a camera orbit
+      }
+    }
     isDragging = true;
     pointerTravel = 0;
     pointerX = event.clientX;
     pointerY = event.clientY;
   };
   const handlePointerMove = (event: PointerEvent) => {
+    if (draggingThingId) {
+      const nowMs = performance.now();
+      if (nowMs - lastDragMoveAt < 70) return; // throttle move+publish cadence
+      const target = dragGroundTarget(event);
+      const thing = thingById(draggingThingId);
+      if (!target || !thing) return;
+      lastDragMoveAt = nowMs;
+      const dx = target.x - thing.position.x;
+      const dz = target.z - thing.position.z;
+      if (Math.hypot(dx, dz) < 0.05) return;
+      moveGenerated(draggingThingId, dx, dz);
+      dragMoved = true;
+      return;
+    }
     if (transformDragging || !isDragging) return;
     const dx = event.clientX - pointerX;
     const dy = event.clientY - pointerY;
@@ -3212,12 +3243,16 @@ function createTellusWorld(
     yaw -= dx * 0.006;
     pitch = clamp(pitch - dy * 0.003, -1.05, 1.05);
   };
-  const selectGeneratedAtPointer = (event: PointerEvent) => {
+  const setPointerNdcFromEvent = (event: PointerEvent) => {
     const rect = container.getBoundingClientRect();
     pointerNdc.set(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
     );
+  };
+
+  const pickThingIdAtPointer = (event: PointerEvent): string | null => {
+    setPointerNdcFromEvent(event);
     raycaster.setFromCamera(pointerNdc, camera);
     // Raycast both the regular meshes (the visible, non-instanced ones) AND the pool InstancedMeshes. Hidden
     // (instanced) regular meshes are skipped automatically by THREE since they're `visible = false`, so a
@@ -3237,25 +3272,61 @@ function createTellusWorld(
           intersection.object,
           intersection.instanceId,
         );
-        if (instancedThingId) {
-          selectGenerated(instancedThingId); // pops the thing out of instancing
-          return;
-        }
+        if (instancedThingId) return instancedThingId;
         continue;
       }
       let object: THREE.Object3D | null = intersection.object;
       while (object) {
         const tellusId = object.userData.tellusId;
-        if (typeof tellusId === "string") {
-          selectGenerated(tellusId);
-          return;
-        }
+        if (typeof tellusId === "string") return tellusId;
         object = object.parent;
       }
     }
-    selectGenerated(undefined);
+    return null;
+  };
+
+  const selectGeneratedAtPointer = (event: PointerEvent) => {
+    selectGenerated(pickThingIdAtPointer(event) ?? undefined);
+  };
+
+  // ── Drag-to-move: press on the ALREADY-SELECTED object and drag — it follows the pointer across
+  // the terrain (grounded, vehicles keep their water/air rules), publishing as it goes. Dragging
+  // anywhere else still orbits the camera, so select first, then grab. ──
+  let draggingThingId: string | null = null;
+  let dragMoved = false;
+  let lastDragMoveAt = 0;
+  const dragGroundTarget = (event: PointerEvent): { x: number; z: number } | null => {
+    setPointerNdcFromEvent(event);
+    raycaster.setFromCamera(pointerNdc, camera);
+    const hits = raycaster.intersectObject(terrain, false);
+    if (hits.length > 0) return { x: hits[0].point.x, z: hits[0].point.z };
+    // Off the island mesh: intersect the sea plane so vehicles can be dragged onto water.
+    const ray = raycaster.ray;
+    if (Math.abs(ray.direction.y) < 1e-5) return null;
+    const t = (SEA_LEVEL - ray.origin.y) / ray.direction.y;
+    if (t <= 0) return null;
+    return { x: ray.origin.x + ray.direction.x * t, z: ray.origin.z + ray.direction.z * t };
   };
   const handlePointerUp = (event: PointerEvent) => {
+    if (draggingThingId) {
+      const id = draggingThingId;
+      draggingThingId = null;
+      container.style.cursor = "";
+      if (dragMoved) {
+        const thing = thingById(id);
+        if (thing) {
+          // final settle: one authoritative grounded publish at the release point
+          moveGenerated(id, 0, 0);
+          addLog({
+            agentId: "visitor",
+            agentName: "Visitor",
+            tool: "interact",
+            text: `moved ${thing.prompt || thing.kind}`,
+          });
+        }
+      }
+      return;
+    }
     if (transformDragging) {
       isDragging = false;
       return;
