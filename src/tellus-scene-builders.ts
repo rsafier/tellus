@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { buildProceduralModel, isProceduralModelUrl } from "./tellus-procedural-assets";
+import { buildProceduralModel, sanitizeProceduralModelUrl } from "./tellus-procedural-assets";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import {
   color,
@@ -691,8 +691,9 @@ export function assetTargetHeight(thing: GeneratedThing): number {
 export async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
   // procedural:// assets build locally (no fetch) and then ride the exact same fit/rotate/place
   // pipeline as a downloaded GLB.
-  if (isProceduralModelUrl(url)) {
-    const procedural = buildProceduralModel(url);
+  const proceduralUrl = sanitizeProceduralModelUrl(url);
+  if (proceduralUrl) {
+    const procedural = buildProceduralModel(proceduralUrl);
     if (procedural) {
       procedural.name = `procedural-${thing.id}`;
       const fittedProc = fitModelToHeight(procedural, assetTargetHeight(thing));

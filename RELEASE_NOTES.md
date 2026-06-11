@@ -4,6 +4,19 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.1 — 2026-06-10
+- **Fix: placed procedural nature rendered as a blob/swirl, then vanished.** Inbound world patches run
+  every modelUrl through a legacy absolutizer (for old relative GLB paths), which mangled
+  `procedural://…` into `/procedural://…` — the server's own echo of your placement then broke the
+  local build path, fell into a network fetch (the `/procedural://… 500`s in the console), flagged the
+  thing "failed", and published the stripped state back. Procedural URLs are now passed through
+  verbatim, the loader heals any already-mangled ones, and previously-wiped placements just need
+  re-placing (one tap).
+- **Vegetation fills MUCH farther — 30fps floor.** Per the operator: as long as it holds 30fps, fill.
+  Two new quality tiers (ULTRA 64u, **GIGA 84u** grass radius, up to ~175 active chunks), the
+  controller now sheds below ~32fps and climbs on sustained 42+fps headroom, and the chunk-rebuild
+  budget rises to 3/frame when fast.
+
 ## 0.7.0 — 2026-06-10
 - **Scaled worlds.** Name a world `large-…` (or `big-`/`xl-`) and it's **3× the radius — 9× the
   area**; `mega-`/`giant-` is 5×/25×. The whole island scales: mountain, ridge, pond, archipelago

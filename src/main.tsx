@@ -28,7 +28,7 @@ import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { createVegetation } from "./tellus-vegetation";
 import { PROCEDURAL_CATALOG } from "./tellus-veg-archetypes";
-import { makeProceduralModelUrl } from "./tellus-procedural-assets";
+import { makeProceduralModelUrl, sanitizeProceduralModelUrl } from "./tellus-procedural-assets";
 import { createAmbientPhysics, resolveObstacles, type ObstacleCircle } from "./tellus-physics";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
@@ -1384,10 +1384,12 @@ function createTellusWorld(
   });
 
   const normalizeGeneratedThing = (thing: WorldGeneratedThing): WorldGeneratedThing => {
+    // procedural:// URLs are scheme-addressed local builds — absolutizing them (meant for legacy
+    // relative GLB paths) would mangle them into "/procedural://…" and break rendering.
     const modelUrl = thing.generationStatus === "failed"
       ? undefined
       : thing.modelUrl
-        ? absoluteTellusApiUrl(thing.modelUrl)
+        ? (sanitizeProceduralModelUrl(thing.modelUrl) ?? absoluteTellusApiUrl(thing.modelUrl))
         : undefined;
     const stalePending = isStalePendingGeneratedThing(thing);
     return {

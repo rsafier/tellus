@@ -100,12 +100,16 @@ const TUFT_CANDIDATES = 640;
 
 // Quality tiers — radius streams fewer chunks AND trims the per-chunk cap. The accepted-candidate
 // prefix is tier-independent, so tier flips trim/extend growth without reshuffling it.
+// The controller targets a 30fps floor (operator call: "30fps or greater, no issues") — it sheds
+// below ~32 and keeps climbing toward GIGA whenever there's sustained headroom, so strong GPUs fill
+// a huge radius and weak ones settle wherever they hold 30+.
 const TIERS = [
   { radius: 18, density: 0.45 }, // 0 MIN
   { radius: 27, density: 0.7 }, // 1 LOW
   { radius: 36, density: 0.85 }, // 2 MED
-  { radius: 44, density: 1.0 }, // 3 HIGH
-  { radius: 54, density: 1.25 }, // 4 ULTRA (WebGPU + sustained headroom only)
+  { radius: 48, density: 1.0 }, // 3 HIGH
+  { radius: 64, density: 1.1 }, // 4 ULTRA
+  { radius: 84, density: 1.25 }, // 5 GIGA (WebGPU; ~175 active chunks when the GPU can take it)
 ] as const;
 
 const GRASS_BY_PAINT: Record<string, { accept: number; tint: number; tall: number }> = {
@@ -281,7 +285,7 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
   const active = new Map<string, ActiveChunk>();
   let terrainRev = 1;
   let tier = useWebGPU ? 3 : 1;
-  const maxTier = useWebGPU ? 4 : 2;
+  const maxTier = useWebGPU ? 5 : 2;
   let tierGoodSince = 0;
   let lastDiffAt = 0;
   let lastDiffX = Infinity;
@@ -594,12 +598,12 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
     uFade.value.set(TIERS[tier].radius * 0.7, TIERS[tier].radius);
 
     if (fps > 0) {
-      if (fps < 38 && tier > 0) {
+      if (fps < 32 && tier > 0) {
         tier--;
         tierGoodSince = 0;
-      } else if (fps > 56 && tier < maxTier) {
+      } else if (fps > 42 && tier < maxTier) {
         if (tierGoodSince === 0) tierGoodSince = nowMs;
-        else if (nowMs - tierGoodSince > 4000) {
+        else if (nowMs - tierGoodSince > 3000) {
           tier++;
           tierGoodSince = 0;
         }
@@ -629,7 +633,8 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
       diffChunks(px, pz);
     }
 
-    let budget = fps > 0 && fps < 45 ? 1 : 2;
+    // chunk-rebuild budget per frame: shed work when struggling, fill faster with headroom
+    let budget = fps > 0 && fps < 40 ? 1 : fps > 52 ? 3 : 2;
     while (budget > 0 && rebuildQueue.length > 0) {
       const key = rebuildQueue.shift()!;
       queued.delete(key);

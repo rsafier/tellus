@@ -12,6 +12,14 @@ export const PROCEDURAL_URL_PREFIX = "procedural://";
 export const isProceduralModelUrl = (url: string | undefined | null): url is string =>
   typeof url === "string" && url.startsWith(PROCEDURAL_URL_PREFIX);
 
+/** Canonicalize a possibly-mangled procedural URL (URL normalizers elsewhere may have prefixed
+ * "/" — e.g. `/procedural://x`); returns the clean `procedural://…` form, or null if not procedural. */
+export const sanitizeProceduralModelUrl = (url: string | undefined | null): string | null => {
+  if (typeof url !== "string") return null;
+  const trimmed = url.replace(/^\/+/, "");
+  return trimmed.startsWith(PROCEDURAL_URL_PREFIX) ? trimmed : null;
+};
+
 export const makeProceduralModelUrl = (archetypeId: string, seed: number): string =>
   `${PROCEDURAL_URL_PREFIX}${archetypeId}?seed=${seed >>> 0}`;
 
