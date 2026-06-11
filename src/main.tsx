@@ -28,7 +28,7 @@ import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { createVegetation } from "./tellus-vegetation";
 import { PROCEDURAL_CATALOG } from "./tellus-veg-archetypes";
-import { makeProceduralModelUrl, sanitizeProceduralModelUrl } from "./tellus-procedural-assets";
+import { makeProceduralModelUrl, sanitizeProceduralModelUrl, parseProceduralModelUrl } from "./tellus-procedural-assets";
 import { createAmbientPhysics, resolveObstacles, type ObstacleCircle } from "./tellus-physics";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
@@ -4117,6 +4117,77 @@ function App(): React.ReactElement {
 
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
   const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
+  // ── Clean up dead references: world things whose model is definitively gone ──
+  // Dead = generationStatus "failed" (the old strip-on-error bug), a procedural:// URL that no longer
+  // parses, or a model URL the store answers 404/410 for. Network errors and 5xx are treated as ALIVE
+  // (a store outage must never mass-delete a world).
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupNote, setCleanupNote] = useState<string | null>(null);
+  const cleanupDeadReferences = useCallback(async () => {
+    if (cleanupBusy) return;
+    setCleanupBusy(true);
+    setCleanupNote("Scanning…");
+    try {
+      const things = worldRef.current?.snapshot().generated ?? [];
+      const dead: Array<{ id: string; name: string }> = [];
+      const checkUrl = async (url: string): Promise<boolean> => {
+        try {
+          const ctrl = new AbortController();
+          const res = await fetch(url, {
+            signal: ctrl.signal,
+            headers: { Range: "bytes=0-0" },
+          });
+          ctrl.abort();
+          return res.status !== 404 && res.status !== 410;
+        } catch {
+          return true; // network hiccup — assume alive
+        }
+      };
+      const remote: Array<{ id: string; name: string; url: string }> = [];
+      for (const thing of things) {
+        const name = thing.prompt || thing.kind;
+        if (thing.generationStatus === "failed") {
+          dead.push({ id: thing.id, name });
+          continue;
+        }
+        if (!thing.modelUrl) continue;
+        const proc = sanitizeProceduralModelUrl(thing.modelUrl);
+        if (proc) {
+          if (!parseProceduralModelUrl(proc)) dead.push({ id: thing.id, name });
+          continue;
+        }
+        remote.push({ id: thing.id, name, url: thing.modelUrl });
+      }
+      // probe remote model urls with bounded concurrency
+      const queue = [...remote];
+      const workers = Array.from({ length: 6 }, async () => {
+        for (;;) {
+          const item = queue.shift();
+          if (!item) return;
+          if (!(await checkUrl(item.url))) dead.push({ id: item.id, name: item.name });
+        }
+      });
+      await Promise.all(workers);
+      if (dead.length === 0) {
+        setCleanupNote("No dead references found.");
+        return;
+      }
+      const preview = dead.slice(0, 6).map((d) => d.name.slice(0, 28)).join(", ");
+      const ok = window.confirm(
+        `Remove ${dead.length} broken object${dead.length === 1 ? "" : "s"}?\n${preview}${dead.length > 6 ? ", …" : ""}`,
+      );
+      if (!ok) {
+        setCleanupNote(null);
+        return;
+      }
+      for (const d of dead) worldRef.current?.deleteGenerated(d.id);
+      setCleanupNote(`Removed ${dead.length} broken object${dead.length === 1 ? "" : "s"}.`);
+    } finally {
+      setCleanupBusy(false);
+      window.setTimeout(() => setCleanupNote(null), 6000);
+    }
+  }, [cleanupBusy]);
+
   // Debounced live search whenever the Assets panel's Search tab is showing.
   useEffect(() => {
     if (!assetPanelOpen || assetPanelTab !== "search") return;
@@ -5528,6 +5599,29 @@ function App(): React.ReactElement {
             )}
             {assetPanelTab === "world-assets" && (
               <div className="inventory-list asset-list">
+                <div style={{ display: "flex", alignItems: "center", gap: 6, paddingBottom: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => void cleanupDeadReferences()}
+                    disabled={cleanupBusy}
+                    title="Find world objects whose model is gone (failed loads, deleted store models, broken procedural links) and remove them"
+                    style={{
+                      fontSize: 11,
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "#e7eee2",
+                      cursor: cleanupBusy ? "default" : "pointer",
+                      opacity: cleanupBusy ? 0.6 : 1,
+                    }}
+                  >
+                    🧹 Clean up dead references
+                  </button>
+                  {cleanupNote && (
+                    <span style={{ fontSize: 10, opacity: 0.7 }}>{cleanupNote}</span>
+                  )}
+                </div>
                 {snapshot.generated.length > 0 ? (
                   snapshot.generated.map((thing) => (
                     <article

@@ -4,6 +4,14 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.5 — 2026-06-10
+- **"Clean up dead references" button** (Assets → World tab). Scans every placed object for models
+  that are definitively gone — failed/stripped placements from the old loader bug, store models that
+  have since been deleted (404/410, probed through the proxy with bounded concurrency), and broken
+  `procedural://` links — then shows a confirm with a preview list before deleting them via the normal
+  tombstoned delete path. Conservative by design: network errors and 5xx count as ALIVE, so a store
+  outage can never mass-delete a world. First run on the main world found 21 dead objects.
+
 ## 0.7.4 — 2026-06-10
 - **Fix: TEXTURED game-optimized models (Mars etc.) failed to load.** The store's game-optimized GLBs
   compress textures to KTX2/Basis (`KHR_texture_basisu`) — untextured models (ores, flowers) only need
