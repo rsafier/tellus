@@ -4,6 +4,24 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.0 — 2026-06-11
+- **Login.** New Login button + dialog with three flows against the Hyades user system
+  (hyades 0.5.190): **Passkey** (native WebAuthn), **Nostr extension (NIP-07)**, and **Bunker
+  (NIP-46)** (nostr-tools, lazy-loaded; pairing persists for silent re-approval). One account, many
+  credentials — link your npub from the account panel, add passkeys, claim your existing anonymous
+  identity ("keep my existing worlds") on first login. Session = `X-Tellus-Session` bearer attached
+  to all API calls; logged in, your stable userId becomes the account id.
+- **Account panel & premium.** Identity + credentials + premium status; **"Get Premium — $0"**
+  upsell runs the real checkout flow (instant at 0 sat; BOLT11 invoice + copy/lightning-link +
+  polling when priced) — premium keeps your agent alive while you're away.
+- **Agent Memories.** The agent panel's persona editor grew into a Memories block: the agent's
+  durable self-section (which the agent itself now appends to via its new `Remember` tool), live
+  edit history (who wrote what, you vs the agent), and editing as before.
+- **Agent view that survives sleep.** When the local avatar mesh isn't available (agent asleep /
+  remote), the POV picture-in-picture falls back to the server-held snapshot ("remote view",
+  polled every 5s) instead of going black; status shows "sleeping (will wake)" — paired with the
+  hyades-side /live keepalive that stops agents from wrongly sleeping while you're connected.
+
 ## 0.7.13 — 2026-06-11
 - **Reliable textures on busy worlds.** The initial world load fired all ~120 GLB parses at once and
   KTX2 transcodes intermittently failed under that contention — a few models stayed untextured for
