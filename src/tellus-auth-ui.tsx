@@ -13,6 +13,8 @@ import {
   loginNostrBunker,
   loginNostrNip07,
   logout,
+  maybeResolveNip05,
+  nip05Display,
   onAuthChange,
   passkeyLogin,
   passkeyRegister,
@@ -37,6 +39,10 @@ export function useTellusAuth(): TellusAccount | null {
   useEffect(() => {
     if (getSession()) void authStatus().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    // Resolve the verified NIP-05 for display (throttled + best-effort inside).
+    if (account?.npub && !account.nip05) void maybeResolveNip05();
+  }, [account?.npub, account?.nip05]);
   return account;
 }
 
@@ -44,9 +50,45 @@ function shortNpub(npub: string): string {
   return npub.length > 18 ? `${npub.slice(0, 11)}…${npub.slice(-4)}` : npub;
 }
 
+// bech32 (BIP-173) npub encoding of the server's hex pubkey — display-only, self-contained.
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+function bech32Polymod(values: number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+  }
+  return chk;
+}
+
+function npubFromHex(pubkeyHex: string): string {
+  if (!/^[0-9a-f]{64}$/i.test(pubkeyHex)) return pubkeyHex;
+  const data: number[] = [];
+  let acc = 0;
+  let bits = 0;
+  for (let i = 0; i < 64; i += 2) {
+    acc = (acc << 8) | Number.parseInt(pubkeyHex.slice(i, i + 2), 16);
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      data.push((acc >> bits) & 31);
+    }
+  }
+  if (bits > 0) data.push((acc << (5 - bits)) & 31);
+  const hrp = "npub";
+  const hrpExpanded = [...[...hrp].map((c) => c.charCodeAt(0) >> 5), 0, ...[...hrp].map((c) => c.charCodeAt(0) & 31)];
+  const polymod = bech32Polymod([...hrpExpanded, ...data, 0, 0, 0, 0, 0, 0]) ^ 1;
+  const checksum = Array.from({ length: 6 }, (_, i) => (polymod >> (5 * (5 - i))) & 31);
+  return `${hrp}1${[...data, ...checksum].map((d) => BECH32_CHARSET[d]).join("")}`;
+}
+
 function accountButtonLabel(account: TellusAccount): string {
+  if (account.nip05) return nip05Display(account.nip05).slice(0, 24);
   if (account.label && account.label.trim()) return account.label.trim().slice(0, 18);
-  if (account.npub) return shortNpub(account.npub);
+  if (account.npub) return shortNpub(npubFromHex(account.npub));
   return account.accountId.slice(0, 8);
 }
 
@@ -418,9 +460,14 @@ export function AuthControls(): React.ReactElement {
               <span className="auth-kv">
                 <span className="auth-muted">status</span> {premiumLabel(account)}
               </span>
+              {account.nip05 && (
+                <span className="auth-kv" title="NIP-05 verified by its domain">
+                  <span className="auth-muted">nip-05</span> <code>✓ {nip05Display(account.nip05)}</code>
+                </span>
+              )}
               {account.npub ? (
-                <span className="auth-kv">
-                  <span className="auth-muted">npub</span> <code>{shortNpub(account.npub)}</code>
+                <span className="auth-kv" title={npubFromHex(account.npub)}>
+                  <span className="auth-muted">npub</span> <code>{shortNpub(npubFromHex(account.npub))}</code>
                 </span>
               ) : (
                 <div className="auth-row" style={{ flexWrap: "wrap" }}>

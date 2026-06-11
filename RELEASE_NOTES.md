@@ -4,6 +4,12 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.1 — 2026-06-11
+- **NIP-05 names.** When your npub has a NIP-05 identifier (kind-0 profile claim, verified
+  server-side against the domain's well-known endpoint — hyades 0.5.191), the login button and
+  account panel show **✓ name@domain** instead of the raw key (`_@domain` shows as just the
+  domain). npubs now display in proper `npub1…` bech32 everywhere.
+
 ## 0.8.0 — 2026-06-11
 - **Login.** New Login button + dialog with three flows against the Hyades user system
   (hyades 0.5.190): **Passkey** (native WebAuthn), **Nostr extension (NIP-07)**, and **Bunker

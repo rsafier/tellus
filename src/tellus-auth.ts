@@ -21,6 +21,8 @@ export interface TellusAccount {
   accountId: string;
   label?: string | null;
   npub?: string | null;
+  /** Server-verified NIP-05 identifier (e.g. "alice@example.com"; "_@domain" displays as "domain"). */
+  nip05?: string | null;
   status?: string | null;
   role?: string | null;
   premium?: boolean;
@@ -465,6 +467,78 @@ export async function linkNostr(bunkerUri?: string): Promise<TellusAccount> {
   const body = (await postSignedNonceEvent("link/nostr", signed)) as { account: TellusAccount };
   updateCachedAccount(body.account);
   return body.account;
+}
+
+// ── NIP-05 (verified identifier display) ─────────────────────────────────────
+// The CLIENT discovers the nip05 claim from the user's kind-0 profile on public relays; the SERVER
+// independently verifies it against the domain's /.well-known/nostr.json and stores it on the account
+// (verified-or-nothing). Best-effort + throttled — display falls back to the npub.
+
+const NIP05_CHECK_KEY = "tellus.nip05check";
+const NIP05_RECHECK_MS = 6 * 60 * 60 * 1000;
+const NIP05_RELAYS = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://relay.primal.net",
+  "wss://purplepag.es",
+];
+
+let nip05InFlight = false;
+
+/** Resolve + submit the account's NIP-05 for server verification (no-op when logged out, already
+ * verified, no npub, recently checked, or relays/claim unavailable). Fires an auth-change on success. */
+export async function maybeResolveNip05(): Promise<void> {
+  const account = getSession()?.account;
+  const pubkey = account?.npub;
+  if (!account || !pubkey || account.nip05 || nip05InFlight) return;
+  try {
+    const raw = window.localStorage.getItem(NIP05_CHECK_KEY);
+    if (raw) {
+      const last = JSON.parse(raw) as { pubkey?: string; at?: number };
+      if (last.pubkey === pubkey && typeof last.at === "number" && Date.now() - last.at < NIP05_RECHECK_MS) return;
+    }
+  } catch {
+    /* ignore */
+  }
+  nip05InFlight = true;
+  try {
+    const { SimplePool } = await import("nostr-tools/pool");
+    const pool = new SimplePool();
+    let claim: string | undefined;
+    try {
+      const profile = await pool.get(NIP05_RELAYS, { kinds: [0], authors: [pubkey] }, { maxWait: 6000 });
+      if (profile?.content) {
+        const meta = JSON.parse(profile.content) as { nip05?: unknown };
+        if (typeof meta.nip05 === "string" && meta.nip05.trim()) claim = meta.nip05.trim();
+      }
+    } finally {
+      try {
+        pool.close(NIP05_RELAYS);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      window.localStorage.setItem(NIP05_CHECK_KEY, JSON.stringify({ pubkey, at: Date.now() }));
+    } catch {
+      /* ignore */
+    }
+    if (!claim) return;
+    const body = await apiJson<{ account: TellusAccount }>(authUrl("nip05"), {
+      method: "POST",
+      body: JSON.stringify({ nip05: claim }),
+    });
+    updateCachedAccount(body.account);
+  } catch {
+    /* best effort — unverifiable claims just keep the npub display */
+  } finally {
+    nip05InFlight = false;
+  }
+}
+
+/** Display form of a NIP-05 identifier: the "_@domain" root identifier renders as just the domain. */
+export function nip05Display(nip05: string): string {
+  return nip05.startsWith("_@") ? nip05.slice(2) : nip05;
 }
 
 // ── Passkeys (WebAuthn, fido2-net-lib v4 JSON: base64url strings on the wire) ─
