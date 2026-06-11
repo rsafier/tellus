@@ -43,6 +43,10 @@ export const ktx2Loader = new KTX2Loader().setTranscoderPath("/basis/");
 // loadGeneratedGltfObject declines to cache loads that had one, so the next placement retries fresh.
 let lastTextureErrorAt = 0;
 export const textureErrorSince = (sinceMs: number): boolean => lastTextureErrorAt > sinceMs;
+
+/** Model URLs whose last load had texture failures — consumers retry these (bounded) so a transient
+ * KTX2/worker blip during the initial world-load burst doesn't leave models untextured all session. */
+export const textureFailedModelUrls = new Set<string>();
 {
   const ktx2Manager = new THREE.LoadingManager();
   ktx2Manager.onError = (url) => {

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { buildProceduralModel, sanitizeProceduralModelUrl } from "./tellus-procedural-assets";
-import { textureErrorSince } from "./tellus-generation-client";
+import { textureErrorSince, textureFailedModelUrls } from "./tellus-generation-client";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import {
   color,
@@ -550,22 +550,50 @@ export const generatedGltfCache = new Map<
   Promise<{ scene: THREE.Object3D; animations: THREE.AnimationClip[] }>
 >();
 
+// Initial world loads fire dozens of GLB parses at once; KTX2 worker transcodes under that
+// contention intermittently fail (models render untextured). Gate concurrency to keep startup smooth
+// and transcodes reliable.
+const GLB_LOAD_CONCURRENCY = 5;
+let glbLoadsActive = 0;
+const glbLoadWaiters: Array<() => void> = [];
+const acquireGlbSlot = async (): Promise<void> => {
+  if (glbLoadsActive < GLB_LOAD_CONCURRENCY) {
+    glbLoadsActive++;
+    return;
+  }
+  await new Promise<void>((resolve) => glbLoadWaiters.push(resolve));
+  glbLoadsActive++;
+};
+const releaseGlbSlot = () => {
+  glbLoadsActive--;
+  glbLoadWaiters.shift()?.();
+};
+
 export async function loadGeneratedGltfObject(
   url: string,
 ): Promise<{ model: THREE.Object3D; animations: THREE.AnimationClip[] }> {
   let cached = generatedGltfCache.get(url);
   if (!cached) {
-    const startedAt = Date.now();
-    const pending = createGltfLoader()
-      .loadAsync(url)
-      .then((gltf) => {
+    const holder: { promise?: Promise<{ scene: THREE.Object3D; animations: THREE.AnimationClip[] }> } = {};
+    const pending = (async () => {
+      await acquireGlbSlot();
+      const startedAt = Date.now();
+      try {
+        const gltf = await createGltfLoader().loadAsync(url);
         // A texture failure during this load is non-fatal (model resolves with broken materials) —
-        // don't cache it, so the next placement of this model retries with fresh fetches.
-        if (textureErrorSince(startedAt) && generatedGltfCache.get(url) === pending) {
-          generatedGltfCache.delete(url);
+        // don't cache it and mark the url so the world retries it shortly.
+        if (textureErrorSince(startedAt)) {
+          if (generatedGltfCache.get(url) === holder.promise) generatedGltfCache.delete(url);
+          textureFailedModelUrls.add(url);
+        } else {
+          textureFailedModelUrls.delete(url);
         }
         return { scene: gltf.scene, animations: gltf.animations };
-      });
+      } finally {
+        releaseGlbSlot();
+      }
+    })();
+    holder.promise = pending;
     cached = pending;
     // Drop failed loads from the cache so a transient error (network, decoder not ready yet) can be
     // retried instead of pinning a rejected promise for the whole session.

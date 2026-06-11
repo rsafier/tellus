@@ -4,6 +4,13 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.13 — 2026-06-11
+- **Reliable textures on busy worlds.** The initial world load fired all ~120 GLB parses at once and
+  KTX2 transcodes intermittently failed under that contention — a few models stayed untextured for
+  the whole session. GLB loads are now gated to 5 concurrent (smoother startup, reliable transcodes),
+  texture-failed models are marked instead of cached, and the world quietly **retries them** (one per
+  12s sweep, max 2 attempts per model) until they render properly.
+
 ## 0.7.12 — 2026-06-11
 - **`agent-view.html` — the headless eye for offline agents.** A second, MINIMAL build entry that
   renders just terrain + placed things + presence markers (no UI/React/P2P/vegetation/physics; fixed
