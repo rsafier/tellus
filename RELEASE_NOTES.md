@@ -4,6 +4,17 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.8 — 2026-06-11
+- **Store animals (Baby Wolf, Baby Skunk, …) now load and animate correctly.** Two bugs: (1) Tellus
+  played a model's ENTIRE animation library simultaneously — multi-clip rigs (Bark/Bite/Death/Idle/
+  Jump/Rest Pose…) had every clip fighting over the same bones each frame, rendering as glitchy
+  "blinking". Now exactly one sensible clip plays (prefers idle/walk loops, avoids one-shot/pose
+  clips). (2) A transient texture failure during a GLB load is non-fatal, so the model went into the
+  per-session cache with broken materials — every re-placement of that model stayed broken until
+  reload. Texture failures are now tracked via the loader manager and such loads are NOT cached, so
+  the next placement retries fresh. Store-side asset updates (e.g. fixed eye textures) already flow
+  automatically — the proxy serves `cache-control: no-store`.
+
 ## 0.7.7 — 2026-06-10
 - **Object drag is now Ctrl+drag (Cmd on Mac).** Plain dragging is *always* camera rotate again — no
   more fighting between orbiting and moving. **Ctrl+drag grabs any object directly** (it auto-selects

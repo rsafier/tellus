@@ -37,6 +37,21 @@ export const dracoLoader = new DRACOLoader().setDecoderPath(
 // configureKtx2Support(renderer) right after renderer init (async-aware for WebGPURenderer).
 export const ktx2Loader = new KTX2Loader().setTranscoderPath("/basis/");
 
+// Texture-failure tracking: a transient KTX2/texture failure is NON-fatal to GLTFLoader (the model
+// resolves with broken materials), which would otherwise poison the per-session model cache — every
+// re-placement of that model reuses the broken scene. The loader manager reports failures here and
+// loadGeneratedGltfObject declines to cache loads that had one, so the next placement retries fresh.
+let lastTextureErrorAt = 0;
+export const textureErrorSince = (sinceMs: number): boolean => lastTextureErrorAt > sinceMs;
+{
+  const ktx2Manager = new THREE.LoadingManager();
+  ktx2Manager.onError = (url) => {
+    lastTextureErrorAt = Date.now();
+    console.warn("[assets] texture failed to load (will retry on next placement):", String(url).slice(0, 120));
+  };
+  ktx2Loader.manager = ktx2Manager;
+}
+
 export function configureKtx2Support(renderer: unknown): void {
   try {
     // Plain detectSupport works for BOTH renderers in r183 — main.tsx already awaits renderer.init()

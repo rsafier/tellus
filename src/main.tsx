@@ -1278,12 +1278,24 @@ function createTellusWorld(
     stopGeneratedAnimation(id);
     const animations = model.userData.animations;
     if (!Array.isArray(animations) || animations.length === 0) return;
+    const clips = animations.filter(
+      (clip): clip is THREE.AnimationClip => clip instanceof THREE.AnimationClip,
+    );
+    if (clips.length === 0) return;
+    // Play ONE clip. Multi-clip rigs (store animals ship Bark/Bite/Death/Idle/Jump/…) used to play
+    // EVERYTHING at once — every clip fighting over the same bones each frame, which rendered as
+    // glitchy "blinking". Prefer an idle/walk loop; avoid one-shot or pose clips when possible.
+    const find = (frag: string) => clips.find((c) => c.name?.toLowerCase().includes(frag));
+    const bad = (c: THREE.AnimationClip) => {
+      const n = (c.name ?? "").toLowerCase();
+      return (
+        n.includes("rest") || n.includes("t-pose") || n.includes("tpose") ||
+        n.includes("death") || n.includes("die") || n.includes("attack") || n.includes("bite")
+      );
+    };
+    const clip = find("idle") ?? find("walk") ?? clips.find((c) => !bad(c)) ?? clips[0];
     const mixer = new THREE.AnimationMixer(model);
-    for (const clip of animations) {
-      if (clip instanceof THREE.AnimationClip) {
-        mixer.clipAction(clip).play();
-      }
-    }
+    mixer.clipAction(clip).play();
     generatedAnimationMixers.set(id, mixer);
   };
 

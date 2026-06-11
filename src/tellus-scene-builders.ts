@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { buildProceduralModel, sanitizeProceduralModelUrl } from "./tellus-procedural-assets";
+import { textureErrorSince } from "./tellus-generation-client";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import {
   color,
@@ -551,9 +552,18 @@ export async function loadGeneratedGltfObject(
 ): Promise<{ model: THREE.Object3D; animations: THREE.AnimationClip[] }> {
   let cached = generatedGltfCache.get(url);
   if (!cached) {
-    cached = createGltfLoader()
+    const startedAt = Date.now();
+    const pending = createGltfLoader()
       .loadAsync(url)
-      .then((gltf) => ({ scene: gltf.scene, animations: gltf.animations }));
+      .then((gltf) => {
+        // A texture failure during this load is non-fatal (model resolves with broken materials) —
+        // don't cache it, so the next placement of this model retries with fresh fetches.
+        if (textureErrorSince(startedAt) && generatedGltfCache.get(url) === pending) {
+          generatedGltfCache.delete(url);
+        }
+        return { scene: gltf.scene, animations: gltf.animations };
+      });
+    cached = pending;
     // Drop failed loads from the cache so a transient error (network, decoder not ready yet) can be
     // retried instead of pinning a rejected promise for the whole session.
     cached.catch(() => {
