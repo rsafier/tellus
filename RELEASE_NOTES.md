@@ -4,6 +4,12 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.2 — 2026-06-11
+- **Fix: assets vanished (and "Add passkey" failed) while logged in.** Session-carrying calls were
+  failing the CORS preflight (hyades 0.5.192 now allows the `X-Tellus-Session` header). The client
+  also stops attaching the session header to the identity-free `/api/assets/*` proxy, so model and
+  texture GETs stay simple requests with zero preflight overhead.
+
 ## 0.8.1 — 2026-06-11
 - **NIP-05 names.** When your npub has a NIP-05 identifier (kind-0 profile claim, verified
   server-side against the domain's well-known endpoint — hyades 0.5.191), the login button and

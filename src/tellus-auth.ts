@@ -227,6 +227,9 @@ function isHyadesApiUrl(raw: string): boolean {
   try {
     const url = new URL(raw, window.location.href);
     if (!url.pathname.startsWith("/api/")) return false;
+    // The asset-library proxy is identity-free — skip the session header there so the (many, large)
+    // model/texture GETs stay simple requests with no CORS preflight.
+    if (url.pathname.startsWith("/api/assets/")) return false;
     for (const base of [runtimeConfig.worldApiBase, runtimeConfig.apiBase]) {
       if (!base) continue;
       try {
