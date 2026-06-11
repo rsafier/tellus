@@ -4,6 +4,12 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.7 — 2026-06-10
+- **Object drag is now Ctrl+drag (Cmd on Mac).** Plain dragging is *always* camera rotate again — no
+  more fighting between orbiting and moving. **Ctrl+drag grabs any object directly** (it auto-selects
+  what you grab, no pre-select needed) and carries it across the terrain. Touch keeps the previous
+  rule (press the selected object to drag it), since there's no Ctrl key on a phone.
+
 ## 0.7.6 — 2026-06-10
 - **Object lighting: no more "dirty" look.** Placed GLB assets are PBR materials, and the scene had no
   environment map — metallic/rough surfaces had nothing to reflect, so objects rendered muddy except

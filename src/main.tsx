@@ -3205,13 +3205,23 @@ function createTellusWorld(
   };
   const handlePointerDown = (event: PointerEvent) => {
     if (transformDragging) return;
-    if (selectedThingId && sailingThingId !== selectedThingId && !ambientPhysics.has(selectedThingId)) {
+    // Object grab: Ctrl/Cmd + drag on a mouse picks up ANY object (auto-selecting it); plain drag is
+    // ALWAYS camera orbit so the two never fight. Touch (no modifier keys) keeps the old rule: press
+    // the already-selected object to drag it.
+    const wantsGrab =
+      event.pointerType === "touch"
+        ? Boolean(selectedThingId)
+        : event.ctrlKey || event.metaKey;
+    if (wantsGrab) {
       const hit = pickThingIdAtPointer(event);
-      if (hit === selectedThingId) {
-        draggingThingId = selectedThingId;
+      const targetId =
+        event.pointerType === "touch" ? (hit === selectedThingId ? hit : null) : hit;
+      if (targetId && sailingThingId !== targetId && !ambientPhysics.has(targetId)) {
+        if (selectedThingId !== targetId) selectGenerated(targetId);
+        draggingThingId = targetId;
         dragMoved = false;
         container.style.cursor = "grabbing";
-        return; // grabbing the selected object — not a camera orbit
+        return; // grabbing an object — not a camera orbit
       }
     }
     isDragging = true;
