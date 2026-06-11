@@ -27,6 +27,9 @@ export interface WorldPresence {
   visitorId: string;
   name?: string;
   position?: Vec3;
+  /** Catalog avatar id chosen by this visitor ("classic", "vrm:<storeId>", "glb:<storeId>");
+   * absent/empty = the deterministic per-visitor default pick. */
+  avatarId?: string;
   connectedAt: string;
   lastSeenAt: string;
 }
@@ -62,6 +65,8 @@ export type WorldAction =
       visitorId: string;
       name?: string;
       position?: Vec3;
+      /** Avatar selection broadcast with presence; "" clears (server omits null). */
+      avatarId?: string;
     }
   | {
       type: "terrain.replace";
@@ -219,7 +224,10 @@ export function isWorldAction(value: unknown): value is WorldAction {
     return false;
   }
   if (value.type === "presence.update") {
-    return value.position === undefined || isVec3(value.position);
+    return (
+      (value.position === undefined || isVec3(value.position)) &&
+      (value.avatarId === undefined || typeof value.avatarId === "string")
+    );
   }
   if (value.type === "terrain.replace") {
     return isTellusTerrainState(value.terrain);

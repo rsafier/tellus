@@ -39,6 +39,18 @@ describe("world protocol validators", () => {
     ).toBe(true);
   });
 
+  it("accepts presence updates with and without an avatarId", () => {
+    const base = {
+      type: "presence.update",
+      visitorId: "visitor-1",
+      position: { x: 1, y: 2, z: 3 },
+    };
+    expect(isWorldAction(base)).toBe(true);
+    expect(isWorldAction({ ...base, avatarId: "glb:abc123" })).toBe(true);
+    expect(isWorldAction({ ...base, avatarId: "" })).toBe(true);
+    expect(isWorldAction({ ...base, avatarId: 7 })).toBe(false);
+  });
+
   it("rejects generation requests without prompts", () => {
     expect(
       isWorldAction({

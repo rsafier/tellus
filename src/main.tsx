@@ -14,6 +14,7 @@ import {
   Mic,
   Minus,
   Mountain,
+  PersonStanding,
   Plus,
   RotateCcw,
   RotateCw,
@@ -62,7 +63,15 @@ import {
   createVisitorMesh,
   tickSharedStatic,
 } from "./world-builders";
-import { attachVrmAvatar, type AvatarRig } from "./tellus-vrm-avatar";
+import { restoreProceduralAvatar, type AvatarRig } from "./tellus-vrm-avatar";
+import {
+  AVATAR_CATALOG,
+  attachAvatarRig,
+  avatarThumbnailUrl,
+  setStoredAvatarId,
+  storedAvatarId,
+  type AvatarCatalogEntry,
+} from "./tellus-avatar-catalog";
 import {
   type TellusTerrainState,
   type WorldGeneratedThing,
@@ -502,16 +511,37 @@ function createTellusWorld(
   const visitor = createVisitorMesh(useWebGPU);
   let visitorPosition = normalizedDiscPosition(-20, 20);
   scene.add(visitor);
-  // Async upgrade to a rigged VRM robot — on any failure (or "tellus.classicAvatar"="1") the
-  // procedural TV-head robot simply stays.
-  void attachVrmAvatar(visitor, visitorId, useWebGPU).then((rig) => {
-    if (!rig) return;
-    if (destroyed) {
-      rig.dispose();
-      return;
-    }
-    avatarRigs.set(visitorId, rig);
-  });
+  // ── Avatar selection (the toolbelt picker) ────────────────────────────────
+  // localAvatarId = YOUR explicit catalog pick ("" = none → deterministic per-visitor robot); it
+  // persists in localStorage and rides every presence.update so others render the same pick.
+  // applyAvatarTo is the ONLY mount/swap path (local AND remote): it tears down the previous rig,
+  // restores the procedural TV-head in place, then mounts the requested rig async — the per-owner
+  // token guards overlapping loads, and the mesh-identity check guards a prune mid-load.
+  let localAvatarId = storedAvatarId();
+  const appliedAvatarIds = new Map<string, string>();
+  const avatarApplyTokens = new Map<string, number>();
+  const applyAvatarTo = (group: THREE.Group, ownerId: string, requestedId: string): void => {
+    const token = (avatarApplyTokens.get(ownerId) ?? 0) + 1;
+    avatarApplyTokens.set(ownerId, token);
+    appliedAvatarIds.set(ownerId, requestedId);
+    avatarRigs.get(ownerId)?.dispose();
+    avatarRigs.delete(ownerId);
+    restoreProceduralAvatar(group);
+    const stillCurrent = () =>
+      !destroyed &&
+      avatarApplyTokens.get(ownerId) === token &&
+      (ownerId === visitorId || remoteVisitorMeshes.get(ownerId) === group);
+    // "classic" (and any load failure) resolves null — the restored procedural robot stays.
+    void attachAvatarRig(group, ownerId, requestedId, useWebGPU, stillCurrent).then((rig) => {
+      if (!rig) return;
+      if (!stillCurrent()) {
+        rig.dispose();
+        return;
+      }
+      avatarRigs.set(ownerId, rig);
+    });
+  };
+  applyAvatarTo(visitor, visitorId, localAvatarId);
   // Local locomotion state is derived per-frame from the position delta in animate().
   const lastLocalAvatarPos = { x: visitorPosition.x, z: visitorPosition.z };
   // Diagnostics hook (smoke tests / console) — mirrors the other __tellus* hooks.
@@ -524,6 +554,7 @@ function createTellusWorld(
       (visitor.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
     return {
       localVisitorId: visitorId,
+      localAvatarId: appliedAvatarIds.get(visitorId) ?? "",
       rigIds: Array.from(avatarRigs.keys()),
       localSkinnedMeshes: skinned,
       localBodyHidden:
@@ -741,27 +772,24 @@ function createTellusWorld(
         position: { ...remote.position },
       });
       let mesh = remoteVisitorMeshes.get(remote.visitorId);
+      const remoteAvatarId = typeof remote.avatarId === "string" ? remote.avatarId : "";
       if (!mesh) {
         mesh = createRemoteVisitorMesh(useWebGPU);
         remoteVisitorMeshes.set(remote.visitorId, mesh);
         scene.add(mesh);
-        // Async VRM upgrade (agents — "agent:*" visitorIds — ride this same path). If the
-        // visitor was pruned (or the world torn down) before the load resolved, dispose the rig.
-        const createdMesh = mesh;
-        void attachVrmAvatar(createdMesh, remote.visitorId, useWebGPU).then((rig) => {
-          if (!rig) return;
-          if (destroyed || remoteVisitorMeshes.get(remote.visitorId) !== createdMesh) {
-            rig.dispose();
-            return;
-          }
-          avatarRigs.set(remote.visitorId, rig);
-        });
+        // Async rigged upgrade per the visitor's broadcast avatar pick (agents — "agent:*"
+        // visitorIds — ride this same path with the deterministic default). applyAvatarTo guards
+        // against the visitor being pruned (or the world torn down) before the load resolved.
+        applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
         // Drain any peer stream that surfaced before this avatar existed.
         if (pendingPeerStreams.has(remote.visitorId)) {
           const pending = pendingPeerStreams.get(remote.visitorId) ?? null;
           pendingPeerStreams.delete(remote.visitorId);
           setPeerVideo(remote.visitorId, pending);
         }
+      } else if (appliedAvatarIds.get(remote.visitorId) !== remoteAvatarId) {
+        // The visitor changed avatars mid-session — rebuild their rig in place.
+        applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
       }
       const position = groundedPosition(
         remote.position.x,
@@ -782,6 +810,8 @@ function createTellusWorld(
       pendingPeerStreams.delete(remoteId);
       avatarRigs.get(remoteId)?.dispose();
       avatarRigs.delete(remoteId);
+      appliedAvatarIds.delete(remoteId);
+      avatarApplyTokens.delete(remoteId); // also invalidates any in-flight avatar load for them
       scene.remove(mesh);
       remoteVisitorMeshes.delete(remoteId);
       remoteVisitors.delete(remoteId);
@@ -800,6 +830,10 @@ function createTellusWorld(
       type: "presence.update",
       visitorId,
       position: visitorPosition,
+      // Tiny + cheap: ride the avatar pick on EVERY presence update so late joiners and the
+      // mid-rollout server (which may not persist it per-connection yet) always converge. "" = no
+      // explicit pick (others use the deterministic per-visitor robot).
+      avatarId: localAvatarId,
     }));
   };
 
@@ -3881,6 +3915,14 @@ function createTellusWorld(
     },
     getP2pStats: () => latestP2pStats,
     getSelfStream: () => selfStream,
+    setAvatarSelection: (avatarId: string) => {
+      if (avatarId === localAvatarId) return;
+      localAvatarId = avatarId;
+      setStoredAvatarId(avatarId);
+      applyAvatarTo(visitor, visitorId, avatarId); // local rig rebuilds immediately
+      sendPresenceUpdate(true); // broadcast the new pick right away (not on the 300ms cadence)
+    },
+    getAvatarSelection: () => localAvatarId,
     setAgentViewport,
     hasVisitorAvatar,
     captureAgentView,
@@ -4002,6 +4044,89 @@ function useSpeechInput(onText: (text: string) => void): {
   return { listening, supported, start };
 }
 
+// One avatar-picker grid tile: store thumbnail when it loads, else a colored-initial fallback
+// ("classic" has no store thumbnail and always renders the initial tile). Click = select.
+function AvatarTile({
+  entry,
+  selected,
+  onSelect,
+}: {
+  entry: AvatarCatalogEntry;
+  selected: boolean;
+  onSelect: (entry: AvatarCatalogEntry) => void;
+}): React.ReactElement {
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const thumbUrl = avatarThumbnailUrl(entry);
+  // Deterministic tile hue per label so the initials fallback stays distinctive.
+  let hue = 0;
+  for (let i = 0; i < entry.label.length; i++) hue = (hue * 31 + entry.label.charCodeAt(i)) % 360;
+  return (
+    <button
+      type="button"
+      title={entry.label}
+      aria-pressed={selected}
+      onClick={() => onSelect(entry)}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        gap: 4,
+        padding: 4,
+        borderRadius: 8,
+        border: selected ? "1px solid #6fae46" : "1px solid rgba(255,255,255,0.14)",
+        background: selected ? "rgba(111,174,70,0.22)" : "rgba(255,255,255,0.05)",
+        color: "#dfe7d8",
+        cursor: "pointer",
+      }}
+    >
+      {thumbUrl && !thumbFailed ? (
+        <img
+          src={thumbUrl}
+          alt={entry.label}
+          onError={() => setThumbFailed(true)}
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            objectFit: "cover",
+            borderRadius: 6,
+            background: "rgba(0,0,0,0.35)",
+          }}
+        />
+      ) : (
+        <span
+          aria-hidden
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 22,
+            fontWeight: 700,
+            color: "#0c1016",
+            background: `hsl(${hue} 45% 62%)`,
+          }}
+        >
+          {entry.label.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 10,
+          lineHeight: 1.2,
+          textAlign: "center",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {entry.label}
+      </span>
+    </button>
+  );
+}
+
 function App(): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<TellusWorldApi | null>(null);
@@ -4045,6 +4170,13 @@ function App(): React.ReactElement {
   const [ambientStats, setAmbientStats] = useState<ReturnType<
     TellusWorldApi["getAmbientStats"]
   > | null>(null);
+  // ── Avatar picker state (catalog selection; "" = deterministic default robot) ──
+  const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
+  const [avatarSelection, setAvatarSelection] = useState<string>(() => storedAvatarId());
+  const onAvatarPick = (entry: AvatarCatalogEntry) => {
+    setAvatarSelection(entry.id);
+    worldRef.current?.setAvatarSelection(entry.id); // persists + swaps the rig + broadcasts
+  };
   // ── "Your Agent" panel state (per-user embodied agent on Hyades; self-contained, pure fetch) ──
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
@@ -5195,12 +5327,74 @@ function App(): React.ReactElement {
             type="button"
             className={agentPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
             title="Your Agent"
-            onClick={() => setAgentPanelOpen((open) => !open)}
+            onClick={() => {
+              setAgentPanelOpen((open) => !open);
+              setAvatarPanelOpen(false); // shares the agent panel's spot — never stack them
+            }}
           >
             <Bot size={18} />
             <span>Agent</span>
           </button>
+          <button
+            type="button"
+            className={avatarPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Avatar"
+            onClick={() => {
+              setAvatarPanelOpen((open) => !open);
+              setAgentPanelOpen(false); // shares the agent panel's spot — never stack them
+            }}
+          >
+            <PersonStanding size={18} />
+            <span>Avatar</span>
+          </button>
         </aside>
+        {avatarPanelOpen && (
+          <aside
+            className="avatar-panel"
+            aria-label="Avatar picker"
+            style={{
+              position: "absolute",
+              bottom: 92,
+              left: "50%",
+              transform: "translateX(4%)", // the agent panel's spot (they never open together)
+              width: 300,
+              maxHeight: "calc(100dvh - 120px)",
+              overflowY: "auto",
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(12,16,22,0.92)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "#dfe7d8",
+              font: "500 13px/1.4 system-ui, sans-serif",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              zIndex: 30,
+              pointerEvents: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>Avatar</strong>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>everyone sees your pick</span>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 8,
+              }}
+            >
+              {AVATAR_CATALOG.map((entry) => (
+                <AvatarTile
+                  key={entry.id}
+                  entry={entry}
+                  selected={avatarSelection === entry.id}
+                  onSelect={onAvatarPick}
+                />
+              ))}
+            </div>
+          </aside>
+        )}
         {p2pPanelOpen && p2pSupported && (
           <aside
             className="p2p-panel"
