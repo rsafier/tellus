@@ -4,6 +4,21 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.7.2 — 2026-06-10
+- **Agent "Thinking…" feedback.** The Your Agent status badge now shows a blue **Thinking…** state
+  while the agent is mid-turn (LLM call in flight), and the chat thread shows a "💭 thinking…" line —
+  so you can tell working from idle at a glance.
+- **The POV viewport survives closing the panel.** The agent keeps running when you close the tab, so
+  its viewport now stays on screen until you toggle it off; the chat thread also persists across
+  open/close, and status keeps polling while the viewport is up.
+- **Bigger default range + two more tiers.** GIGA (84u) is now the **default** on WebGPU, with TERA
+  (108u) and COSMIC (136u, ~440 chunks) above it — the 30fps-floor controller climbs into them on
+  sustained headroom.
+- **World feel: bigger, smoother, no see-through.** Trees ~35% taller across all species, taller
+  grass, bigger bushes/reeds/crystals/boulders; rocks and boulders are now smooth detail-1 spheres
+  with gentle deformation (no more d20s); stones sit much deeper in the ground so slopes never open a
+  see-through gap under a rock's rim.
+
 ## 0.7.1 — 2026-06-10
 - **Fix: placed procedural nature rendered as a blob/swirl, then vanished.** Inbound world patches run
   every modelUrl through a legacy absolutizer (for old relative GLB paths), which mangled

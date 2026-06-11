@@ -109,7 +109,9 @@ const TIERS = [
   { radius: 36, density: 0.85 }, // 2 MED
   { radius: 48, density: 1.0 }, // 3 HIGH
   { radius: 64, density: 1.1 }, // 4 ULTRA
-  { radius: 84, density: 1.25 }, // 5 GIGA (WebGPU; ~175 active chunks when the GPU can take it)
+  { radius: 84, density: 1.25 }, // 5 GIGA — the WebGPU DEFAULT (operator: "giga is not even a problem")
+  { radius: 108, density: 1.25 }, // 6 TERA
+  { radius: 136, density: 1.25 }, // 7 COSMIC (~440 active chunks; only with sustained headroom)
 ] as const;
 
 const GRASS_BY_PAINT: Record<string, { accept: number; tint: number; tall: number }> = {
@@ -284,8 +286,8 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
 
   const active = new Map<string, ActiveChunk>();
   let terrainRev = 1;
-  let tier = useWebGPU ? 3 : 1;
-  const maxTier = useWebGPU ? 5 : 2;
+  let tier = useWebGPU ? 5 : 1;
+  const maxTier = useWebGPU ? 7 : 2;
   let tierGoodSince = 0;
   let lastDiffAt = 0;
   let lastDiffX = Infinity;
@@ -341,7 +343,7 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
       if (slopeAt(x, z, h) > 1.15) continue;
       tintColor.setHex(style.tint);
       tintColor.offsetHSL((tintJit - 0.5) * 0.045, (tintJit - 0.5) * 0.1, (sJit - 0.5) * 0.07);
-      const scale = (0.55 + sJit * 0.45) * style.tall;
+      const scale = (0.7 + sJit * 0.55) * style.tall;
       if (!stampTemplate(pooled, cur, grassTpl, x, h - 0.02, z, scale, yawJit * Math.PI * 2, tintColor, phaseJit * Math.PI * 2, 1)) break;
       placed++;
       track(h, scale);
@@ -383,23 +385,23 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
       let tint = 0xffffff;
       if ((coastal || pondEdge) && roll < 0.5) {
         tpl = reedTpl;
-        scale = 1.1 + pick * 0.9;
+        scale = 1.4 + pick * 1.1;
         sway = 0.9;
         tint = 0xf0f6d8;
       } else if (h >= SEA_LEVEL + 0.45 && slopeAt(x, z, h) <= 0.8) {
         if ((paint === "meadow" || paint === null) && roll < 0.075) {
           tpl = pick < 0.55 ? bushTpl : fernTpl;
-          scale = tpl === bushTpl ? 0.8 + pick * 0.9 : 0.9 + pick * 0.7;
+          scale = tpl === bushTpl ? 1.2 + pick * 1.4 : 1.1 + pick * 0.9;
           sway = tpl === bushTpl ? 0.25 : 0.8;
           tint = 0xe9ffd9;
         } else if (paint === "dirt" && roll < 0.08) {
           tpl = pick < 0.6 ? mushroomTpl : fernTpl;
-          scale = tpl === mushroomTpl ? 0.3 + pick * 0.45 : 0.8 + pick * 0.6;
+          scale = tpl === mushroomTpl ? 0.4 + pick * 0.6 : 1.0 + pick * 0.8;
           sway = tpl === mushroomTpl ? 0 : 0.8;
           tint = tpl === mushroomTpl ? 0xffd9c9 : 0xddf6cc;
         } else if ((paint === "rock" || paint === "snow") && roll < 0.028) {
           tpl = crystalTpl;
-          scale = 0.7 + pick * 1.1;
+          scale = 1.0 + pick * 1.6;
           sway = 0;
           tint = CRYSTAL_PALETTE[Math.floor(pick * CRYSTAL_PALETTE.length) % CRYSTAL_PALETTE.length];
         }
@@ -446,28 +448,28 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
     const meadowish = paint === "meadow" || paint === null || paint === "flowers";
     if (paint === "beach") {
       if (r1 > 0.16) return null;
-      return { tpl: treeTpls.palm, scale: 4 + r2 * 2.2 };
+      return { tpl: treeTpls.palm, scale: 5.5 + r2 * 3 };
     }
     if (paint === "snow" || paint === "rock" || h > 10.5) {
       if (r1 > 0.16) return null;
       return r2 < 0.6
-        ? { tpl: treeTpls.pine, scale: 5.5 + r2 * 3 }
-        : { tpl: treeTpls.conifer, scale: 4.2 + r2 * 2.4 };
+        ? { tpl: treeTpls.pine, scale: 7 + r2 * 4 }
+        : { tpl: treeTpls.conifer, scale: 5.5 + r2 * 3.2 };
     }
     if (paint === "dirt") {
       if (r1 > 0.26) return null;
-      if (r2 < 0.16) return { tpl: treeTpls.deadtree, scale: 3.2 + r2 * 4 };
+      if (r2 < 0.16) return { tpl: treeTpls.deadtree, scale: 4.2 + r2 * 4.5 };
       return r2 < 0.55
-        ? { tpl: treeTpls.conifer, scale: 4.2 + r2 * 2.4 }
-        : { tpl: treeTpls.broadleaf, scale: 3.4 + r2 * 1.8 };
+        ? { tpl: treeTpls.conifer, scale: 5.5 + r2 * 3.2 }
+        : { tpl: treeTpls.broadleaf, scale: 4.6 + r2 * 2.6 };
     }
     if (meadowish) {
       const accept = paint === "flowers" ? 0.14 : 0.34;
       if (r1 > accept) return null;
-      if (r2 < 0.18) return { tpl: treeTpls.birch, scale: 3.8 + r2 * 4 };
-      if (r2 < 0.42) return { tpl: treeTpls.conifer, scale: 4.2 + r2 * 2.4 };
-      if (r2 < 0.5) return { tpl: treeTpls.pine, scale: 5.5 + r2 * 2.5 };
-      return { tpl: treeTpls.broadleaf, scale: 3.4 + r2 * 1.8 };
+      if (r2 < 0.18) return { tpl: treeTpls.birch, scale: 5 + r2 * 4.5 };
+      if (r2 < 0.42) return { tpl: treeTpls.conifer, scale: 5.5 + r2 * 3.2 };
+      if (r2 < 0.5) return { tpl: treeTpls.pine, scale: 7 + r2 * 3.5 };
+      return { tpl: treeTpls.broadleaf, scale: 4.6 + r2 * 2.6 };
     }
     return null;
   };
@@ -539,9 +541,10 @@ export function createVegetation(options: VegetationOptions): VegetationSystem {
         const isBoulder = (paint === "rock" || paint === "dirt") && rng() < 0.16;
         tintColor.setHex(paint === "snow" ? 0xc9cdd4 : 0x8d8a84);
         tintColor.offsetHSL(0, 0, (rng() - 0.5) * 0.14);
-        const scale = isBoulder ? 1.1 + rng() * 1.7 : 0.16 + rng() * rng() * 0.55;
+        const scale = isBoulder ? 1.6 + rng() * 2.4 : 0.22 + rng() * rng() * 0.8;
         const tpl = isBoulder ? boulderTpl : rockTpl;
-        if (!stampTemplate(sector.rocks, rcur, tpl, x, h + scale * (isBoulder ? 0.42 : 0.32), z, scale, rng() * Math.PI * 2, tintColor, 0, 0)) break;
+        // sink stones well into the ground so a slope never opens a see-through gap under the rim
+        if (!stampTemplate(sector.rocks, rcur, tpl, x, h + scale * (isBoulder ? 0.22 : 0.12), z, scale, rng() * Math.PI * 2, tintColor, 0, 0)) break;
         if (isBoulder) sectorColliders.push({ x, z, r: scale * 0.72 });
         rocks++;
         if (h < rMinY) rMinY = h;

@@ -287,13 +287,14 @@ const mergeTemplates = (a: Template, b: Template): Template => {
 
 // ── Solid templates (rocks / trees / shrooms / crystals) ─────────────────────────────────────────
 
-export const buildRockTemplate = (seed = 47291, squash = 0.62): Template => {
-  const geom = new THREE.IcosahedronGeometry(1, 0);
+export const buildRockTemplate = (seed = 47291, squash = 0.7): Template => {
+  // detail-1 icosphere + gentle radial jitter + smooth vertex normals = a rounded stone, not a d20.
+  const geom = new THREE.IcosahedronGeometry(1, 1);
   const rng = mulberry32(seed);
   const p = geom.getAttribute("position");
   const v = new THREE.Vector3();
   for (let i = 0; i < p.count; i++) {
-    v.fromBufferAttribute(p, i).multiplyScalar(0.86 + rng() * 0.3);
+    v.fromBufferAttribute(p, i).multiplyScalar(0.92 + rng() * 0.16);
     p.setXYZ(i, v.x, v.y * squash, v.z);
   }
   geom.computeVertexNormals();
@@ -302,7 +303,7 @@ export const buildRockTemplate = (seed = 47291, squash = 0.62): Template => {
   ]);
 };
 
-export const buildBoulderTemplate = (seed = 90210): Template => buildRockTemplate(seed, 0.85);
+export const buildBoulderTemplate = (seed = 90210): Template => buildRockTemplate(seed, 0.9);
 
 const TRUNK = 0x6c4f33;
 
@@ -389,7 +390,7 @@ export const buildBushTemplate = (): Template =>
 export const buildMushroomTemplate = (): Template =>
   buildTemplateFromParts([
     { geom: new THREE.CylinderGeometry(0.09, 0.12, 0.42, 6), matrix: at(0, 0.21, 0), color: new THREE.Color(0xe3d9c2), tintable: false },
-    { geom: new THREE.IcosahedronGeometry(0.34, 0), matrix: xform(0, 0.48, 0, 1, 0.55, 1), color: new THREE.Color(0xb8452e), tintable: true },
+    { geom: new THREE.IcosahedronGeometry(0.34, 1), matrix: xform(0, 0.48, 0, 1, 0.55, 1), color: new THREE.Color(0xb8452e), tintable: true },
   ]);
 
 export const buildCrystalTemplate = (seed = 777): Template => {

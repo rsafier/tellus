@@ -97,6 +97,8 @@ interface AgentStatus {
   pausedReason: string | null;
   tickCount: number;
   lastTickAt: string | null;
+  /** True while the agent is mid-turn (LLM call in flight) — the "thinking" indicator. */
+  processing?: boolean;
 }
 
 // One turn of the server-side agent's recent conversation (its dialog). role "assistant" = the agent speaking;
@@ -3914,9 +3916,11 @@ function App(): React.ReactElement {
     }
   }, [agentChatInput, agentStatus?.optedIn]);
 
-  // Poll the agent status every ~3s while the panel is open; prime the persona draft on first load.
+  // Poll the agent status every ~3s while the panel is open OR the POV viewport is up (the viewport
+  // outlives the panel, and the thinking/sleep state should stay fresh); prime the persona draft on
+  // first load.
   useEffect(() => {
-    if (!agentPanelOpen) return;
+    if (!agentPanelOpen && !agentViewportOn) return;
     let cancelled = false;
     const controller = new AbortController();
     const load = async () => {
@@ -3953,7 +3957,7 @@ function App(): React.ReactElement {
       controller.abort();
       window.clearInterval(id);
     };
-  }, [agentPanelOpen, fetchAgentStatus, fetchAgentTranscript, mergeAgentTranscript]);
+  }, [agentPanelOpen, agentViewportOn, fetchAgentStatus, fetchAgentTranscript, mergeAgentTranscript]);
 
   // Auto-scroll the chat thread to the newest line when it grows — but only if the user is already near the
   // bottom, so we don't snatch the view away from someone scrolled up reading older lines.
@@ -3970,21 +3974,17 @@ function App(): React.ReactElement {
     const world = worldRef.current;
     if (!world) return;
     const visitorId = agentStatus?.visitorId;
-    if (agentViewportOn && agentPanelOpen && visitorId) {
+    // The viewport intentionally SURVIVES closing the panel — the agent keeps running and its POV
+    // stays on screen until you toggle it off.
+    if (agentViewportOn && visitorId) {
       world.setAgentViewport(visitorId);
     } else {
       world.setAgentViewport(null);
     }
-  }, [agentViewportOn, agentPanelOpen, agentStatus?.visitorId]);
+  }, [agentViewportOn, agentStatus?.visitorId]);
 
-  // Clear the chat thread + viewport target when the panel closes so a reopen starts fresh.
-  useEffect(() => {
-    if (agentPanelOpen) return;
-    setAgentChat([]);
-    setAgentChatInput("");
-    agentMergedKeysRef.current.clear();
-    worldRef.current?.setAgentViewport(null);
-  }, [agentPanelOpen]);
+  // The chat thread and viewport persist across panel open/close — the agent keeps running either
+  // way, so closing the tab is just hiding the controls.
 
   // Re-enumerate when devices change (hot-plug, permission grant).
   useEffect(() => {
@@ -4762,8 +4762,15 @@ function App(): React.ReactElement {
                   optedIn &&
                   ((agentStatus?.ownerPresent ?? false) || (agentStatus?.offlinePersistence ?? false)) &&
                   (agentStatus?.enabled ?? false);
-                const label = !optedIn ? "Stopped" : running ? "Running" : "Sleeping";
-                const dot = !optedIn ? "#7a8597" : running ? "#6fae46" : "#d8a64a";
+                const thinking = optedIn && (agentStatus?.processing ?? false);
+                const label = !optedIn
+                  ? "Stopped"
+                  : thinking
+                    ? "Thinking…"
+                    : running
+                      ? "Running"
+                      : "Sleeping";
+                const dot = !optedIn ? "#7a8597" : thinking ? "#9ec8ff" : running ? "#6fae46" : "#d8a64a";
                 return (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, opacity: 0.9 }}>
                     <span
@@ -4868,7 +4875,7 @@ function App(): React.ReactElement {
                   gap: 4,
                 }}
               >
-                {agentChat.length === 0 ? (
+                {agentChat.length === 0 && !agentStatus?.processing ? (
                   <span style={{ fontSize: 11, opacity: 0.5, fontStyle: "italic" }}>
                     {agentStatus?.optedIn
                       ? "Say hello to your agent below."
@@ -4906,6 +4913,11 @@ function App(): React.ReactElement {
                       </span>
                     ),
                   )
+                )}
+                {agentStatus?.optedIn && agentStatus?.processing && (
+                  <span style={{ fontSize: 11, color: "#9ec8ff", fontStyle: "italic", opacity: 0.85 }}>
+                    💭 thinking…
+                  </span>
                 )}
               </div>
               <div style={{ display: "flex", gap: 4 }}>
