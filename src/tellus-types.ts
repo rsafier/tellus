@@ -296,6 +296,13 @@ declare global {
       sendAction: (verb: string, args?: Record<string, unknown>) => unknown;
     };
     __tellusSnapshot?: () => TellusSnapshot;
+    // Diagnostics for the rigged-VRM avatar upgrade (consumed by smoke tests / the console).
+    __tellusAvatarDebug?: () => {
+      localVisitorId: string;
+      rigIds: string[];
+      localSkinnedMeshes: number;
+      localBodyHidden: boolean;
+    };
     __tellusImportGenerated?: (things: unknown) => number;
     __tellusImportSnapshot?: (snapshot: unknown) => number;
     __tellusSaveGeneratedPlacements?: () => number;

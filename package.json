@@ -23,6 +23,8 @@
     "@gltf-transform/core": "^4.4.0",
     "@gltf-transform/extensions": "^4.4.0",
     "@gltf-transform/functions": "^4.4.0",
+    "@pixiv/three-vrm": "^3.5.3",
+    "@pixiv/three-vrm-animation": "^3.5.3",
     "@vitejs/plugin-react": "^6.0.1",
     "@z_ai/mcp-server": "0.1.4",
     "lucide-react": "^0.577.0",

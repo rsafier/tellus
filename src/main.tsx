@@ -62,6 +62,7 @@ import {
   createVisitorMesh,
   tickSharedStatic,
 } from "./world-builders";
+import { attachVrmAvatar, type AvatarRig } from "./tellus-vrm-avatar";
 import {
   type TellusTerrainState,
   type WorldGeneratedThing,
@@ -200,6 +201,10 @@ function createTellusWorld(
   const userId = tellusUserId();
   const remoteVisitorMeshes = new Map<string, THREE.Group>();
   const remoteVisitors = new Map<string, WorldPresence>();
+  // Rigged VRM avatar upgrades, keyed by visitorId (the local player's rig uses its own visitorId
+  // — applyRemotePresence never creates a remote entry for it). Each rig's update(dt) runs in
+  // animate(); rigs are disposed on remote prune and on destroy.
+  const avatarRigs = new Map<string, AvatarRig>();
   let lastPresenceSentAt = 0;
 
   // ── P2P video mesh (WebRTC, RX-on/TX-off by default) ──────────────────────
@@ -497,6 +502,34 @@ function createTellusWorld(
   const visitor = createVisitorMesh(useWebGPU);
   let visitorPosition = normalizedDiscPosition(-20, 20);
   scene.add(visitor);
+  // Async upgrade to a rigged VRM robot — on any failure (or "tellus.classicAvatar"="1") the
+  // procedural TV-head robot simply stays.
+  void attachVrmAvatar(visitor, visitorId, useWebGPU).then((rig) => {
+    if (!rig) return;
+    if (destroyed) {
+      rig.dispose();
+      return;
+    }
+    avatarRigs.set(visitorId, rig);
+  });
+  // Local locomotion state is derived per-frame from the position delta in animate().
+  const lastLocalAvatarPos = { x: visitorPosition.x, z: visitorPosition.z };
+  // Diagnostics hook (smoke tests / console) — mirrors the other __tellus* hooks.
+  window.__tellusAvatarDebug = () => {
+    let skinned = 0;
+    visitor.traverse((obj) => {
+      if ((obj as THREE.SkinnedMesh).isSkinnedMesh) skinned++;
+    });
+    const bodyParts =
+      (visitor.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
+    return {
+      localVisitorId: visitorId,
+      rigIds: Array.from(avatarRigs.keys()),
+      localSkinnedMeshes: skinned,
+      localBodyHidden:
+        bodyParts.length > 0 && bodyParts.every((part) => !part.visible),
+    };
+  };
 
   let yaw = 0.72;
   let pitch = -0.28;
@@ -712,6 +745,17 @@ function createTellusWorld(
         mesh = createRemoteVisitorMesh(useWebGPU);
         remoteVisitorMeshes.set(remote.visitorId, mesh);
         scene.add(mesh);
+        // Async VRM upgrade (agents — "agent:*" visitorIds — ride this same path). If the
+        // visitor was pruned (or the world torn down) before the load resolved, dispose the rig.
+        const createdMesh = mesh;
+        void attachVrmAvatar(createdMesh, remote.visitorId, useWebGPU).then((rig) => {
+          if (!rig) return;
+          if (destroyed || remoteVisitorMeshes.get(remote.visitorId) !== createdMesh) {
+            rig.dispose();
+            return;
+          }
+          avatarRigs.set(remote.visitorId, rig);
+        });
         // Drain any peer stream that surfaced before this avatar existed.
         if (pendingPeerStreams.has(remote.visitorId)) {
           const pending = pendingPeerStreams.get(remote.visitorId) ?? null;
@@ -726,12 +770,18 @@ function createTellusWorld(
       );
       mesh.position.set(position.x, position.y, position.z);
       mesh.userData.lastSeenAt = remote.lastSeenAt;
+      // Walk/idle/airborne for remotes is inferred from successive presence targets.
+      avatarRigs
+        .get(remote.visitorId)
+        ?.notePresenceUpdate(position.x, position.y, position.z, performance.now());
     }
     for (const [remoteId, mesh] of remoteVisitorMeshes) {
       if (activeRemoteIds.has(remoteId)) continue;
       // Detach + dispose the TV video (texture/<video>) BEFORE removing the avatar.
       setPeerVideo(remoteId, null);
       pendingPeerStreams.delete(remoteId);
+      avatarRigs.get(remoteId)?.dispose();
+      avatarRigs.delete(remoteId);
       scene.remove(mesh);
       remoteVisitorMeshes.delete(remoteId);
       remoteVisitors.delete(remoteId);
@@ -3258,6 +3308,20 @@ function createTellusWorld(
     for (const mixer of generatedAnimationMixers.values()) {
       mixer.update(delta);
     }
+    // Avatar rigs: local walk/idle/jump from the player position delta + airborne flag; remotes
+    // self-derive inside the rig from presence updates. update(dt) advances mixer + VRM.
+    const localRig = avatarRigs.get(visitorId);
+    if (localRig && delta > 0) {
+      const ldx = visitorPosition.x - lastLocalAvatarPos.x;
+      const ldz = visitorPosition.z - lastLocalAvatarPos.z;
+      localRig.setMoving(Math.hypot(ldx, ldz) / delta);
+      localRig.setAirborne(playerAirborne);
+    }
+    lastLocalAvatarPos.x = visitorPosition.x;
+    lastLocalAvatarPos.z = visitorPosition.z;
+    for (const rig of avatarRigs.values()) {
+      rig.update(delta);
+    }
     syncMeshes(now);
     tickSharedStatic(now);
     updateSelectionIndicator(now);
@@ -3871,6 +3935,11 @@ function createTellusWorld(
         window.clearTimeout(worldSocketReconnectTimer);
       }
       worldSocket?.close();
+      delete window.__tellusAvatarDebug;
+      for (const rig of avatarRigs.values()) {
+        rig.dispose();
+      }
+      avatarRigs.clear();
       for (const mesh of remoteVisitorMeshes.values()) {
         scene.remove(mesh);
       }
