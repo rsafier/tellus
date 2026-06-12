@@ -4,6 +4,30 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.9
+- **Animated store models render as world objects.** Placing an animated asset-store model (Baby
+  Wolf, Baby Fox, the rigged animals…) as a world thing left it permanently invisible while the
+  same GLB worked fine as an avatar. Root cause: the world-object fit pipeline
+  (`fitModelToHeight`/`placeObjectAboveGround`) measured the model with a plain
+  `Box3.setFromObject`, which for a *skinned* meshopt/gltfpack "game-optimized" export sees only
+  the millimeter-tiny bind-pose vertex box (the real dimensions live in the skeleton's node
+  transforms / inverse bind matrices). The fit then scaled the model up 10⁴–10⁷× and "grounded" it
+  hundreds of meters below the terrain — a 34 km wolf sunk out of sight. Bounds are now measured
+  skinning-aware (`measureModelBounds`: refresh world + bone matrices, then three's precise
+  per-vertex path, where `SkinnedMesh.getVertexPosition` applies bone transforms); the per-vertex
+  walk only runs for models that actually contain skinned meshes. The collision-footprint
+  calculation uses the same measurement, so animals get real obstacle radii too.
+- **`window.__tellusThingsDebug()`.** New cheap diagnostics hook (mirrors `__tellusAvatarDebug`):
+  per generated thing it reports status, mesh presence/visibility/scene membership, loaded-GLB
+  match, swirl/instanced flags, world position + scale, clip count and whether an animation is
+  playing — this is what pinned the bogus 25 000× wolf scale down.
+- **Agent "(remote view)" poll gated while the agent sleeps.** The 5s `GET …/agent/view` poll ran
+  whenever the viewport was on + the agent opted in but had no local avatar — including when the
+  agent was fully asleep (e.g. parked in another world), spamming endless 404s. The poll now runs
+  only while the server can actually hold a view (`optedIn` AND (`enabled` OR `ownerPresent`));
+  when gated off the PiP shows "unavailable — agent is asleep". The 3-miss tolerance for
+  transient poll failures is unchanged.
+
 ## 0.8.8
 - **Avatar size slider.** The avatar picker grows a **Size** control: a logarithmic 0.1×–8× slider
   (default 1×) with a live numeric label and a Reset button. The scale is visual-only — it rescales

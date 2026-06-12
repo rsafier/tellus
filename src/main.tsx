@@ -100,7 +100,7 @@ import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeCo
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
 import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, configureKtx2Support, textureFailedModelUrls, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
-import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
+import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, measureModelBounds, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import { installSessionFetch } from "./tellus-auth";
 import { AuthControls, PremiumUpsellChip } from "./tellus-auth-ui";
 import "./styles.css";
@@ -598,6 +598,43 @@ function createTellusWorld(
       ]);
     },
   };
+  // Per-thing render diagnostics (smoke tests / console). Cheap: only walks state when called.
+  window.__tellusThingsDebug = () =>
+    generated.map((thing) => {
+      const mesh = generatedMeshes.get(thing.id);
+      let inScene = false;
+      for (let node: THREE.Object3D | null = mesh ?? null; node; node = node.parent) {
+        if (node === scene) {
+          inScene = true;
+          break;
+        }
+      }
+      let instanced = false;
+      for (const pool of instancePools.values()) {
+        if (pool.thingToSlot.has(thing.id)) {
+          instanced = true;
+          break;
+        }
+      }
+      return {
+        id: thing.id,
+        kind: thing.kind,
+        prompt: thing.prompt.slice(0, 48),
+        status: thing.generationStatus ?? "unknown",
+        hasMesh: Boolean(mesh),
+        meshVisible: mesh?.visible ?? false,
+        inScene,
+        loaded: Boolean(thing.modelUrl) && mesh?.userData.loadedModelUrl === thing.modelUrl,
+        swirl: Boolean(mesh?.userData.generatingSwirl),
+        instanced,
+        worldPos: mesh
+          ? (({ x, y, z }) => ({ x, y, z }))(mesh.getWorldPosition(new THREE.Vector3()))
+          : undefined,
+        worldScale: mesh ? mesh.getWorldScale(new THREE.Vector3()).y : undefined,
+        clipCount: generatedModelClips(mesh).length,
+        playing: generatedAnimationMixers.has(thing.id),
+      };
+    });
   window.__tellusAvatarDebug = () => {
     let skinned = 0;
     visitor.traverse((obj) => {
@@ -2854,7 +2891,7 @@ function createTellusWorld(
     const key = `${thing.id}:${thing.scale.toFixed(2)}`;
     const cached = footprintCache.get(key);
     if (cached) return cached;
-    const box = new THREE.Box3().setFromObject(mesh);
+    const box = measureModelBounds(mesh); // skinning-aware: bind-pose boxes of animated models are bogus
     if (box.isEmpty()) return null;
     const size = box.getSize(new THREE.Vector3());
     const fp = { radius: Math.max(size.x, size.z) / 2, height: size.y };
@@ -4228,6 +4265,7 @@ function createTellusWorld(
       worldSocket?.close();
       delete window.__tellusAvatarDebug;
       delete window.__tellusViewDebug;
+      delete window.__tellusThingsDebug;
       for (const rig of avatarRigs.values()) {
         rig.dispose();
       }
@@ -4853,11 +4891,18 @@ function App(): React.ReactElement {
   // PiP fallback active: viewport on + agent opted in, but no local avatar to render a POV from.
   const agentRemoteViewActive =
     agentViewportOn && (agentStatus?.optedIn ?? false) && !agentAvatarPresent;
+  // The server only holds a view while the agent is actually awake: enabled (ticking) or its owner
+  // present (arrival self-heals enabled). Fully asleep — e.g. parked in another world — means
+  // GET .../agent/view 404s forever, so polling it every 5s is pure noise; gate the poll off and
+  // let the PiP show the "asleep" hint instead.
+  const agentRemoteViewPolling =
+    agentRemoteViewActive &&
+    ((agentStatus?.enabled ?? false) || (agentStatus?.ownerPresent ?? false));
 
   // Poll the server-held snapshot (GET .../agent/view) every 5s while the fallback shows; fetch (not a
   // bare <img> src) so the session header rides along, then hand the bytes to the <img> as a blob URL.
   useEffect(() => {
-    if (!agentRemoteViewActive) {
+    if (!agentRemoteViewPolling) {
       setAgentRemoteViewSrc(null);
       setAgentRemoteViewFailed(false);
       return;
@@ -4900,7 +4945,7 @@ function App(): React.ReactElement {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       setAgentRemoteViewSrc(null);
     };
-  }, [agentRemoteViewActive]);
+  }, [agentRemoteViewPolling]);
 
   // The chat thread and viewport persist across panel open/close — the agent keeps running either
   // way, so closing the tab is just hiding the controls.
@@ -5926,7 +5971,7 @@ function App(): React.ReactElement {
               />
             ) : (
               <span style={{ fontSize: 11, color: "#9aa4b2", fontStyle: "italic" }}>
-                no view yet
+                {agentRemoteViewPolling ? "no view yet" : "unavailable — agent is asleep"}
               </span>
             )}
             <span

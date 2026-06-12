@@ -506,8 +506,29 @@ export function disposeObject(object: THREE.Object3D): void {
   });
 }
 
+// Skinned (animated) glTF models — especially meshopt/gltfpack "game-optimized" store exports —
+// carry bind-pose geometry whose raw bounding box says nothing about the rendered size: the real
+// dimensions live in the skeleton's node transforms / inverse bind matrices, and quantization
+// leaves the raw POSITION box millimeter-tiny. Plain Box3.setFromObject measures that raw box, so
+// fitting a store animal scaled it up 10^4-10^7x and then "grounding" sank it hundreds of meters
+// (placed Baby Wolf/Fox never rendered). Measure skinning-aware instead: refresh world + bone
+// matrices, then use three's precise per-vertex path (SkinnedMesh.getVertexPosition applies bone
+// transforms). The per-vertex walk only runs for models that actually contain skinned meshes.
+export function measureModelBounds(model: THREE.Object3D): THREE.Box3 {
+  model.updateMatrixWorld(true);
+  let skinned = false;
+  model.traverse((child) => {
+    const skinnedMesh = child as THREE.SkinnedMesh;
+    if (skinnedMesh.isSkinnedMesh) {
+      skinned = true;
+      skinnedMesh.skeleton.update(); // boneMatrices are all-zero until the first render
+    }
+  });
+  return new THREE.Box3().setFromObject(model, skinned);
+}
+
 export function fitModelToHeight(model: THREE.Object3D, targetHeight: number): THREE.Object3D {
-  const bounds = new THREE.Box3().setFromObject(model);
+  const bounds = measureModelBounds(model);
   const size = bounds.getSize(new THREE.Vector3());
   const center = bounds.getCenter(new THREE.Vector3());
   const scale = size.y > 0 ? targetHeight / size.y : 1;
@@ -528,7 +549,9 @@ export function placeObjectAboveGround(
   clearance = 0.04,
 ): void {
   object.position.set(position.x, position.y, position.z);
-  const bounds = new THREE.Box3().setFromObject(object);
+  // Skinning-aware (see measureModelBounds): the bind-pose box of an animated store model is
+  // bogus, and grounding against it sank the model out of sight.
+  const bounds = measureModelBounds(object);
   if (!Number.isFinite(bounds.min.y)) return;
   object.position.y += position.y - bounds.min.y + clearance;
 }
