@@ -103,6 +103,7 @@ import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, gener
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, measureModelBounds, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import { installSessionFetch } from "./tellus-auth";
 import { AuthControls, PremiumUpsellChip } from "./tellus-auth-ui";
+import { buildAgentFeed, type AgentChatLine, type AgentToolChip } from "./agent-chat-format";
 import "./styles.css";
 
 // Attach X-Tellus-Session to every Hyades API call (agent endpoints, world meta PATCH, state, pay)
@@ -157,12 +158,34 @@ interface AgentMemoriesResponse {
   entries?: AgentMemoryEntry[];
 }
 
-// One line in the "Your Agent" chat thread: either something you typed ("you") or one of the agent's
-// dialog/tool turns merged in from its transcript.
-interface AgentChatLine {
-  id: number;
-  who: "you" | "agent" | "tool";
-  text: string;
+// Compact tool chip: one-line pill in the feed's dimmed style language (same HUD palette as the old
+// raw tool lines, just contained). Doubles as the collapsed-group toggle (as a <button>).
+const agentChipStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  alignSelf: "flex-start",
+  flex: "none", // the feed is a scrollable flex column — without this, overflow SQUISHES the pill
+  maxWidth: "100%",
+  padding: "1px 8px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.05)",
+  color: "#dfe7d8",
+  fontSize: 10,
+  opacity: 0.6,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+};
+
+function AgentToolChipPill({ chip }: { chip: AgentToolChip }) {
+  const label = chip.summary ? `${chip.name} · ${chip.summary}` : chip.name;
+  return (
+    <span style={agentChipStyle} title={label}>
+      <span aria-hidden="true">🔧</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+    </span>
+  );
 }
 
 function createTellusWorld(
@@ -4528,6 +4551,9 @@ function App(): React.ReactElement {
   const [agentChat, setAgentChat] = useState<AgentChatLine[]>([]);
   const [agentChatInput, setAgentChatInput] = useState("");
   const [agentViewportOn, setAgentViewportOn] = useState(false);
+  // Reset-thread escape hatch: two-step inline confirm + which collapsed chip groups are expanded.
+  const [agentResetConfirm, setAgentResetConfirm] = useState(false);
+  const [expandedChipGroups, setExpandedChipGroups] = useState<Set<string>>(() => new Set());
   // Memories block: collapsed live view vs edit (the persona textarea) vs the edit-history list.
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [memoriesEditing, setMemoriesEditing] = useState(false);
@@ -4690,6 +4716,32 @@ function App(): React.ReactElement {
     void runAgentAction(agentStatus?.optedIn ? "stop" : "start");
   }, [runAgentAction, agentStatus?.optedIn]);
 
+  // Escape hatch for a wedged agent (bad tool loops, polluted context): POST /agent/reset-thread starts a
+  // fresh conversation thread server-side — persona/memories survive, the inbox backlog is dropped. On
+  // success the LOCAL thread resets too (dedupe keys included, so the empty new transcript merges cleanly)
+  // and a one-line system note marks the cut.
+  const onAgentResetThread = useCallback(async () => {
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      const res = await fetch(tellusAgentUrl("reset-thread"), { method: "POST" });
+      if (res.status === 404 || res.status === 501) {
+        // Mid-rollout: the route lands with hyades 0.5.201 — older silos answer 404/501.
+        setAgentError("Thread reset isn't on the server yet — try again in a minute.");
+        return;
+      }
+      if (!res.ok) throw new Error(`reset failed (${res.status})`);
+      agentMergedKeysRef.current = new Set();
+      setExpandedChipGroups(new Set());
+      setAgentChat([{ id: ++agentChatSeqRef.current, who: "system", text: "— thread reset —" }]);
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : "Thread reset failed.");
+    } finally {
+      setAgentBusy(false);
+      setAgentResetConfirm(false);
+    }
+  }, []);
+
   const onAgentSavePersona = useCallback(async () => {
     const status = await runAgentAction("persona", { text: agentPersonaDraft, replace: true });
     if (status) setMemoriesEditing(false); // saved — drop back to the live read-only view
@@ -4819,6 +4871,17 @@ function App(): React.ReactElement {
       window.clearInterval(id);
     };
   }, [agentPanelOpen, agentViewportOn, fetchAgentStatus, fetchAgentTranscript, mergeAgentTranscript]);
+
+  // Render-time projection of the thread: prose + tool chips, with long chip runs collapsed.
+  const agentFeed = useMemo(() => buildAgentFeed(agentChat), [agentChat]);
+  const toggleChipGroup = useCallback((key: string) => {
+    setExpandedChipGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   // Auto-scroll the chat thread to the newest line when it grows — but only if the user is already near the
   // bottom, so we don't snatch the view away from someone scrolled up reading older lines.
@@ -6092,6 +6155,49 @@ function App(): React.ReactElement {
             >
               {agentBusy ? "…" : agentStatus?.optedIn ? "Stop" : "Start my agent"}
             </button>
+            {/* Escape hatch for a wedged agent: fresh server-side thread, memories stay. Deliberately
+                subdued (text-link styling) with a two-step inline confirm — not an everyday control. */}
+            {agentResetConfirm ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, opacity: 0.85 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>Reset? The chat history starts over; memories stay.</span>
+                <button
+                  type="button"
+                  disabled={agentBusy}
+                  onClick={() => void onAgentResetThread()}
+                  style={{ ...p2pBtnStyle(true), flex: "none", padding: "3px 10px", fontSize: 10, opacity: agentBusy ? 0.6 : 1 }}
+                >
+                  {agentBusy ? "…" : "Confirm"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentResetConfirm(false)}
+                  style={{ ...p2pBtnStyle(false), flex: "none", padding: "3px 10px", fontSize: 10 }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={agentBusy}
+                onClick={() => setAgentResetConfirm(true)}
+                title="Start a fresh conversation thread for a stuck agent — its memories and personality stay."
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  alignSelf: "flex-start",
+                  color: "#dfe7d8",
+                  fontSize: 10,
+                  opacity: agentBusy ? 0.3 : 0.5,
+                  cursor: agentBusy ? "default" : "pointer",
+                  textDecoration: "underline",
+                  textDecorationColor: "rgba(255,255,255,0.25)",
+                }}
+              >
+                Reset thread
+              </button>
+            )}
             {/* Memories: the agent's persona/self-section — ONE field (the old persona textarea moved
                 here). Live read-only view + Edit (textarea, same POST /agent/persona replace:true save
                 semantics) + a dimmed edit-history list (its own `remember` writes show up too). */}
@@ -6308,37 +6414,58 @@ function App(): React.ReactElement {
                       : "Start your agent, then say hello below."}
                   </span>
                 ) : (
-                  agentChat.map((line) =>
-                    line.who === "tool" ? (
+                  agentFeed.map((item) => {
+                    if (item.kind === "chip") return <AgentToolChipPill key={item.key} chip={item.chip} />;
+                    if (item.kind === "chipGroup") {
+                      const open = expandedChipGroups.has(item.key);
+                      const toggle = (
+                        <button
+                          type="button"
+                          onClick={() => toggleChipGroup(item.key)}
+                          style={{ ...agentChipStyle, cursor: "pointer" }}
+                          title={open ? "Collapse" : "Expand"}
+                        >
+                          <span aria-hidden="true">🔧</span>
+                          <span>
+                            {item.chips.length} actions {open ? "▾" : "▸"}
+                          </span>
+                        </button>
+                      );
+                      if (!open) return <React.Fragment key={item.key}>{toggle}</React.Fragment>;
+                      return (
+                        <span key={item.key} style={{ display: "flex", flexDirection: "column", gap: 3, flex: "none" }}>
+                          {toggle}
+                          {item.chips.map((c) => (
+                            <AgentToolChipPill key={c.key} chip={c.chip} />
+                          ))}
+                        </span>
+                      );
+                    }
+                    if (item.who === "system") {
+                      return (
+                        <span
+                          key={item.key}
+                          style={{ fontSize: 10, opacity: 0.45, fontStyle: "italic", textAlign: "center" }}
+                        >
+                          {item.text}
+                        </span>
+                      );
+                    }
+                    return (
                       <span
-                        key={line.id}
-                        style={{
-                          fontSize: 10,
-                          opacity: 0.5,
-                          fontStyle: "italic",
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {line.text}
-                      </span>
-                    ) : (
-                      <span
-                        key={line.id}
+                        key={item.key}
                         style={{
                           fontSize: 12,
-                          color: line.who === "you" ? "#9ec8ff" : "#dfe7d8",
+                          color: item.who === "you" ? "#9ec8ff" : "#dfe7d8",
                           whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
                         }}
                       >
-                        <b style={{ opacity: 0.7, fontWeight: 600 }}>
-                          {line.who === "you" ? "You: " : ""}
-                        </b>
-                        {line.text}
+                        <b style={{ opacity: 0.7, fontWeight: 600 }}>{item.who === "you" ? "You: " : ""}</b>
+                        {item.text}
                       </span>
-                    ),
-                  )
+                    );
+                  })
                 )}
                 {agentStatus?.optedIn && agentStatus?.processing && (
                   <span style={{ fontSize: 11, color: "#9ec8ff", fontStyle: "italic", opacity: 0.85 }}>

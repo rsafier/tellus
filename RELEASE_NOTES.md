@@ -5,6 +5,20 @@ Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
 ## 0.8.9
+- **Agent panel: "Reset thread" escape hatch.** New subdued control next to Start/Stop (two-step
+  inline confirm) that calls the server's `POST …/agent/reset-thread` (hyades 0.5.201) to start a
+  fresh conversation thread for a wedged agent — bad tool loops and inbox backlog gone, persona +
+  memories kept. On success the local chat clears with a "— thread reset —" system note; on a
+  mid-rollout silo without the route (404/501) it reports "not on the server yet" instead of failing.
+- **Agent chat: tool turns render as compact chips.** Tool lines (and model-format artifacts that
+  leak into assistant text — `<tool_call_box>…</tool_call_box>` blocks, bare JSON tool-call objects
+  in all three key vocabularies (`action` / `name`+`arguments` / holo3.1's `tool`+`parameters`,
+  broken inner JSON included), and holo3.1's plain-text call blocks (`MoveSelf direction:north
+  distance:5`, bare tool-name lines, `key: value` arg lines) no longer dump raw text into the feed.
+  Calls and results show as one-line pills (`🔧 Observe`, `🔧 MoveSelf · direction north, distance
+  5`, `🔧 Generate · "a small fox"`), prose around a leaked call renders normally, and runs of ≥3
+  consecutive chips collapse into an expandable `🔧 N actions ▸`. Parsing/humanizing lives in
+  `src/agent-chat-format.ts` with unit tests built from live world-"main" transcripts.
 - **Animated store models render as world objects.** Placing an animated asset-store model (Baby
   Wolf, Baby Fox, the rigged animals…) as a world thing left it permanently invisible while the
   same GLB worked fine as an avatar. Root cause: the world-object fit pipeline
