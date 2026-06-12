@@ -4,6 +4,15 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.8
+- **Avatar size slider.** The avatar picker grows a **Size** control: a logarithmic 0.1×–8× slider
+  (default 1×) with a live numeric label and a Reset button. The scale is visual-only — it rescales
+  the mounted avatar model (VRM/GLB and classic TV-head alike, TV + presence ring included) live
+  with no rig rebuild, while physics, collision and movement stay untouched. First-person and
+  agent-POV eye heights follow the scale (a giant sees from a giant's head). The pick persists in
+  localStorage `tellus.avatarScale` and rides presence (`avatarScale`, server-clamped to [0.1, 8])
+  so everyone sees your size; remote size changes ease in over ~0.3s.
+
 ## 0.8.7 — 2026-06-11
 - **Agent-POV viewport fixed on hiDPI screens.** The picture-in-picture agent view double-applied
   `devicePixelRatio` — three.js `setViewport`/`setScissor` already multiply by the pixel ratio

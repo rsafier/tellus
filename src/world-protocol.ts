@@ -30,6 +30,10 @@ export interface WorldPresence {
   /** Catalog avatar id chosen by this visitor ("classic", "vrm:<storeId>", "glb:<storeId>");
    * absent/empty = the deterministic per-visitor default pick. */
   avatarId?: string;
+  /** Visual avatar size multiplier (server clamps to [0.1, 8]); ABSENT = unset → 1. A mid-rollout
+   * server may strip the field — receivers keep their last-known value on absent (the same
+   * convention as avatarId/animation). */
+  avatarScale?: number;
   connectedAt: string;
   lastSeenAt: string;
 }
@@ -77,6 +81,8 @@ export type WorldAction =
       position?: Vec3;
       /** Avatar selection broadcast with presence; "" clears (server omits null). */
       avatarId?: string;
+      /** Avatar size multiplier broadcast with presence; server clamps [0.1, 8], ≤0 clears. */
+      avatarScale?: number;
     }
   | {
       type: "terrain.replace";
@@ -259,7 +265,9 @@ export function isWorldAction(value: unknown): value is WorldAction {
   if (value.type === "presence.update") {
     return (
       (value.position === undefined || isVec3(value.position)) &&
-      (value.avatarId === undefined || typeof value.avatarId === "string")
+      (value.avatarId === undefined || typeof value.avatarId === "string") &&
+      (value.avatarScale === undefined ||
+        (typeof value.avatarScale === "number" && Number.isFinite(value.avatarScale)))
     );
   }
   if (value.type === "terrain.replace") {
