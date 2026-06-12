@@ -516,6 +516,160 @@ class VrmAvatarRig extends LocomotionAvatarRig {
   }
 }
 
+// ── Placed VRM "things": animate a world OBJECT that happens to be a VRM ────────────────────────
+// The auton/Atlantean store models are VRMs (skin + VRMC_vrm, ZERO embedded clips). Placed through
+// the plain GLTFLoader path they render static; here they instead mount as a real VRM rig and loop a
+// retargeted VRMA idle clip (or whatever clip the per-thing Animation HUD picks). This is the same
+// VRM load + VRMA retarget the avatars use — minus the locomotion state machine an object never needs.
+
+// The VRMA catalog clips a placed VRM thing can loop. Names mirror the asset-store clips; the HUD
+// dropdown lists these for a VRM thing (vs the embedded clip names for a plain GLB thing).
+export const VRMA_OBJECT_CLIP_IDS: Record<string, string> = {
+  idle: "6a20d88a90ef2a93f06a2037", // Idle
+  walk: "6a20d93d90ef2a93f06a2049", // Walking
+  wave: "6a20d72890ef2a93f06a2027", // Stand Up and Wave
+};
+
+export const vrmaObjectClipNames = (): string[] => Object.keys(VRMA_OBJECT_CLIP_IDS);
+
+/** A lightweight rig for a placed VRM OBJECT: a mixer over the VRM + the retargeted VRMA clips,
+ * looping one clip (idle by default). No locomotion — placed things don't walk. update(dt) advances
+ * the mixer AND the VRM spring bones (mirrors VrmAvatarRig.afterMixerUpdate). */
+export class VrmObjectRig {
+  readonly scene: THREE.Object3D;
+  private readonly vrm: VRM;
+  private readonly mixer: THREE.AnimationMixer;
+  private readonly actions = new Map<string, THREE.AnimationAction>();
+  private current: THREE.AnimationAction | undefined;
+  private disposed = false;
+
+  constructor(vrm: VRM, clips: Record<string, VRMAnimation>) {
+    this.vrm = vrm;
+    this.scene = vrm.scene;
+    this.mixer = new THREE.AnimationMixer(vrm.scene);
+    for (const [name, animation] of Object.entries(clips)) {
+      const clip = createVRMAnimationClip(animation, vrm);
+      clip.name = name;
+      this.actions.set(name, this.mixer.clipAction(clip));
+    }
+  }
+
+  /** Names of the retargeted clips available to loop (drives the HUD dropdown for VRM things). */
+  clipNames(): string[] {
+    return [...this.actions.keys()];
+  }
+
+  hasClips(): boolean {
+    return this.actions.size > 0;
+  }
+
+  /** Loop one clip by name (exact, then loose match). Empty/unknown → the idle (or first) clip. */
+  play(name?: string, fadeSec = 0.25): void {
+    if (this.disposed) return;
+    const wanted = name?.trim().toLowerCase();
+    let next: THREE.AnimationAction | undefined;
+    if (wanted) {
+      next =
+        this.actions.get(wanted) ??
+        [...this.actions.entries()].find(
+          ([key]) => key.includes(wanted) || wanted.includes(key),
+        )?.[1];
+    }
+    next ??= this.actions.get("idle") ?? this.actions.values().next().value;
+    if (!next || next === this.current) return;
+    next.reset();
+    next.setLoop(THREE.LoopRepeat, Infinity);
+    next.setEffectiveWeight(1);
+    if (fadeSec > 0 && this.current) {
+      this.current.fadeOut(fadeSec);
+      next.fadeIn(fadeSec);
+    }
+    next.play();
+    this.current = next;
+  }
+
+  update(dt: number): void {
+    if (this.disposed) return;
+    this.mixer.update(dt);
+    this.vrm.update(dt);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.mixer.stopAllAction();
+    this.mixer.uncacheRoot(this.vrm.scene);
+    VRMUtils.deepDispose(this.vrm.scene);
+  }
+}
+
+/**
+ * Try to load `url` as a VRM object. Resolves a {scene, vrm, clips} bundle when the asset really is a
+ * VRM (so the caller can mount it as a rig); resolves null for a plain GLB (caller stays on the
+ * existing GLTFLoader path). Reuses the avatar VRM loader + VRMA cache. Never throws for a non-VRM —
+ * only a genuine fetch/parse error rejects.
+ */
+export async function tryLoadVrmObject(
+  url: string,
+  rendererIsWebGPU: boolean,
+): Promise<{ scene: THREE.Object3D; vrm: VRM; clips: Record<string, VRMAnimation> } | null> {
+  if (!runtimeConfig.worldApiBase && !url.startsWith("http")) return null;
+  const buffer = await fetchAssetBuffer(url);
+  // Sniff the glTF JSON for the VRM extension before a full VRM parse (a non-VRM GLB has neither).
+  if (!bufferDeclaresVrm(buffer)) return null;
+  const gltf = await makeVrmLoader(rendererIsWebGPU).parseAsync(buffer, "");
+  const vrm = gltf.userData.vrm as VRM | undefined;
+  if (!vrm) return null;
+  VRMUtils.removeUnnecessaryVertices(gltf.scene);
+  VRMUtils.combineSkeletons(gltf.scene);
+  VRMUtils.rotateVRM0(vrm);
+  if (vrm.lookAt) {
+    const lookAtProxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
+    lookAtProxy.name = "VRMLookAtQuaternionProxy";
+    vrm.scene.add(lookAtProxy);
+  }
+  vrm.scene.traverse((obj) => {
+    obj.frustumCulled = false; // animated skinned meshes sweep outside their rest-pose bounds
+  });
+  const clipEntries = await Promise.all(
+    Object.entries(VRMA_OBJECT_CLIP_IDS).map(async ([name, id]) => {
+      const animation = await loadOptionalClip(id, rendererIsWebGPU);
+      return animation ? ([name, animation] as const) : null;
+    }),
+  );
+  const clips: Record<string, VRMAnimation> = {};
+  for (const entry of clipEntries) if (entry) clips[entry[0]] = entry[1];
+  return { scene: vrm.scene, vrm, clips };
+}
+
+// A VRM GLB declares the VRM extension in its glTF JSON chunk (VRMC_vrm for VRM1, "VRM" for VRM0).
+// Scan the first JSON chunk's bytes for the marker — far cheaper than a full VRM parse, and lets a
+// plain GLB skip the VRM path entirely.
+function bufferDeclaresVrm(buffer: ArrayBuffer): boolean {
+  const bytes = new Uint8Array(buffer);
+  // glTF binary: 12-byte header, then chunks (uint32 length, uint32 type, data). The first chunk is
+  // JSON (type 0x4E4F534A "JSON"). Scan just that chunk; fall back to scanning a capped prefix.
+  let scanStart = 0;
+  let scanEnd = Math.min(bytes.length, 1 << 20); // cap at 1 MiB so a huge buffer stays cheap
+  if (bytes.length >= 20 && bytes[0] === 0x67 && bytes[1] === 0x6c && bytes[2] === 0x54 && bytes[3] === 0x46) {
+    const view = new DataView(buffer);
+    const jsonLength = view.getUint32(12, true);
+    scanStart = 20;
+    scanEnd = Math.min(bytes.length, 20 + jsonLength);
+  }
+  // "VRMC_vrm" / "VRM" appear as ASCII keys in the JSON extensions map.
+  const needleVrmc = [0x56, 0x52, 0x4d, 0x43, 0x5f, 0x76, 0x72, 0x6d]; // VRMC_vrm
+  const needleVrm = [0x22, 0x56, 0x52, 0x4d, 0x22]; // "VRM"
+  const matchAt = (needle: number[], at: number): boolean => {
+    for (let k = 0; k < needle.length; k++) if (bytes[at + k] !== needle[k]) return false;
+    return true;
+  };
+  for (let i = scanStart; i < scanEnd; i++) {
+    if (matchAt(needleVrmc, i) || matchAt(needleVrm, i)) return true;
+  }
+  return false;
+}
+
 // ── Mounting: swap the procedural body for a rigged model inside the existing group ────────────
 function localTopOf(parts: THREE.Object3D[]): number {
   let top = 0;

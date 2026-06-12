@@ -52,6 +52,7 @@ import {
   vehicleMode,
 } from "./tellus-terrain";
 import { createGltfLoader, gltfObjectCache } from "./tellus-generation-client";
+import { tryLoadVrmObject, VrmObjectRig } from "./tellus-vrm-avatar";
 
 export function createFlowerSpriteTexture(petalColor: string): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
@@ -495,6 +496,16 @@ export function disposeMaterial(material: THREE.Material | THREE.Material[]): vo
 }
 
 export function disposeObject(object: THREE.Object3D): void {
+  // A placed VRM thing owns a VRM rig (its own mixer + skinned scene buffers, never shared) — dispose
+  // it so the rig stops + frees GPU resources.
+  const vrmRig = object.userData?.vrmObjectRig as { dispose?: () => void } | undefined;
+  if (vrmRig?.dispose) {
+    vrmRig.dispose();
+    return;
+  }
+  // A mirror frees its live-Reflector cap slot + render target on removal.
+  const disposeMirror = object.userData?.disposeMirror as (() => void) | undefined;
+  if (disposeMirror) disposeMirror();
   // Models cloned from the cached GLB share geometry/materials with the cache; never free those buffers
   // here (it would break every other instance + the cache). The node wrappers are GC'd; buffers live in
   // generatedGltfCache for the session.
@@ -763,6 +774,9 @@ export async function loadSkyboxModel(): Promise<
 export function assetTargetHeight(thing: GeneratedThing): number {
   const lower = thing.prompt.toLowerCase();
   const variation = clamp(thing.scale, 0.25, 12);
+  // A mirror is a fixed ~2.5m standing pane — keep it human-scale regardless of the generic-object
+  // heuristic below (its modelUrl is procedural://mirror; the prompt is "Mirror").
+  if (lower === "mirror") return clamp(2.5 * variation, 1.2, 12);
   const mode = vehicleMode(thing);
   if (mode === "air") return clamp(4.8 * variation, 1.6, 54);
   if (mode === "water") return clamp(1.45 * variation, 0.45, 18);
@@ -796,12 +810,16 @@ export function assetTargetHeight(thing: GeneratedThing): number {
   return clamp(1.35 * variation, 0.35, 24);
 }
 
-export async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
+export async function loadGeneratedModel(
+  url: string,
+  thing: GeneratedThing,
+  rendererIsWebGPU = false,
+): Promise<THREE.Object3D> {
   // procedural:// assets build locally (no fetch) and then ride the exact same fit/rotate/place
   // pipeline as a downloaded GLB.
   const proceduralUrl = sanitizeProceduralModelUrl(url);
   if (proceduralUrl) {
-    const procedural = buildProceduralModel(proceduralUrl);
+    const procedural = buildProceduralModel(proceduralUrl, rendererIsWebGPU);
     if (procedural) {
       procedural.name = `procedural-${thing.id}`;
       const fittedProc = fitModelToHeight(procedural, assetTargetHeight(thing));
@@ -814,6 +832,32 @@ export async function loadGeneratedModel(url: string, thing: GeneratedThing): Pr
       }
       return fittedProc;
     }
+  }
+  // VRM things (auton/Atlantean store models — skin + VRMC_vrm, zero embedded clips) render static
+  // through the plain GLTFLoader path; mount them as a real VRM rig instead so a retargeted VRMA idle
+  // clip loops by default (or the thing's picked clip). Falls through to the GLB path for plain GLBs
+  // (tryLoadVrmObject resolves null) and on any load error.
+  try {
+    const vrmObject = await tryLoadVrmObject(url, rendererIsWebGPU);
+    if (vrmObject) {
+      const rig = new VrmObjectRig(vrmObject.vrm, vrmObject.clips);
+      const fittedVrm = fitModelToHeight(vrmObject.scene, assetTargetHeight(thing));
+      fittedVrm.userData = {
+        ...fittedVrm.userData,
+        tellusId: thing.id,
+        kind: thing.kind,
+        vrmObjectRig: rig,
+      };
+      applyThingRotation(fittedVrm, thing);
+      if (isFreeMovingVehicle(thing)) {
+        fittedVrm.position.set(thing.position.x, thing.position.y, thing.position.z);
+      } else {
+        placeObjectAboveGround(fittedVrm, thing.position, 0.08);
+      }
+      return fittedVrm;
+    }
+  } catch (error) {
+    console.warn("VRM object load failed; falling back to the plain GLB path", error);
   }
   const { model, animations } = await loadGeneratedGltfObject(url);
   model.name = `pixel3d-${thing.id}`;
