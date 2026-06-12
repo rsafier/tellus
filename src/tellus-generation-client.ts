@@ -114,9 +114,16 @@ export async function browseAssetLibrary(
       download_count: typeof m.download_count === "number" ? m.download_count : undefined,
       hasThumbnail: m.has_thumbnail === true,
       hasGameOptimized: m.has_game_optimized === true,
+      // The store's `viewable` flag means conversion finished and a renderable view URL exists.
+      // Cards omitting it (older store builds) are treated as viewable to avoid hiding everything.
+      viewable: m.viewable !== false,
       tags: Array.isArray(m.tags) ? m.tags.filter((t): t is string => typeof t === "string") : undefined,
       source: "asset-library" as const,
-    }));
+    }))
+    // Keep the catalog in sync with what the store can actually serve: drop cards the store can't
+    // render, so a click never tries to load a GLB that 404s (the "don't serve assets that aren't
+    // there" guarantee).
+    .filter((m) => m.viewable);
   return {
     models,
     hasNext: parsed.has_next === true,

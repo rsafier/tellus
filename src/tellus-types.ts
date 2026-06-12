@@ -80,6 +80,8 @@ export interface AssetLibraryModel {
   /** Store browse-card extras (3D Asset Manager /models/browse). */
   hasThumbnail?: boolean;
   hasGameOptimized?: boolean;
+  /** Store reports the model can actually be rendered/served (conversion done, a view URL exists). */
+  viewable?: boolean;
   tags?: string[];
 }
 

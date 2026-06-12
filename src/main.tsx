@@ -4532,6 +4532,114 @@ function AvatarTile({
   );
 }
 
+// One asset-store search-result tile — same square-thumbnail grid look as AvatarTile, driven by a
+// browse-card AssetLibraryModel. Store thumbnail when available, else a deterministic colored-initial
+// fallback. Click = drop the asset into the world.
+function AssetTile({
+  model,
+  onSelect,
+}: {
+  model: AssetLibraryModel;
+  onSelect: (model: AssetLibraryModel) => void;
+}): React.ReactElement {
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const thumbUrl =
+    model.hasThumbnail && !thumbFailed
+      ? tellusAssetLibraryUrl(`/api/assets/model/${encodeURIComponent(model.id)}/thumbnail`)
+      : null;
+  // Deterministic tile hue per name so the initials fallback stays distinctive (matches AvatarTile).
+  let hue = 0;
+  for (let i = 0; i < model.name.length; i++) hue = (hue * 31 + model.name.charCodeAt(i)) % 360;
+  const format = (model.file_format ?? "model").toUpperCase();
+  const title =
+    model.name +
+    (model.hasGameOptimized ? " · game-optimized" : "") +
+    (typeof model.download_count === "number" && model.download_count > 0
+      ? ` · ${model.download_count} downloads`
+      : "");
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={() => onSelect(model)}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        gap: 4,
+        padding: 4,
+        borderRadius: 8,
+        border: "1px solid rgba(255,255,255,0.14)",
+        background: "rgba(255,255,255,0.05)",
+        color: "#dfe7d8",
+        cursor: "pointer",
+      }}
+    >
+      {thumbUrl ? (
+        <img
+          src={thumbUrl}
+          alt={model.name}
+          loading="lazy"
+          onError={() => setThumbFailed(true)}
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            objectFit: "cover",
+            borderRadius: 6,
+            background: "rgba(0,0,0,0.35)",
+          }}
+        />
+      ) : (
+        <span
+          aria-hidden
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 22,
+            fontWeight: 700,
+            color: "#0c1016",
+            background: `hsl(${hue} 45% 62%)`,
+          }}
+        >
+          {model.name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 10,
+          lineHeight: 1.2,
+          textAlign: "center",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {model.name}
+      </span>
+      <span
+        style={{
+          fontSize: 9,
+          lineHeight: 1,
+          textAlign: "center",
+          opacity: 0.5,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {format}
+        {typeof model.download_count === "number" && model.download_count > 0
+          ? ` · ${model.download_count}↓`
+          : ""}
+      </span>
+    </button>
+  );
+}
+
 function App(): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<TellusWorldApi | null>(null);
@@ -7105,52 +7213,23 @@ function App(): React.ReactElement {
                     </span>
                   )}
                 </div>
-                {assetBrowse.map((model) => (
-                  <button
-                    key={model.id}
-                    type="button"
-                    className="inventory-item"
-                    onClick={() => worldRef.current?.addLibraryAsset(model)}
+                {assetBrowse.length > 0 && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(3, 1fr)",
+                      gap: 8,
+                    }}
                   >
-                    {model.hasThumbnail ? (
-                      <img
-                        src={tellusAssetLibraryUrl(
-                          `/api/assets/model/${encodeURIComponent(model.id)}/thumbnail`,
-                        )}
-                        alt=""
-                        loading="lazy"
-                        width={42}
-                        height={42}
-                        style={{
-                          width: 42,
-                          height: 42,
-                          flex: "none",
-                          objectFit: "cover",
-                          borderRadius: 6,
-                          background: "rgba(0,0,0,0.35)",
-                        }}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
+                    {assetBrowse.map((model) => (
+                      <AssetTile
+                        key={model.id}
+                        model={model}
+                        onSelect={(m) => worldRef.current?.addLibraryAsset(m)}
                       />
-                    ) : (
-                      <Box size={16} />
-                    )}
-                    <span>
-                      <strong>{model.name.slice(0, 34)}</strong>
-                      <small>
-                        {(model.file_format ?? "model").toUpperCase()}
-                        {model.hasGameOptimized ? " · game-optimized" : ""}
-                        {typeof model.download_count === "number" && model.download_count > 0
-                          ? ` · ${model.download_count}↓`
-                          : ""}
-                        {model.tags && model.tags.length > 0
-                          ? ` · ${model.tags.slice(0, 3).join(", ")}`
-                          : ""}
-                      </small>
-                    </span>
-                  </button>
-                ))}
+                    ))}
+                  </div>
+                )}
                 {assetBrowse.length === 0 && !assetBrowseLoading && (
                   <span className="inventory-empty">
                     {assetSearch ? `Nothing matched “${assetSearch}”.` : "No library assets loaded yet."}
