@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { Reflector } from "three/examples/jsm/objects/Reflector.js";
+import { MeshBasicNodeMaterial } from "three/webgpu";
+import { reflector } from "three/tsl";
 import { buildProceduralObject, proceduralArchetype } from "./tellus-veg-archetypes";
 
 // ── procedural:// placeable assets ────────────────────────────────────────────────────────────────
@@ -88,7 +90,12 @@ const MIRROR_FRAME_D = 0.12;
 // Cap on simultaneously-LIVE reflective mirrors. Each one is an extra full-scene render pass per
 // frame, so beyond this the next mirrors render as plain tinted glass (no reflection, no extra pass).
 export const MAX_LIVE_MIRRORS = 3;
-const liveReflectors = new Set<Reflector>();
+// A live-mirror slot is backend-agnostic: it wraps either a WebGL Reflector or a WebGPU TSL reflector
+// node, exposing a uniform dispose() so the cap accounting + teardown work the same on both paths.
+interface MirrorSlot {
+  dispose(): void;
+}
+const liveReflectors = new Set<MirrorSlot>();
 
 /** How many live (reflecting) mirrors exist right now — for diagnostics / the cap note. */
 export const liveMirrorCount = (): number => liveReflectors.size;
@@ -152,37 +159,86 @@ function buildGlassPlane(): THREE.Mesh {
   return glass;
 }
 
-function buildMirrorModel(rendererIsWebGPU: boolean): THREE.Group {
+/** A static (non-reflecting) framed glass mirror — env-mapped tinted glass. The fallback once the
+ *  live-mirror cap is reached, or if a live reflector can't be built on this backend. */
+function buildStaticMirror(): THREE.Group {
   const group = new THREE.Group();
   group.name = "tellus-mirror";
   group.add(buildMirrorFrame());
-
-  // WebGPU: Reflector (WebGL-only) would error — go straight to env-mapped glass, no console noise.
-  // WebGL within the cap: a live Reflector. Over the cap: env-mapped glass (a tinted pane).
-  if (!rendererIsWebGPU && liveReflectors.size < MAX_LIVE_MIRRORS) {
-    try {
-      const reflector = new Reflector(new THREE.PlaneGeometry(MIRROR_GLASS_W, MIRROR_GLASS_H), {
-        clipBias: 0.003,
-        textureWidth: 512, // modest render-target resolution keeps the extra pass cheap
-        textureHeight: 1024,
-        color: 0x889098,
-      });
-      reflector.name = "tellus-mirror-reflector";
-      group.add(reflector);
-      liveReflectors.add(reflector);
-      group.userData.mirrorReflector = reflector;
-      // Track teardown so a removed mirror frees its cap slot (main.tsx calls disposeMirror on remove).
-      group.userData.disposeMirror = () => {
-        liveReflectors.delete(reflector);
-        reflector.dispose?.();
-      };
-      return group;
-    } catch (error) {
-      console.warn("Mirror Reflector unavailable — using env-mapped glass", error);
-    }
-  }
   const glass = buildGlassPlane();
   group.add(glass);
   group.userData.mirrorGlass = true;
   return group;
+}
+
+/** WebGL path: three's classic {@link Reflector} — a render-to-texture planar mirror. */
+function buildWebGLReflectorMirror(): THREE.Group | null {
+  try {
+    const reflectorMesh = new Reflector(new THREE.PlaneGeometry(MIRROR_GLASS_W, MIRROR_GLASS_H), {
+      clipBias: 0.003,
+      textureWidth: 512, // modest render-target resolution keeps the extra pass cheap
+      textureHeight: 1024,
+      color: 0x889098,
+    });
+    reflectorMesh.name = "tellus-mirror-reflector";
+    const group = new THREE.Group();
+    group.name = "tellus-mirror";
+    group.add(buildMirrorFrame());
+    group.add(reflectorMesh);
+    const slot: MirrorSlot = { dispose: () => reflectorMesh.dispose?.() };
+    liveReflectors.add(slot);
+    group.userData.mirrorReflector = reflectorMesh;
+    group.userData.disposeMirror = () => {
+      liveReflectors.delete(slot);
+      slot.dispose();
+    };
+    return group;
+  } catch (error) {
+    console.warn("Mirror Reflector (WebGL) unavailable — using static glass", error);
+    return null;
+  }
+}
+
+/** WebGPU path: a TSL <c>reflector()</c> node planar mirror (the classic Reflector is WebGL-only, so
+ *  on WebGPU the old code silently fell back to non-reflecting glass — that was "mirrors don't mirror").
+ *  The reflector's target plane reflects across its local +Z; we coincide it with the glass (group
+ *  origin, facing +Z) and PARENT it to the group so the reflection tracks the mirror as the user moves
+ *  or rotates it. The reflection is sampled unlit (MeshBasicNodeMaterial) so it reads as a true mirror. */
+function buildWebGPUReflectorMirror(): THREE.Group | null {
+  try {
+    // resolutionScale 0.5 = half-res reflection target (cheap); bounces:false avoids mirror-in-mirror
+    // recursion and keeps it to one extra pass per frame.
+    const reflection = reflector({ resolutionScale: 0.5, bounces: false });
+    const material = new MeshBasicNodeMaterial();
+    material.colorNode = reflection;
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(MIRROR_GLASS_W, MIRROR_GLASS_H), material);
+    glass.name = "tellus-mirror-reflector";
+    const group = new THREE.Group();
+    group.name = "tellus-mirror";
+    group.add(buildMirrorFrame());
+    group.add(glass);
+    reflection.target.position.set(0, 0, 0);
+    group.add(reflection.target);
+    const slot: MirrorSlot = { dispose: () => reflection.dispose?.() };
+    liveReflectors.add(slot);
+    group.userData.mirrorReflector = reflection;
+    group.userData.disposeMirror = () => {
+      liveReflectors.delete(slot);
+      slot.dispose();
+    };
+    return group;
+  } catch (error) {
+    console.warn("Mirror reflector (WebGPU) unavailable — using static glass", error);
+    return null;
+  }
+}
+
+function buildMirrorModel(rendererIsWebGPU: boolean): THREE.Group {
+  // Within the cap, build a LIVE reflecting mirror for this backend; over the cap (or on a build
+  // failure) fall back to static tinted glass — one extra full-scene pass per live mirror.
+  if (liveReflectors.size < MAX_LIVE_MIRRORS) {
+    const live = rendererIsWebGPU ? buildWebGPUReflectorMirror() : buildWebGLReflectorMirror();
+    if (live) return live;
+  }
+  return buildStaticMirror();
 }
