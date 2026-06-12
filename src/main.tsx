@@ -64,13 +64,24 @@ import {
   createVisitorMesh,
   tickSharedStatic,
 } from "./world-builders";
-import { restoreProceduralAvatar, type AvatarRig } from "./tellus-vrm-avatar";
+import {
+  AVATAR_SCALE_MAX,
+  AVATAR_SCALE_MIN,
+  clampAvatarScale,
+  getAvatarUserScale,
+  restoreProceduralAvatar,
+  setAvatarUserScale,
+  tickAvatarScale,
+  type AvatarRig,
+} from "./tellus-vrm-avatar";
 import {
   AVATAR_CATALOG,
   attachAvatarRig,
   avatarThumbnailUrl,
   setStoredAvatarId,
+  setStoredAvatarScale,
   storedAvatarId,
+  storedAvatarScale,
   type AvatarCatalogEntry,
 } from "./tellus-avatar-catalog";
 import {
@@ -540,6 +551,11 @@ function createTellusWorld(
   // restores the procedural TV-head in place, then mounts the requested rig async — the per-owner
   // token guards overlapping loads, and the mesh-identity check guards a prune mid-load.
   let localAvatarId = storedAvatarId();
+  // localAvatarScale = YOUR avatar-size multiplier (the picker "Size" slider; 1 = default). It is
+  // VISUAL-ONLY — physics/collision/movement never see it — persists in localStorage
+  // "tellus.avatarScale" and rides every presence.update (server clamps to [0.1, 8]) so others
+  // render you at the same size. Remote scales arrive on presence and ease in via tickAvatarScale.
+  let localAvatarScale = storedAvatarScale();
   const appliedAvatarIds = new Map<string, string>();
   const avatarApplyTokens = new Map<string, number>();
   const applyAvatarTo = (group: THREE.Group, ownerId: string, requestedId: string): void => {
@@ -564,6 +580,7 @@ function createTellusWorld(
     });
   };
   applyAvatarTo(visitor, visitorId, localAvatarId);
+  setAvatarUserScale(visitor, localAvatarScale, true); // persisted size from the very first frame
   // Local locomotion state is derived per-frame from the position delta in animate().
   const lastLocalAvatarPos = { x: visitorPosition.x, z: visitorPosition.z };
   // Diagnostics hooks (smoke tests / console) — mirror the other __tellus* hooks. The referenced
@@ -573,11 +590,11 @@ function createTellusWorld(
     hasVisitorAvatar: (id) => hasVisitorAvatar(id),
     setCameraMode: (mode) => setCameraMode(mode),
     getCameraMode: () => cameraMode,
-    injectRemotePresence: (id: string, x: number, z: number) => {
+    injectRemotePresence: (id: string, x: number, z: number, avatarScale?: number) => {
       const now = new Date().toISOString();
       applyRemotePresence([
         ...Array.from(remoteVisitors.values()),
-        { visitorId: id, position: { x, y: 0, z }, connectedAt: now, lastSeenAt: now },
+        { visitorId: id, position: { x, y: 0, z }, avatarScale, connectedAt: now, lastSeenAt: now },
       ]);
     },
   };
@@ -588,6 +605,17 @@ function createTellusWorld(
     });
     const bodyParts =
       (visitor.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
+    // World-space Y scale of the local avatar's visible silhouette (mounted rigged model, else the
+    // classic torso) — lets smoke tests assert the actual applied node scale, not just the knob.
+    const scaleProbe =
+      (visitor.userData.avatarMountedModel as THREE.Object3D | undefined) ?? bodyParts[0];
+    const probeWorldScale = scaleProbe
+      ? scaleProbe.getWorldScale(new THREE.Vector3()).y
+      : 1;
+    const remoteScales: Record<string, number> = {};
+    for (const [remoteId, mesh] of remoteVisitorMeshes) {
+      remoteScales[remoteId] = getAvatarUserScale(mesh);
+    }
     return {
       localVisitorId: visitorId,
       localAvatarId: appliedAvatarIds.get(visitorId) ?? "",
@@ -595,6 +623,9 @@ function createTellusWorld(
       localSkinnedMeshes: skinned,
       localBodyHidden:
         bodyParts.length > 0 && bodyParts.every((part) => !part.visible),
+      localScale: getAvatarUserScale(visitor),
+      localModelWorldScaleY: probeWorldScale,
+      remoteScales,
     };
   };
 
@@ -614,7 +645,9 @@ function createTellusWorld(
       return "third";
     }
   })();
-  const FIRST_PERSON_EYE_HEIGHT = 2.4; // matches poseAgentPovCamera's avatar head height
+  const FIRST_PERSON_EYE_HEIGHT = 2.4; // matches poseAgentPovCamera's avatar head height (× scale)
+  // The eye rides the avatar's CURRENT (lerped) user scale — a giant sees from a giant's head.
+  const firstPersonEyeHeight = () => FIRST_PERSON_EYE_HEIGHT * getAvatarUserScale(visitor);
   const applyCameraModeVisibility = () => {
     // Whole-group toggle: body + TV + marker. Remote meshes are per-client, so this is local-only.
     visitor.visible = cameraMode !== "first";
@@ -835,9 +868,17 @@ function createTellusWorld(
     for (const remote of presence) {
       if (remote.visitorId === visitorId || !remote.position) continue;
       activeRemoteIds.add(remote.visitorId);
+      // avatarScale wire convention (mirrors avatarId/animation): present = explicit value,
+      // ABSENT = a mid-rollout server stripped the field — keep the last-known value (a brand-new
+      // visitor with no known value defaults to 1).
+      const remoteScale =
+        typeof remote.avatarScale === "number" && Number.isFinite(remote.avatarScale)
+          ? clampAvatarScale(remote.avatarScale)
+          : undefined;
       remoteVisitors.set(remote.visitorId, {
         ...remote,
         position: { ...remote.position },
+        avatarScale: remoteScale ?? remoteVisitors.get(remote.visitorId)?.avatarScale,
       });
       let mesh = remoteVisitorMeshes.get(remote.visitorId);
       const remoteAvatarId = typeof remote.avatarId === "string" ? remote.avatarId : "";
@@ -849,15 +890,22 @@ function createTellusWorld(
         // visitorIds — ride this same path with the deterministic default). applyAvatarTo guards
         // against the visitor being pruned (or the world torn down) before the load resolved.
         applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
+        // First sight of this visitor: snap straight to their size (no grow-in flicker).
+        setAvatarUserScale(mesh, remoteScale ?? 1, true);
         // Drain any peer stream that surfaced before this avatar existed.
         if (pendingPeerStreams.has(remote.visitorId)) {
           const pending = pendingPeerStreams.get(remote.visitorId) ?? null;
           pendingPeerStreams.delete(remote.visitorId);
           setPeerVideo(remote.visitorId, pending);
         }
-      } else if (appliedAvatarIds.get(remote.visitorId) !== remoteAvatarId) {
-        // The visitor changed avatars mid-session — rebuild their rig in place.
-        applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
+      } else {
+        if (appliedAvatarIds.get(remote.visitorId) !== remoteAvatarId) {
+          // The visitor changed avatars mid-session — rebuild their rig in place.
+          applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
+        }
+        // Live size change: ease toward the new value (tickAvatarScale in animate()); absent
+        // (mid-rollout strip) leaves the current target untouched.
+        if (remoteScale !== undefined) setAvatarUserScale(mesh, remoteScale);
       }
       const position = groundedPosition(
         remote.position.x,
@@ -902,6 +950,9 @@ function createTellusWorld(
       // mid-rollout server (which may not persist it per-connection yet) always converge. "" = no
       // explicit pick (others use the deterministic per-visitor robot).
       avatarId: localAvatarId,
+      // Avatar size rides the same way (server clamps to [0.1, 8]). Always the TARGET value, not
+      // the lerped current — receivers ease toward it themselves.
+      avatarScale: localAvatarScale,
     }));
   };
 
@@ -3249,14 +3300,15 @@ function createTellusWorld(
       // but driven by the EXISTING look controls — drag steers yaw/pitch, WASD walks, physics
       // untouched). lookAt direction = yaw around Y with the full pitch range.
       const cosPitch = Math.cos(pitch);
+      const eyeHeight = firstPersonEyeHeight();
       camera.position.set(
         visitorPosition.x,
-        visitorPosition.y + FIRST_PERSON_EYE_HEIGHT,
+        visitorPosition.y + eyeHeight,
         visitorPosition.z,
       );
       camera.lookAt(
         visitorPosition.x + Math.sin(yaw) * cosPitch,
-        visitorPosition.y + FIRST_PERSON_EYE_HEIGHT + Math.sin(pitch),
+        visitorPosition.y + eyeHeight + Math.sin(pitch),
         visitorPosition.z + Math.cos(yaw) * cosPitch,
       );
       syncExternalSkyboxToCamera(camera.position);
@@ -3306,7 +3358,9 @@ function createTellusWorld(
     const avatar = remoteVisitorMeshes.get(visitorId);
     if (!avatar) return false;
     avatar.getWorldPosition(povEye);
-    povEye.y += 2.4;
+    // Eye height follows the visitor's avatar scale (presence-fed, lerped on the mesh) so a
+    // giant agent's POV sits at its head, not its knees.
+    povEye.y += 2.4 * getAvatarUserScale(avatar);
     const facing = avatar.rotation.y;
     povForward.set(Math.sin(facing), 0, Math.cos(facing)).normalize();
     povLookAt.copy(povEye).addScaledVector(povForward, 8).add(POV_LOOK_DROP);
@@ -3508,6 +3562,11 @@ function createTellusWorld(
     lastLocalAvatarPos.z = visitorPosition.z;
     for (const rig of avatarRigs.values()) {
       rig.update(delta);
+    }
+    // Avatar user-scale easing (local slider + remote presence changes); settled groups no-op.
+    tickAvatarScale(visitor, delta);
+    for (const mesh of remoteVisitorMeshes.values()) {
+      tickAvatarScale(mesh, delta);
     }
     syncMeshes(now);
     tickSharedStatic(now);
@@ -4085,6 +4144,17 @@ function createTellusWorld(
       sendPresenceUpdate(true); // broadcast the new pick right away (not on the 300ms cadence)
     },
     getAvatarSelection: () => localAvatarId,
+    setAvatarScale: (scale: number) => {
+      const next = clampAvatarScale(scale);
+      if (next === localAvatarScale) return;
+      localAvatarScale = next;
+      setStoredAvatarScale(next);
+      // VISUAL-ONLY: re-applies the silhouette layout live (no rig rebuild); physics/collision
+      // never see the scale. The first-person eye height tracks the lerped current value.
+      setAvatarUserScale(visitor, next);
+      sendPresenceUpdate(true); // broadcast the new size right away (not on the 300ms cadence)
+    },
+    getAvatarScale: () => localAvatarScale,
     setCameraMode,
     getCameraMode: () => cameraMode,
     getGeneratedClipNames: (id: string) =>
@@ -4223,6 +4293,28 @@ function useSpeechInput(onText: (text: string) => void): {
 
   return { listening, supported, start };
 }
+
+// ── Avatar "Size" slider mapping ────────────────────────────────────────────────────────────────
+// The slider is LOGARITHMIC across [0.1×, 8×] so 0.5× and 2× sit symmetrically around 1× and the
+// whole range stays usable; values land snapped to a tidy 2-significant-digit step, with a small
+// snap window around exactly 1× (the default must be reachable by drag).
+const AVATAR_SCALE_SLIDER_STEPS = 200;
+const avatarScaleToSlider = (scale: number): number =>
+  Math.round(
+    (Math.log(clampAvatarScale(scale) / AVATAR_SCALE_MIN) /
+      Math.log(AVATAR_SCALE_MAX / AVATAR_SCALE_MIN)) *
+      AVATAR_SCALE_SLIDER_STEPS,
+  );
+const avatarSliderToScale = (step: number): number => {
+  const raw =
+    AVATAR_SCALE_MIN *
+    Math.pow(AVATAR_SCALE_MAX / AVATAR_SCALE_MIN, step / AVATAR_SCALE_SLIDER_STEPS);
+  if (Math.abs(raw - 1) < 0.05) return 1;
+  // 2 significant digits keeps the live label stable while dragging (0.25, 1.3, 4.2, …).
+  return clampAvatarScale(Number(raw.toPrecision(2)));
+};
+const avatarScaleLabel = (scale: number): string =>
+  `${scale >= 1 ? scale.toFixed(1) : scale.toFixed(2)}×`;
 
 // One avatar-picker grid tile: store thumbnail when it loads, else a colored-initial fallback
 // ("classic" has no store thumbnail and always renders the initial tile). Click = select.
@@ -4378,6 +4470,13 @@ function App(): React.ReactElement {
   const onAvatarPick = (entry: AvatarCatalogEntry) => {
     setAvatarSelection(entry.id);
     worldRef.current?.setAvatarSelection(entry.id); // persists + swaps the rig + broadcasts
+  };
+  // Avatar size (the "Size" slider): visual-only multiplier, persisted + broadcast like the pick.
+  const [avatarScale, setAvatarScaleState] = useState<number>(() => storedAvatarScale());
+  const onAvatarScale = (scale: number) => {
+    const next = clampAvatarScale(scale);
+    setAvatarScaleState(next);
+    worldRef.current?.setAvatarScale(next); // persists + rescales live + broadcasts
   };
   // ── "Your Agent" panel state (per-user embodied agent on Hyades; self-contained, pure fetch) ──
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
@@ -5618,6 +5717,56 @@ function App(): React.ReactElement {
                   onSelect={onAvatarPick}
                 />
               ))}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: 600 }}>
+                  Size{" "}
+                  <span data-testid="avatar-scale-label" style={{ opacity: 0.8, fontWeight: 500 }}>
+                    {avatarScaleLabel(avatarScale)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onAvatarScale(1)}
+                  disabled={avatarScale === 1}
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "#dfe7d8",
+                    fontSize: 11,
+                    cursor: avatarScale === 1 ? "default" : "pointer",
+                    opacity: avatarScale === 1 ? 0.45 : 1,
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+              <input
+                type="range"
+                aria-label="Avatar size"
+                data-testid="avatar-scale-slider"
+                min={0}
+                max={AVATAR_SCALE_SLIDER_STEPS}
+                step={1}
+                value={avatarScaleToSlider(avatarScale)}
+                onChange={(event) =>
+                  onAvatarScale(avatarSliderToScale(Number(event.target.value)))
+                }
+                style={{ width: "100%" }}
+              />
+              <span style={{ fontSize: 10, opacity: 0.55 }}>
+                0.1× – 8× · visual only (movement unchanged)
+              </span>
             </div>
           </aside>
         )}

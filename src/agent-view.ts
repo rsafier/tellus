@@ -39,6 +39,8 @@ interface StatePresence {
   visitorId?: string;
   position?: Vec3;
   name?: string;
+  /** Visual avatar size multiplier (absent = unset → 1) — scales the POV eye height. */
+  avatarScale?: number;
 }
 
 interface WorldStateSnapshot {
@@ -226,7 +228,12 @@ const boot = async () => {
     if (!p?.position) return null;
     povCamera.aspect = w / h;
     povCamera.updateProjectionMatrix();
-    const eye = new THREE.Vector3(p.position.x, p.position.y + 2.4, p.position.z);
+    // Eye height follows the visitor's avatar scale (a giant's POV is at its head, not its knees).
+    const eyeScale =
+      typeof p.avatarScale === "number" && Number.isFinite(p.avatarScale) && p.avatarScale > 0
+        ? Math.min(8, Math.max(0.1, p.avatarScale))
+        : 1;
+    const eye = new THREE.Vector3(p.position.x, p.position.y + 2.4 * eyeScale, p.position.z);
     // face the island center-ish (presence carries no heading) with a slight downward tilt
     const look = new THREE.Vector3(-p.position.x * 0.2, p.position.y + 0.6, -p.position.z * 0.2);
     if (eye.distanceTo(look) < 2) look.set(eye.x + 6, eye.y - 1.2, eye.z);

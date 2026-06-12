@@ -181,6 +181,11 @@ export interface TellusWorldApi {
   // presence so other players swap your avatar too.
   setAvatarSelection(avatarId: string): void;
   getAvatarSelection(): string;
+  // Avatar size multiplier (the picker "Size" slider; clamped [0.1, 8], 1 = default). VISUAL-ONLY
+  // — physics/collision/movement are untouched. Rescales the local silhouette live (no rig
+  // rebuild), persists to localStorage "tellus.avatarScale" and broadcasts over presence.
+  setAvatarScale(scale: number): void;
+  getAvatarScale(): number;
   // ── Camera mode (presentation-only; physics/movement are untouched) ──
   // "third" = the classic orbit camera; "first" = the main camera rides the LOCAL avatar's head
   // (own avatar + TV hidden locally; others still see you). Persists in localStorage
@@ -325,6 +330,12 @@ declare global {
       rigIds: string[];
       localSkinnedMeshes: number;
       localBodyHidden: boolean;
+      /** The local user scale currently APPLIED (mid-lerp value; target once settled). */
+      localScale: number;
+      /** World-space Y scale of the local silhouette node (mounted model, else the torso). */
+      localModelWorldScaleY: number;
+      /** Per-remote-visitor applied user scale (presence-fed). */
+      remoteScales: Record<string, number>;
     };
     __tellusImportGenerated?: (things: unknown) => number;
     __tellusImportSnapshot?: (snapshot: unknown) => number;
@@ -337,7 +348,7 @@ declare global {
       hasVisitorAvatar: (visitorId: string) => boolean;
       setCameraMode: (mode: "first" | "third") => void;
       getCameraMode: () => "first" | "third";
-      injectRemotePresence: (visitorId: string, x: number, z: number) => void;
+      injectRemotePresence: (visitorId: string, x: number, z: number, avatarScale?: number) => void;
     };
   }
 }

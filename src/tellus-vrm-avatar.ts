@@ -57,6 +57,108 @@ const REMOTE_AIRBORNE_DY = 1.05;
 // so the overall silhouette height stays ≈ the old avatar.
 const VRM_BODY_HEIGHT_RATIO = 0.72;
 
+// ── User avatar scale (the picker "Size" slider) ────────────────────────────────────────────────
+// VISUAL-ONLY: scales the avatar silhouette (mounted model / classic TV-head body + TV/ring
+// offsets) inside the visitor group — physics, collision and movement are deliberately untouched.
+// The whole group is NOT scaled (its world position is written every frame by the position code,
+// and other children — selection helpers etc. — must not inherit the scale); instead every avatar
+// node keeps a captured scale-1 baseline (position + scale) and the user factor multiplies both,
+// so the silhouette scales coherently around the feet at the group origin. Bounds mirror the
+// server-side clamp on presence.avatarScale.
+export const AVATAR_SCALE_MIN = 0.1;
+export const AVATAR_SCALE_MAX = 8;
+
+/** Clamp to the legal user-scale range; anything non-finite / non-positive means "unset" → 1. */
+export function clampAvatarScale(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return THREE.MathUtils.clamp(value, AVATAR_SCALE_MIN, AVATAR_SCALE_MAX);
+}
+
+interface AvatarScaleState {
+  current: number;
+  target: number;
+  /** Scale-1 baseline per managed node — recaptured whenever layout code (mount/restore) re-seats
+   * everything at base scale. */
+  bases: Map<THREE.Object3D, { position: THREE.Vector3; scale: THREE.Vector3 }>;
+}
+
+function avatarScaleState(group: THREE.Group): AvatarScaleState {
+  let state = group.userData.avatarScaleState as AvatarScaleState | undefined;
+  if (!state) {
+    state = { current: 1, target: 1, bases: new Map() };
+    group.userData.avatarScaleState = state;
+  }
+  return state;
+}
+
+function applyAvatarScaleFactor(group: THREE.Group, factor: number): void {
+  const state = avatarScaleState(group);
+  for (const [node, base] of state.bases) {
+    if (node.parent !== group) continue; // disposed/replaced nodes simply drop out
+    node.position.copy(base.position).multiplyScalar(factor);
+    node.scale.copy(base.scale).multiplyScalar(factor);
+  }
+}
+
+/** Every group child the user scale manages: classic body parts, TV box + screen, presence ring
+ * and (when mounted) the rigged model. */
+function avatarScaledNodes(group: THREE.Group): THREE.Object3D[] {
+  const nodes: THREE.Object3D[] = [
+    ...((group.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? []),
+  ];
+  for (const key of ["tvBoxRef", "tvScreenRef", "markerRef", "avatarMountedModel"] as const) {
+    const node = group.userData[key] as THREE.Object3D | undefined;
+    if (node) nodes.push(node);
+  }
+  return nodes;
+}
+
+/** Re-seat layout code runs at scale 1 — call this FIRST so measurements (and the once-only
+ * classic-layout capture) see the true baseline, then rebaseAvatarScale() afterwards. */
+function resetAvatarScaleToBase(group: THREE.Group): void {
+  applyAvatarScaleFactor(group, 1);
+}
+
+/** Recapture the scale-1 baseline AFTER mount/restore seated everything, then re-apply the
+ * group's current user scale on top. */
+function rebaseAvatarScale(group: THREE.Group): void {
+  const state = avatarScaleState(group);
+  state.bases.clear();
+  for (const node of avatarScaledNodes(group)) {
+    state.bases.set(node, { position: node.position.clone(), scale: node.scale.clone() });
+  }
+  applyAvatarScaleFactor(group, state.current);
+}
+
+/** The currently APPLIED user scale (mid-lerp value — what the silhouette/eye height shows now). */
+export function getAvatarUserScale(group: THREE.Group): number {
+  return (group.userData.avatarScaleState as AvatarScaleState | undefined)?.current ?? 1;
+}
+
+/** Set the user-scale target. `immediate` snaps (initial spawn); otherwise tickAvatarScale()
+ * eases toward it (~0.3s) so live remote changes don't pop. */
+export function setAvatarUserScale(group: THREE.Group, scale: number, immediate = false): void {
+  const state = avatarScaleState(group);
+  state.target = clampAvatarScale(scale);
+  if (immediate || state.bases.size === 0) {
+    state.current = state.target;
+    applyAvatarScaleFactor(group, state.current);
+  }
+}
+
+const AVATAR_SCALE_LERP_RATE = 12; // exponential approach — visually settled in ~0.3s
+
+/** Per-frame ease toward the target scale. No-op (zero cost) once settled. */
+export function tickAvatarScale(group: THREE.Group, dt: number): void {
+  const state = group.userData.avatarScaleState as AvatarScaleState | undefined;
+  if (!state || state.current === state.target) return;
+  const blend = 1 - Math.exp(-AVATAR_SCALE_LERP_RATE * dt);
+  let next = state.current + (state.target - state.current) * blend;
+  if (Math.abs(next - state.target) < 0.001 * state.target) next = state.target;
+  state.current = next;
+  applyAvatarScaleFactor(group, next);
+}
+
 // The rig contract main.tsx drives — implemented by BOTH the VRM robots (here) and the animated
 // GLB animals (tellus-avatar-catalog.ts), so the main.tsx code paths never fork on avatar kind.
 export interface AvatarRig {
@@ -451,6 +553,10 @@ function rememberClassicLayout(group: THREE.Group): void {
 /** Un-hide the procedural TV-head robot and re-seat the TV/screen/marker at their classic heights.
  * Safe to call on a group that was never upgraded. (Rig disposal already removed the mounted model.) */
 export function restoreProceduralAvatar(group: THREE.Group): void {
+  // Back to the scale-1 layout first (rig disposal already removed any mounted model); the classic
+  // positions below are baseline values and the user scale re-applies via rebaseAvatarScale.
+  resetAvatarScaleToBase(group);
+  delete group.userData.avatarMountedModel;
   const layout = group.userData.classicTvLayout as ClassicTvLayout | undefined;
   if (layout) {
     const tvBox = group.userData.tvBoxRef as THREE.Object3D | undefined;
@@ -462,6 +568,7 @@ export function restoreProceduralAvatar(group: THREE.Group): void {
   }
   const bodyParts = (group.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
   for (const part of bodyParts) part.visible = true;
+  rebaseAvatarScale(group);
 }
 
 /**
@@ -477,6 +584,10 @@ export function mountModelOnAvatar(
   heightRatio: number,
   headLocalY?: () => number | undefined,
 ): void {
+  // Measure + seat everything at scale 1 (a live user scale would skew bodyTop and the once-only
+  // classic-layout capture); rebaseAvatarScale at the end re-applies the user factor on the new
+  // layout — so a slider move never needs a rig rebuild, and a rebuild keeps the slider value.
+  resetAvatarScaleToBase(group);
   rememberClassicLayout(group);
   const bodyParts = (group.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
   const tvBox = group.userData.tvBoxRef as THREE.Object3D | undefined;
@@ -512,6 +623,8 @@ export function mountModelOnAvatar(
   if (marker) marker.position.y = tvCenterY + 0.65;
 
   for (const part of bodyParts) part.visible = false;
+  group.userData.avatarMountedModel = model;
+  rebaseAvatarScale(group);
 }
 
 function mountVrmOnAvatar(group: THREE.Group, vrm: VRM): void {

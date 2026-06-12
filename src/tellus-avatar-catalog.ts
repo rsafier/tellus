@@ -15,6 +15,7 @@ import {
   LocomotionAvatarRig,
   assetDownloadUrl,
   attachVrmAvatar,
+  clampAvatarScale,
   classicAvatarRequested,
   mountModelOnAvatar,
   pickAvatarId,
@@ -90,6 +91,28 @@ export function setStoredAvatarId(id: string): void {
     else window.localStorage.removeItem(AVATAR_STORAGE_KEY);
   } catch {
     /* private mode — selection just won't persist */
+  }
+}
+
+const AVATAR_SCALE_STORAGE_KEY = "tellus.avatarScale";
+
+/** The persisted avatar-size multiplier (1 = default; clamped to the legal [0.1, 8] range). */
+export function storedAvatarScale(): number {
+  try {
+    const raw = window.localStorage.getItem(AVATAR_SCALE_STORAGE_KEY);
+    return raw === null ? 1 : clampAvatarScale(Number(raw));
+  } catch {
+    return 1;
+  }
+}
+
+export function setStoredAvatarScale(scale: number): void {
+  try {
+    const clamped = clampAvatarScale(scale);
+    if (clamped === 1) window.localStorage.removeItem(AVATAR_SCALE_STORAGE_KEY);
+    else window.localStorage.setItem(AVATAR_SCALE_STORAGE_KEY, String(clamped));
+  } catch {
+    /* private mode — the size just won't persist */
   }
 }
 
