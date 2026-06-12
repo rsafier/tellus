@@ -22,3 +22,13 @@ public/skybox/**/*.png
 !public/skybox/free_-_skybox_in_the_cloud/
 !public/skybox/free_-_skybox_in_the_cloud/**
 !public/skybox/free_-_skybox_basic_sky.glb
+!public/skybox/tellus-blue-clouds/
+!public/skybox/tellus-blue-clouds/scene.gltf
+!public/skybox/tellus-blue-clouds/skybox.bin
+!public/skybox/tellus-blue-clouds/cubemap/
+!public/skybox/tellus-blue-clouds/cubemap/*.png
+!public/skybox/tellus-starry-night/
+!public/skybox/tellus-starry-night/scene.gltf
+!public/skybox/tellus-starry-night/skybox.bin
+!public/skybox/tellus-starry-night/cubemap/
+!public/skybox/tellus-starry-night/cubemap/*.png

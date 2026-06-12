@@ -187,11 +187,23 @@ const WORLD_TEMPLATE_OPTIONS: Array<{ id: WorldTemplateId; label: string }> = [
   { id: "ridge", label: "Ridge" },
 ];
 
+const SKYBOX_OPTIONS: Array<{ url: string; label: string }> = [
+  { url: "/skybox/free_-_skybox_in_the_cloud/scene.gltf", label: "Cloud Dome" },
+  { url: "/skybox/free_-_skybox_basic_sky.glb", label: "Basic Sky" },
+  { url: "/skybox/skybox_skydays_3.glb", label: "Sky Days" },
+  { url: "/skybox/tellus-starry-night/scene.gltf", label: "Starry Night" },
+  { url: "/skybox/tellus-blue-clouds/scene.gltf", label: "Blue Clouds" },
+];
+
 function worldTemplateLabel(template: WorldTemplateId): string {
   return (
     WORLD_TEMPLATE_OPTIONS.find((option) => option.id === template)?.label ??
     template
   );
+}
+
+function skyboxLabel(url: string): string {
+  return SKYBOX_OPTIONS.find((option) => option.url === url)?.label ?? "Custom Sky";
 }
 
 function AgentToolChipPill({ chip }: { chip: AgentToolChip }) {
@@ -5225,9 +5237,17 @@ function App(): React.ReactElement {
   const [newWorldTemplate, setNewWorldTemplate] = useState<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
   );
+  const [newWorldSkyboxUrl, setNewWorldSkyboxUrl] = useState(
+    runtimeConfig.skyboxUrl ||
+      defaultSkyboxUrlForTemplate(parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus")),
+  );
   const [newWorldPrivate, setNewWorldPrivate] = useState(false);
   const [currentWorldTemplate, setCurrentWorldTemplate] = useState<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
+  );
+  const [currentWorldSkyboxUrl, setCurrentWorldSkyboxUrl] = useState(
+    runtimeConfig.skyboxUrl ||
+      defaultSkyboxUrlForTemplate(parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus")),
   );
   const [currentWorldPrivate, setCurrentWorldPrivate] = useState(false);
   const [worldCreateNote, setWorldCreateNote] = useState<string | null>(null);
@@ -5235,6 +5255,7 @@ function App(): React.ReactElement {
   const KNOWN_WORLDS_KEY = "tellus.knownWorlds";
   const ACTIVE_WORLD_KEY = "tellus.activeWorldId";
   const NEW_WORLD_TEMPLATE_KEY = "tellus.newWorldTemplate";
+  const NEW_WORLD_SKYBOX_KEY = "tellus.newWorldSkyboxUrl";
   const NEW_WORLD_PRIVATE_KEY = "tellus.newWorldPrivate";
   const defaultWorldTemplateRef = useRef<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
@@ -5371,7 +5392,8 @@ function App(): React.ReactElement {
       newWorldTemplate,
       defaultWorldTemplateRef.current,
     );
-    const pickedSkybox = defaultSkyboxUrlForTemplate(pickedTemplate);
+    const pickedSkybox =
+      newWorldSkyboxUrl || defaultSkyboxUrlForTemplate(pickedTemplate);
     const makePrivate = newWorldPrivate;
     const enter = () => switchWorld(id);
     if (runtimeConfig.worldApiBase) {
@@ -5396,12 +5418,18 @@ function App(): React.ReactElement {
   };
   const copyCurrentWorldSettings = () => {
     setNewWorldTemplate(currentWorldTemplate);
+    setNewWorldSkyboxUrl(currentWorldSkyboxUrl);
     setNewWorldPrivate(currentWorldPrivate);
     if (worldCreateNoteTimerRef.current !== undefined) {
       window.clearTimeout(worldCreateNoteTimerRef.current);
     }
     setWorldCreateNote(
       `Copied current world settings: ${worldTemplateLabel(currentWorldTemplate)} · ${
+        currentWorldPrivate ? "Private" : "Public"
+      }`,
+    );
+    setWorldCreateNote(
+      `Copied current world settings: ${worldTemplateLabel(currentWorldTemplate)} - ${skyboxLabel(currentWorldSkyboxUrl)} - ${
         currentWorldPrivate ? "Private" : "Public"
       }`,
     );
@@ -5697,15 +5725,27 @@ function App(): React.ReactElement {
         defaultSkyboxUrlRef.current = runtimeConfig.skyboxUrl;
         defaultLandShapeRef.current = runtimeConfig.landShape;
         setCurrentWorldTemplate(defaultWorldTemplateRef.current);
+        setCurrentWorldSkyboxUrl(
+          defaultSkyboxUrlRef.current || defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
+        );
         try {
           const savedTemplate = window.localStorage.getItem(NEW_WORLD_TEMPLATE_KEY);
+          const savedSkyboxUrl = window.localStorage.getItem(NEW_WORLD_SKYBOX_KEY);
           const savedPrivate = window.localStorage.getItem(NEW_WORLD_PRIVATE_KEY);
           setNewWorldTemplate(
             parseWorldTemplateId(savedTemplate, defaultWorldTemplateRef.current),
           );
+          setNewWorldSkyboxUrl(
+            savedSkyboxUrl ||
+              defaultSkyboxUrlRef.current ||
+              defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
+          );
           setNewWorldPrivate(savedPrivate === "1");
         } catch {
           setNewWorldTemplate(defaultWorldTemplateRef.current);
+          setNewWorldSkyboxUrl(
+            defaultSkyboxUrlRef.current || defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
+          );
           setNewWorldPrivate(false);
         }
         const configDefault = runtimeConfig.worldId; // typically "main" — always keep it reachable
@@ -5735,11 +5775,12 @@ function App(): React.ReactElement {
   useEffect(() => {
     try {
       window.localStorage.setItem(NEW_WORLD_TEMPLATE_KEY, newWorldTemplate);
+      window.localStorage.setItem(NEW_WORLD_SKYBOX_KEY, newWorldSkyboxUrl);
       window.localStorage.setItem(NEW_WORLD_PRIVATE_KEY, newWorldPrivate ? "1" : "0");
     } catch {
       /* ignore */
     }
-  }, [newWorldTemplate, newWorldPrivate]);
+  }, [newWorldTemplate, newWorldSkyboxUrl, newWorldPrivate]);
 
   useEffect(() => {
     return () => {
@@ -5760,6 +5801,7 @@ function App(): React.ReactElement {
       .then(async (profile) => {
         if (cancelled) return;
         setCurrentWorldTemplate(profile.template);
+        setCurrentWorldSkyboxUrl(profile.skyboxUrl);
         setCurrentWorldPrivate(profile.isPublic === false);
         runtimeConfig.worldTemplate = profile.template;
         runtimeConfig.skyboxUrl = profile.skyboxUrl;
@@ -5985,10 +6027,10 @@ function App(): React.ReactElement {
               </select>
             </div>
             <div style={{ display: "grid", gap: 2 }}>
-              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Template</span>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Terrain</span>
               <select
                 aria-label="New world template"
-                title="Template for newly created worlds"
+                title="Terrain template for newly created worlds"
                 value={newWorldTemplate}
                 onChange={(e) =>
                   setNewWorldTemplate(
@@ -6007,6 +6049,30 @@ function App(): React.ReactElement {
               >
                 {WORLD_TEMPLATE_OPTIONS.map((option) => (
                   <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Sky</span>
+              <select
+                aria-label="New world skybox"
+                title="Skybox for newly created worlds"
+                value={newWorldSkyboxUrl}
+                onChange={(e) => setNewWorldSkyboxUrl(e.target.value)}
+                style={{
+                  background: "rgba(0,0,0,0.5)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  font: "600 12px/1.2 ui-sans-serif, system-ui",
+                  maxWidth: 150,
+                }}
+              >
+                {SKYBOX_OPTIONS.map((option) => (
+                  <option key={option.url} value={option.url}>
                     {option.label}
                   </option>
                 ))}
