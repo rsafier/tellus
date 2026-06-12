@@ -56,7 +56,17 @@ export interface WorldGeneratedThing {
   modelUrl?: string;
   pipelineId?: string;
   generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
+  /** Embedded animation clip to loop on the placed model ("" / absent = the default
+   * idle-ish heuristic pick). Rides generated.upsert + snapshot/patches like any other field. */
+  animation?: string;
   updatedAt: string;
+}
+
+/** A one-shot emote broadcast: play `animation` ONCE on `visitorId`'s avatar rig, then resume
+ * locomotion. Arrives as a live frame: { type: "emote", emote: { visitorId, animation } }. */
+export interface EmoteFrame {
+  visitorId: string;
+  animation: string;
 }
 
 export type WorldAction =
@@ -128,6 +138,10 @@ export type WorldPatch =
       actorId: string;
     }
   | {
+      type: "emote";
+      emote: EmoteFrame;
+    }
+  | {
       type: "action.rejected";
       actionType: string;
       reason: string;
@@ -197,6 +211,7 @@ export function isWorldGeneratedThing(value: unknown): value is WorldGeneratedTh
   return (
     (value.modelUrl === undefined || typeof value.modelUrl === "string") &&
     (value.pipelineId === undefined || typeof value.pipelineId === "string") &&
+    (value.animation === undefined || typeof value.animation === "string") &&
     (value.generationStatus === undefined ||
       value.generationStatus === "local" ||
       value.generationStatus === "queued" ||
@@ -217,6 +232,24 @@ export function isTellusTerrainState(value: unknown): value is TellusTerrainStat
     isNumberArrayRecord(value.distantIslandPaint) &&
     typeof value.savedAt === "string"
   );
+}
+
+/** Extract the emote frame from a live WS message ({ type: "emote", emote: {...} }); null when
+ * the frame is anything else or malformed. */
+export function emoteFromWorldPatch(parsed: unknown): EmoteFrame | null {
+  if (!isRecord(parsed) || parsed.type !== "emote" || !isRecord(parsed.emote)) {
+    return null;
+  }
+  const emote = parsed.emote;
+  if (
+    typeof emote.visitorId !== "string" ||
+    emote.visitorId.length === 0 ||
+    typeof emote.animation !== "string" ||
+    emote.animation.length === 0
+  ) {
+    return null;
+  }
+  return { visitorId: emote.visitorId, animation: emote.animation };
 }
 
 export function isWorldAction(value: unknown): value is WorldAction {

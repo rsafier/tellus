@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isTellusTerrainState, isWorldAction } from "./world-protocol";
+import {
+  emoteFromWorldPatch,
+  isTellusTerrainState,
+  isWorldAction,
+  isWorldGeneratedThing,
+} from "./world-protocol";
 
 const terrainState = {
   version: 2,
@@ -59,5 +64,59 @@ describe("world protocol validators", () => {
         request: { creatorId: "agent-1" },
       }),
     ).toBe(false);
+  });
+
+  it("accepts generated things with and without an animation", () => {
+    const thing = {
+      id: "thing-1",
+      kind: "creature",
+      prompt: "a shiba",
+      creatorId: "visitor-1",
+      position: { x: 1, y: 2, z: 3 },
+      rotationY: 0,
+      scale: 1,
+      color: 0xffffff,
+      updatedAt: "2026-06-11T00:00:00.000Z",
+    };
+    expect(isWorldGeneratedThing(thing)).toBe(true);
+    expect(isWorldGeneratedThing({ ...thing, animation: "Walk" })).toBe(true);
+    expect(isWorldGeneratedThing({ ...thing, animation: "" })).toBe(true);
+    expect(isWorldGeneratedThing({ ...thing, animation: 7 })).toBe(false);
+  });
+
+  it("upsert actions round-trip the animation field", () => {
+    expect(
+      isWorldAction({
+        type: "generated.upsert",
+        visitorId: "visitor-1",
+        thing: {
+          id: "thing-1",
+          kind: "creature",
+          prompt: "a shiba",
+          creatorId: "visitor-1",
+          position: { x: 1, y: 2, z: 3 },
+          rotationY: 0,
+          scale: 1,
+          color: 0xffffff,
+          animation: "Gallop",
+          updatedAt: "2026-06-11T00:00:00.000Z",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("parses emote frames and rejects malformed ones", () => {
+    expect(
+      emoteFromWorldPatch({
+        type: "emote",
+        emote: { visitorId: "visitor-1", animation: "wave" },
+      }),
+    ).toEqual({ visitorId: "visitor-1", animation: "wave" });
+    expect(emoteFromWorldPatch({ type: "emote", emote: { visitorId: "visitor-1" } })).toBeNull();
+    expect(emoteFromWorldPatch({ type: "emote", emote: { visitorId: "", animation: "wave" } })).toBeNull();
+    expect(emoteFromWorldPatch({ type: "emote", emote: { visitorId: "v", animation: "" } })).toBeNull();
+    expect(emoteFromWorldPatch({ type: "emote" })).toBeNull();
+    expect(emoteFromWorldPatch({ type: "presence.updated", presence: [] })).toBeNull();
+    expect(emoteFromWorldPatch(null)).toBeNull();
   });
 });

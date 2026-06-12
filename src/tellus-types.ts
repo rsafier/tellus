@@ -63,6 +63,9 @@ export interface GeneratedThing {
   modelUrl?: string;
   pipelineId?: string;
   generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
+  /** Embedded clip name to loop on the loaded model ("" / absent = the default idle-ish
+   * heuristic pick). Synced over generated.upsert; missing clips fall back to the heuristic. */
+  animation?: string;
 }
 
 export interface AssetLibraryModel {
@@ -178,6 +181,18 @@ export interface TellusWorldApi {
   // presence so other players swap your avatar too.
   setAvatarSelection(avatarId: string): void;
   getAvatarSelection(): string;
+  // ── Camera mode (presentation-only; physics/movement are untouched) ──
+  // "third" = the classic orbit camera; "first" = the main camera rides the LOCAL avatar's head
+  // (own avatar + TV hidden locally; others still see you). Persists in localStorage
+  // "tellus.cameraMode"; toolbelt Eye button + the V key toggle it.
+  setCameraMode(mode: "first" | "third"): void;
+  getCameraMode(): "first" | "third";
+  // ── Per-thing animation (placed models with embedded clips) ──
+  // Clip names of the loaded model for the selected-object HUD ([] = none loaded / no clips).
+  getGeneratedClipNames(id: string): string[];
+  // Loop a specific embedded clip on a placed thing ("" = back to the default heuristic pick).
+  // Persists on the thing and syncs over generated.upsert so every client converges.
+  setGeneratedAnimation(id: string, animation: string): void;
   // Picture-in-picture POV view of the scene from a remote-presence avatar (the player's server-side agent).
   // Pass the agent's visitorId to show its viewport; pass null to hide it.
   setAgentViewport(visitorId: string | null): void;
@@ -314,5 +329,15 @@ declare global {
     __tellusImportGenerated?: (things: unknown) => number;
     __tellusImportSnapshot?: (snapshot: unknown) => number;
     __tellusSaveGeneratedPlacements?: () => number;
+    // Diagnostics for the camera/viewport work (smoke tests / console): drive the agent-POV PiP
+    // and the 1st/3rd-person camera without a live agent, and inject a synthetic remote presence
+    // so the PiP has an avatar to render from.
+    __tellusViewDebug?: {
+      setAgentViewport: (visitorId: string | null) => void;
+      hasVisitorAvatar: (visitorId: string) => boolean;
+      setCameraMode: (mode: "first" | "third") => void;
+      getCameraMode: () => "first" | "third";
+      injectRemotePresence: (visitorId: string, x: number, z: number) => void;
+    };
   }
 }
