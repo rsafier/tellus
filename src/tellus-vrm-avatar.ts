@@ -65,6 +65,10 @@ export interface AvatarRig {
   actions: Record<RigClipName, THREE.AnimationAction | undefined>;
   /** Crossfade to a clip (no-op when the clip is missing or already current). */
   play(name: RigClipName, fadeSec?: number): void;
+  /** Play an emote clip ONCE over locomotion, then resume walk/idle. VRM rigs resolve against
+   * the retargeted VRMA set ("wave", …); GLB rigs against their embedded clips by name; an
+   * unknown clip is ignored. */
+  playEmote(name: string): void;
   /** Horizontal speed in world units/sec — drives walk/idle (with hysteresis + clip timescale). */
   setMoving(speed: number): void;
   setAirborne(airborne: boolean): void;
@@ -209,17 +213,26 @@ export abstract class LocomotionAvatarRig implements AvatarRig {
   private remoteSpeed = 0;
   private remoteSpeedUntilMs = 0;
   private remoteAirborneUntilMs = 0;
+  // One-shot emote overlay: while set, locomotion transitions only RECORD their target (play()
+  // early-returns) and the resume happens when the mixer fires "finished" for this action.
+  private emoteAction: THREE.AnimationAction | undefined;
   protected disposed = false;
 
   protected constructor(root: THREE.Group, mixer: THREE.AnimationMixer) {
     this.root = root;
     this.mixer = mixer;
     this.actions = { idle: undefined, walk: undefined, jump: undefined, wave: undefined };
+    this.mixer.addEventListener("finished", this.onEmoteFinished);
   }
 
   play(name: RigClipName, fadeSec = 0.25): void {
     const next = this.actions[name];
     if (!next || this.current === name) return;
+    if (this.emoteAction) {
+      // Mid-emote: remember where locomotion wants to be; the emote's finish resumes there.
+      this.current = name;
+      return;
+    }
     const prev = this.current ? this.actions[this.current] : undefined;
     next.reset();
     next.setEffectiveWeight(1);
@@ -252,6 +265,49 @@ export abstract class LocomotionAvatarRig implements AvatarRig {
     if (airborne) this.enterAirborne();
     else this.exitAirborne();
   }
+
+  playEmote(name: string): void {
+    if (this.disposed) return;
+    const action = this.resolveEmoteAction(name);
+    if (!action) return; // unknown clip → ignore
+    // A newer emote replaces a running one mid-flight.
+    if (this.emoteAction && this.emoteAction !== action) this.emoteAction.fadeOut(0.15);
+    const prev = this.current ? this.actions[this.current] : undefined;
+    if (prev && prev !== action) prev.fadeOut(0.2);
+    this.emoteAction = action;
+    action.reset();
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true; // hold the last pose so the resume crossfade has a source
+    action.setEffectiveWeight(1);
+    action.timeScale = 1;
+    action.fadeIn(0.15);
+    action.play();
+  }
+
+  /** Resolve an emote name to a playable action. Base: the rig clip set ("wave", "jump", …) by
+   * exact then loose name match. GLB rigs override to search their embedded clips first. */
+  protected resolveEmoteAction(name: string): THREE.AnimationAction | undefined {
+    const wanted = name.trim().toLowerCase();
+    if (!wanted) return undefined;
+    const direct = this.actions[wanted as RigClipName];
+    if (direct) return direct;
+    for (const key of Object.keys(this.actions) as RigClipName[]) {
+      const action = this.actions[key];
+      if (action && (wanted.includes(key) || key.includes(wanted))) return action;
+    }
+    return undefined;
+  }
+
+  private readonly onEmoteFinished = (event: { action: THREE.AnimationAction }) => {
+    if (this.disposed || !this.emoteAction || event.action !== this.emoteAction) return;
+    const action = this.emoteAction;
+    this.emoteAction = undefined;
+    action.fadeOut(0.2);
+    // Resume whatever locomotion currently calls for (current was only recorded while emoting).
+    this.current = undefined;
+    if (this.airborne) this.enterAirborne();
+    else this.play(this.walking ? "walk" : "idle", 0.2);
+  };
 
   notePresenceUpdate(x: number, y: number, z: number, nowMs: number): void {
     if (this.disposed) return;

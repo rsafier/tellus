@@ -9,6 +9,7 @@ import {
   Bot,
   Box,
   CircleHelp,
+  Eye,
   Layers,
   Map as MapIcon,
   Mic,
@@ -77,6 +78,7 @@ import {
   type WorldGeneratedThing,
   type WorldPresence,
   type WorldPatch,
+  emoteFromWorldPatch,
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
@@ -437,26 +439,46 @@ function createTellusWorld(
   // Ambient procedural vegetation (wind-swayed grass/flowers streamed around the player + island-wide
   // trees/rocks) and the lightweight physics world (thrown things, player jump/obstacles). Both are
   // deterministic from the synced terrain state — no protocol changes.
-  const vegetation = createVegetation({
-    scene,
-    useWebGPU,
-    sampleHeight: terrainHeight,
-    samplePaint: centralTerrainPaintAt,
-    isExcluded: (x, z, h) => {
-      const pdx = x - POND_CENTER.x;
-      const pdz = z - POND_CENTER.z;
-      return (
-        pdx * pdx + pdz * pdz < (POND_RADIUS + 0.6) * (POND_RADIUS + 0.6) &&
-        h < pondWaterLevel() + 0.35
-      );
-    },
-    pondRing: {
-      x: POND_CENTER.x,
-      z: POND_CENTER.z,
-      radius: POND_RADIUS,
-      level: pondWaterLevel(),
-    },
-  });
+  //
+  // Vegetation is OFF by default (per-frame streaming/stamping cost); the localStorage
+  // "tellus.grass"="1" escape hatch re-enables the full system. When off, a no-op stub stands in so
+  // every call site (per-frame update, terrain-change notify, tree colliders, stats, dispose) stays
+  // branch-free — zero per-frame cost.
+  const grassEnabled = (() => {
+    try {
+      return window.localStorage.getItem("tellus.grass") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  const vegetation = grassEnabled
+    ? createVegetation({
+        scene,
+        useWebGPU,
+        sampleHeight: terrainHeight,
+        samplePaint: centralTerrainPaintAt,
+        isExcluded: (x, z, h) => {
+          const pdx = x - POND_CENTER.x;
+          const pdz = z - POND_CENTER.z;
+          return (
+            pdx * pdx + pdz * pdz < (POND_RADIUS + 0.6) * (POND_RADIUS + 0.6) &&
+            h < pondWaterLevel() + 0.35
+          );
+        },
+        pondRing: {
+          x: POND_CENTER.x,
+          z: POND_CENTER.z,
+          radius: POND_RADIUS,
+          level: pondWaterLevel(),
+        },
+      })
+    : {
+        update: () => undefined,
+        notifyTerrainChanged: () => undefined,
+        getTreeColliders: () => [],
+        stats: () => ({ tier: 0, chunks: 0, grassIndices: 0, trees: 0, sectors: 0 }),
+        dispose: () => undefined,
+      };
   const ambientPhysics = createAmbientPhysics({
     groundHeightAt: (x, z) => groundHeightAt(x, z) ?? SEA_LEVEL - 2.6,
     waterLevelAt: (x, z) => {
@@ -544,7 +566,21 @@ function createTellusWorld(
   applyAvatarTo(visitor, visitorId, localAvatarId);
   // Local locomotion state is derived per-frame from the position delta in animate().
   const lastLocalAvatarPos = { x: visitorPosition.x, z: visitorPosition.z };
-  // Diagnostics hook (smoke tests / console) — mirrors the other __tellus* hooks.
+  // Diagnostics hooks (smoke tests / console) — mirror the other __tellus* hooks. The referenced
+  // closures are defined later in this function; the arrow bodies only resolve them at call time.
+  window.__tellusViewDebug = {
+    setAgentViewport: (id) => setAgentViewport(id),
+    hasVisitorAvatar: (id) => hasVisitorAvatar(id),
+    setCameraMode: (mode) => setCameraMode(mode),
+    getCameraMode: () => cameraMode,
+    injectRemotePresence: (id: string, x: number, z: number) => {
+      const now = new Date().toISOString();
+      applyRemotePresence([
+        ...Array.from(remoteVisitors.values()),
+        { visitorId: id, position: { x, y: 0, z }, connectedAt: now, lastSeenAt: now },
+      ]);
+    },
+  };
   window.__tellusAvatarDebug = () => {
     let skinned = 0;
     visitor.traverse((obj) => {
@@ -565,6 +601,38 @@ function createTellusWorld(
   let yaw = 0.72;
   let pitch = -0.28;
   let zoom = 33;
+  // ── Camera mode: presentation-only (physics/movement untouched). "first" parks the main camera
+  // at the LOCAL avatar's head (same eye math as the agent POV) and hides your own avatar+TV
+  // locally — other players still see you (they render their own mesh from presence). Persists in
+  // localStorage "tellus.cameraMode"; the toolbelt Eye button and the V key flip it. ──
+  type CameraMode = "first" | "third";
+  const CAMERA_MODE_STORAGE_KEY = "tellus.cameraMode";
+  let cameraMode: CameraMode = (() => {
+    try {
+      return window.localStorage.getItem(CAMERA_MODE_STORAGE_KEY) === "first" ? "first" : "third";
+    } catch {
+      return "third";
+    }
+  })();
+  const FIRST_PERSON_EYE_HEIGHT = 2.4; // matches poseAgentPovCamera's avatar head height
+  const applyCameraModeVisibility = () => {
+    // Whole-group toggle: body + TV + marker. Remote meshes are per-client, so this is local-only.
+    visitor.visible = cameraMode !== "first";
+  };
+  const setCameraMode = (mode: CameraMode) => {
+    if (mode === cameraMode) return;
+    cameraMode = mode;
+    try {
+      window.localStorage.setItem(CAMERA_MODE_STORAGE_KEY, mode);
+    } catch {
+      /* private mode — the selection just won't persist */
+    }
+    applyCameraModeVisibility();
+    updateCamera();
+    // Let the React HUD (the toolbelt Eye button) track mode flips that originate here (V key).
+    window.dispatchEvent(new CustomEvent("tellus:camera-mode", { detail: mode }));
+  };
+  applyCameraModeVisibility(); // honor a persisted "first" from the very first frame
   let isDragging = false;
   let pointerX = 0;
   let pointerY = 0;
@@ -869,6 +937,12 @@ function createTellusWorld(
       const remoteThings = generatedFromWorldPatch(parsed);
       if (remoteThings) {
         applyRemoteGeneratedThings(remoteThings);
+      }
+      // Emote frames: play that clip ONCE over the avatar's locomotion, then resume. Rigless
+      // avatars (classic TV-heads, not-yet-loaded rigs) and unknown clips are simply ignored.
+      const emote = emoteFromWorldPatch(parsed);
+      if (emote) {
+        avatarRigs.get(emote.visitorId)?.playEmote(emote.animation);
       }
       if (
         parsed &&
@@ -1384,17 +1458,27 @@ function createTellusWorld(
     generatedAnimationMixers.delete(id);
   };
 
-  const startGeneratedAnimation = (id: string, model: THREE.Object3D) => {
-    stopGeneratedAnimation(id);
-    const animations = model.userData.animations;
-    if (!Array.isArray(animations) || animations.length === 0) return;
-    const clips = animations.filter(
+  const generatedModelClips = (model: THREE.Object3D | undefined): THREE.AnimationClip[] => {
+    const animations = model?.userData.animations;
+    if (!Array.isArray(animations)) return [];
+    return animations.filter(
       (clip): clip is THREE.AnimationClip => clip instanceof THREE.AnimationClip,
     );
+  };
+
+  const startGeneratedAnimation = (id: string, model: THREE.Object3D) => {
+    stopGeneratedAnimation(id);
+    const clips = generatedModelClips(model);
     if (clips.length === 0) return;
     // Play ONE clip. Multi-clip rigs (store animals ship Bark/Bite/Death/Idle/Jump/…) used to play
     // EVERYTHING at once — every clip fighting over the same bones each frame, which rendered as
-    // glitchy "blinking". Prefer an idle/walk loop; avoid one-shot or pose clips when possible.
+    // glitchy "blinking". An explicit per-thing pick (`thing.animation`, synced over
+    // generated.upsert) wins; otherwise prefer an idle/walk loop; avoid one-shot/pose clips.
+    const wanted = thingById(id)?.animation?.trim();
+    const wantedClip = wanted
+      ? clips.find((c) => c.name === wanted) ??
+        clips.find((c) => c.name?.toLowerCase() === wanted.toLowerCase())
+      : undefined;
     const find = (frag: string) => clips.find((c) => c.name?.toLowerCase().includes(frag));
     const bad = (c: THREE.AnimationClip) => {
       const n = (c.name ?? "").toLowerCase();
@@ -1403,7 +1487,9 @@ function createTellusWorld(
         n.includes("death") || n.includes("die") || n.includes("attack") || n.includes("bite")
       );
     };
-    const clip = find("idle") ?? find("walk") ?? clips.find((c) => !bad(c)) ?? clips[0];
+    // Missing/renamed picks fall back to the heuristic rather than freezing the model.
+    const clip =
+      wantedClip ?? find("idle") ?? find("walk") ?? clips.find((c) => !bad(c)) ?? clips[0];
     const mixer = new THREE.AnimationMixer(model);
     mixer.clipAction(clip).play();
     generatedAnimationMixers.set(id, mixer);
@@ -1508,6 +1594,9 @@ function createTellusWorld(
     modelUrl: thing.modelUrl,
     pipelineId: thing.modelUrl ? undefined : thing.pipelineId,
     generationStatus: thing.modelUrl ? "ready" : thing.generationStatus,
+    // "" = explicit "default" (mirrors presence.avatarId): a mid-rollout server that doesn't know
+    // the field yet echoes it back ABSENT, and absent must mean "keep what you have", not "clear".
+    animation: thing.animation ?? "",
     updatedAt: new Date().toISOString(),
   });
 
@@ -1744,9 +1833,26 @@ function createTellusWorld(
       existing.rotationZ = normalized.rotationZ ?? 0;
       existing.scale = normalized.scale;
       existing.color = normalized.color;
+      // animation wire convention (mirrors presence.avatarId): "" = explicit default, a non-empty
+      // string = explicit clip, ABSENT = a mid-rollout server stripped the field — keep ours
+      // (otherwise our own upsert's echo would wipe a just-picked clip).
+      const nextAnimation =
+        normalized.animation === undefined
+          ? existing.animation
+          : normalized.animation || undefined;
+      const animationChanged = (existing.animation ?? "") !== (nextAnimation ?? "");
+      existing.animation = nextAnimation;
       applyGenerationState(existing, normalized);
       ensureGeneratedVisual(existing);
       updateThingMeshPosition(existing);
+      // A remote animation pick on an already-loaded model restarts the loop in place (a model
+      // still loading picks it up via startGeneratedAnimation after the load).
+      if (animationChanged) {
+        const mesh = generatedMeshes.get(existing.id);
+        if (mesh && mesh.userData.loadedModelUrl === existing.modelUrl) {
+          startGeneratedAnimation(existing.id, mesh);
+        }
+      }
       loadRemoteGeneratedModel(existing);
       reconcileRemoteGeneratedManifest(existing);
       if (healedPending) {
@@ -1769,6 +1875,7 @@ function createTellusWorld(
       modelUrl: normalized.modelUrl,
       pipelineId: normalized.pipelineId,
       generationStatus: normalized.generationStatus,
+      animation: normalized.animation || undefined, // "" (explicit default) → unset internally
     };
     generated.push(thing);
     const mesh = shouldShowGenerationSwirl(thing)
@@ -3137,6 +3244,24 @@ function createTellusWorld(
   };
 
   const updateCamera = () => {
+    if (cameraMode === "first") {
+      // First person: eye at the local avatar's head (the same POV math the agent viewport uses,
+      // but driven by the EXISTING look controls — drag steers yaw/pitch, WASD walks, physics
+      // untouched). lookAt direction = yaw around Y with the full pitch range.
+      const cosPitch = Math.cos(pitch);
+      camera.position.set(
+        visitorPosition.x,
+        visitorPosition.y + FIRST_PERSON_EYE_HEIGHT,
+        visitorPosition.z,
+      );
+      camera.lookAt(
+        visitorPosition.x + Math.sin(yaw) * cosPitch,
+        visitorPosition.y + FIRST_PERSON_EYE_HEIGHT + Math.sin(pitch),
+        visitorPosition.z + Math.cos(yaw) * cosPitch,
+      );
+      syncExternalSkyboxToCamera(camera.position);
+      return;
+    }
     const pilotedThing = sailingThingId ? thingById(sailingThingId) : undefined;
     const pilotedMode = pilotedThing ? vehicleMode(pilotedThing) : null;
     const targetY =
@@ -3270,10 +3395,23 @@ function createTellusWorld(
   // Render the agent POV picture-in-picture: a small second view of the scene from the target avatar's head,
   // looking forward along its facing. Runs AFTER the main render; any failure is swallowed so a bad PiP frame
   // never breaks the main loop. Works for both WebGL and WebGPU renderers (both expose scissor/viewport/render).
+  //
+  // Viewport/scissor units: three.js setViewport/setScissor take LOGICAL (CSS) pixels and multiply
+  // by the renderer pixelRatio internally — on BOTH backends (WebGLRenderer multiplies _viewport by
+  // _pixelRatio in state.viewport(); the WebGPU common Renderer does the same in _getFrameBufferTarget /
+  // renderContext.viewportValue). A previous version multiplied by dpr manually AND restored with
+  // renderer.domElement.width/height (PHYSICAL pixels), so on hiDPI screens the "small PiP" was dpr²×
+  // too big and the restored main viewport was dpr× too big — the agent POV painted over the whole
+  // screen (looked like being switched to 1st person). Save/restore the real state instead.
+  const pipSavedViewport = new THREE.Vector4();
+  const pipSavedScissor = new THREE.Vector4();
+  const pipCanvasSize = new THREE.Vector2();
   const renderAgentViewport = () => {
     if (!renderer || !agentViewportVisitorId) return;
     if (!poseAgentPovCamera(agentViewportVisitorId)) return;
     let skyShifted = false;
+    let viewportSaved = false;
+    let savedScissorTest = false;
     try {
 
       // The skybox dome + moon + cloud veil are repositioned every frame to follow the PLAYER camera
@@ -3286,21 +3424,28 @@ function createTellusWorld(
       moonCloudVeil.group.position.add(povSkyDelta);
       skyShifted = true;
 
-      const dpr = renderer.getPixelRatio();
+      // Save the current viewport/scissor state (logical pixels) before clobbering it.
+      renderer.getViewport(pipSavedViewport);
+      renderer.getScissor(pipSavedScissor);
+      savedScissorTest = renderer.getScissorTest();
+      viewportSaved = true;
+
       // Logical PiP rect: 220x140, sat clear in the bottom-LEFT corner (the sparse-HUD toolbelt is
-      // centered, so this corner is free).
+      // centered, so this corner is free). NO manual dpr scaling — see the units note above.
+      // The y ORIGIN differs by renderer family: classic WebGLRenderer measures viewport/scissor y
+      // from the BOTTOM (GL convention); the WebGPU-class renderer measures from the TOP (WebGPU
+      // convention — its WebGL2 fallback flips internally via `renderContext.height - height - y`),
+      // verified in three 0.183 WebGLBackend.updateViewport/updateScissor.
       const pipW = 220;
       const pipH = 140;
       const marginX = 16;
-      const marginY = 96;
-      const x = Math.floor(marginX * dpr);
-      const y = Math.floor(marginY * dpr);
-      const w = Math.floor(pipW * dpr);
-      const h = Math.floor(pipH * dpr);
+      const marginY = 96; // from the canvas BOTTOM
+      renderer.getSize(pipCanvasSize); // logical CSS pixels on both backends
+      const y = useWebGPU ? pipCanvasSize.y - marginY - pipH : marginY;
 
       renderer.setScissorTest(true);
-      renderer.setScissor(x, y, w, h);
-      renderer.setViewport(x, y, w, h);
+      renderer.setScissor(marginX, y, pipW, pipH);
+      renderer.setViewport(marginX, y, pipW, pipH);
       renderer.render(scene, povCamera);
     } catch {
       /* a bad PiP frame must never break the main loop */
@@ -3313,13 +3458,21 @@ function createTellusWorld(
           moonCloudVeil.group.position.sub(povSkyDelta);
           syncExternalSkyboxToCamera(camera.position);
         }
-        renderer.setScissorTest(false);
-        renderer.setViewport(
-          0,
-          0,
-          renderer.domElement.width,
-          renderer.domElement.height,
-        );
+        if (viewportSaved) {
+          renderer.setScissorTest(savedScissorTest);
+          renderer.setScissor(
+            pipSavedScissor.x,
+            pipSavedScissor.y,
+            pipSavedScissor.z,
+            pipSavedScissor.w,
+          );
+          renderer.setViewport(
+            pipSavedViewport.x,
+            pipSavedViewport.y,
+            pipSavedViewport.z,
+            pipSavedViewport.w,
+          );
+        }
       } catch {
         /* ignore restore failures */
       }
@@ -3425,6 +3578,15 @@ function createTellusWorld(
     if (event.key === " ") event.preventDefault(); // jump — don't scroll the page
     if (event.key.toLowerCase() === "g" && selectedThingId) {
       throwGenerated(selectedThingId);
+      return;
+    }
+    if (
+      event.key.toLowerCase() === "v" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      setCameraMode(cameraMode === "first" ? "third" : "first");
       return;
     }
     keys.add(event.key.toLowerCase());
@@ -3923,6 +4085,23 @@ function createTellusWorld(
       sendPresenceUpdate(true); // broadcast the new pick right away (not on the 300ms cadence)
     },
     getAvatarSelection: () => localAvatarId,
+    setCameraMode,
+    getCameraMode: () => cameraMode,
+    getGeneratedClipNames: (id: string) =>
+      generatedModelClips(generatedMeshes.get(id)).map((clip) => clip.name),
+    setGeneratedAnimation: (id: string, animation: string) => {
+      const thing = thingById(id);
+      if (!thing) return;
+      const next = animation.trim();
+      if ((thing.animation ?? "") === next) return;
+      thing.animation = next || undefined;
+      const mesh = generatedMeshes.get(id);
+      if (mesh && mesh.userData.loadedModelUrl === thing.modelUrl) {
+        startGeneratedAnimation(id, mesh); // restart with the explicit pick (or the heuristic)
+      }
+      publishGeneratedThing(thing); // full-thing generated.upsert — every client converges
+      publish();
+    },
     setAgentViewport,
     hasVisitorAvatar,
     captureAgentView,
@@ -3978,6 +4157,7 @@ function createTellusWorld(
       }
       worldSocket?.close();
       delete window.__tellusAvatarDebug;
+      delete window.__tellusViewDebug;
       for (const rig of avatarRigs.values()) {
         rig.dispose();
       }
@@ -4170,6 +4350,28 @@ function App(): React.ReactElement {
   const [ambientStats, setAmbientStats] = useState<ReturnType<
     TellusWorldApi["getAmbientStats"]
   > | null>(null);
+  // ── Camera mode (1st/3rd person; the world layer owns the actual camera + persistence) ──
+  const [cameraMode, setCameraModeState] = useState<"first" | "third">(() => {
+    try {
+      return window.localStorage.getItem("tellus.cameraMode") === "first" ? "first" : "third";
+    } catch {
+      return "third";
+    }
+  });
+  // Track flips that originate inside the world layer (the V shortcut).
+  useEffect(() => {
+    const onMode = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (detail === "first" || detail === "third") setCameraModeState(detail);
+    };
+    window.addEventListener("tellus:camera-mode", onMode);
+    return () => window.removeEventListener("tellus:camera-mode", onMode);
+  }, []);
+  const toggleCameraMode = () => {
+    const next = cameraMode === "first" ? "third" : "first";
+    setCameraModeState(next);
+    worldRef.current?.setCameraMode(next);
+  };
   // ── Avatar picker state (catalog selection; "" = deterministic default robot) ──
   const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
   const [avatarSelection, setAvatarSelection] = useState<string>(() => storedAvatarId());
@@ -5040,6 +5242,11 @@ function App(): React.ReactElement {
     [snapshot.generated, snapshot.selectedThingId],
   );
   const activeSelectedThing = snapshot.selectedThingId ? selectedThing : null;
+  // Embedded clip names of the selected thing's LOADED model ([] until the GLB mounts — the world
+  // publishes a snapshot when the model lands, so this re-renders with the clip list).
+  const selectedClipNames = activeSelectedThing
+    ? worldRef.current?.getGeneratedClipNames(activeSelectedThing.id) ?? []
+    : [];
   const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
   const selectedThingIsMount = selectedThing ? isMountThing(selectedThing) : false;
   const mapRadius = OCEAN_RADIUS * 0.42;
@@ -5301,6 +5508,19 @@ function App(): React.ReactElement {
           </button>
           <button
             type="button"
+            className={cameraMode === "first" ? "toolbelt-button active" : "toolbelt-button"}
+            title={
+              cameraMode === "first"
+                ? "Switch to 3rd person view (V)"
+                : "Switch to 1st person view (V)"
+            }
+            onClick={toggleCameraMode}
+          >
+            <Eye size={18} />
+            <span>View</span>
+          </button>
+          <button
+            type="button"
             className={isToolOpen("terrain") ? "toolbelt-button active" : "toolbelt-button"}
             title="Terrain"
             onClick={() => toggleToolPanel("terrain")}
@@ -5335,10 +5555,7 @@ function App(): React.ReactElement {
             type="button"
             className={agentPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
             title="Your Agent"
-            onClick={() => {
-              setAgentPanelOpen((open) => !open);
-              setAvatarPanelOpen(false); // shares the agent panel's spot — never stack them
-            }}
+            onClick={() => setAgentPanelOpen((open) => !open)}
           >
             <Bot size={18} />
             <span>Agent</span>
@@ -5347,15 +5564,17 @@ function App(): React.ReactElement {
             type="button"
             className={avatarPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
             title="Avatar"
-            onClick={() => {
-              setAvatarPanelOpen((open) => !open);
-              setAgentPanelOpen(false); // shares the agent panel's spot — never stack them
-            }}
+            onClick={() => setAvatarPanelOpen((open) => !open)}
           >
             <PersonStanding size={18} />
             <span>Avatar</span>
           </button>
         </aside>
+        {/* Panel layout policy: every bottom panel gets its OWN anchor so any combination can be
+            open at once — avatar picker = LEFT edge column, P2P = just left-of-center, agent =
+            just right-of-center; each is height-capped with internal scroll. The login dialog is
+            a true modal (fullscreen dimmed overlay, z-index 70) ABOVE all of them by design. The
+            open avatar picker temporarily covers the agent-PiP corner (close it to see the PiP). */}
         {avatarPanelOpen && (
           <aside
             className="avatar-panel"
@@ -5363,10 +5582,9 @@ function App(): React.ReactElement {
             style={{
               position: "absolute",
               bottom: 92,
-              left: "50%",
-              transform: "translateX(4%)", // the agent panel's spot (they never open together)
+              left: 12,
               width: 300,
-              maxHeight: "calc(100dvh - 120px)",
+              maxHeight: "min(560px, calc(100dvh - 120px))",
               overflowY: "auto",
               padding: "12px 14px",
               borderRadius: 12,
@@ -5413,6 +5631,8 @@ function App(): React.ReactElement {
               left: "50%",
               transform: "translateX(-104%)", // sit just LEFT of center (won't overlap the agent panel)
               width: 280,
+              maxHeight: "min(560px, calc(100dvh - 120px))",
+              overflowY: "auto",
               padding: "12px 14px",
               borderRadius: 12,
               background: "rgba(12,16,22,0.92)",
@@ -5585,7 +5805,7 @@ function App(): React.ReactElement {
               left: "50%",
               transform: "translateX(4%)", // sit just RIGHT of center (won't overlap the P2P panel)
               width: 300,
-              maxHeight: "calc(100dvh - 120px)",
+              maxHeight: "min(560px, calc(100dvh - 120px))",
               overflowY: "auto",
               padding: "12px 14px",
               borderRadius: 12,
@@ -6151,6 +6371,27 @@ function App(): React.ReactElement {
                   Delete
                 </button>
               </div>
+              {selectedClipNames.length > 0 && (
+                <select
+                  aria-label="Animation"
+                  title="Loop one of this model's animation clips — synced to everyone in the world"
+                  value={activeSelectedThing.animation ?? ""}
+                  style={{ gridColumn: 2, gridRow: 3 }}
+                  onChange={(event) =>
+                    worldRef.current?.setGeneratedAnimation(
+                      activeSelectedThing.id,
+                      event.target.value,
+                    )
+                  }
+                >
+                  <option value="">Animation: (default)</option>
+                  {selectedClipNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <div className="selected-nudge-pad" aria-label="Position controls">
               <button

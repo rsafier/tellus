@@ -41,6 +41,16 @@ export const AVATAR_CATALOG: readonly AvatarCatalogEntry[] = [
   { id: "vrm:6a211f7d90ef2a93f06a262b", label: "Bluebot", kind: "vrm", storeId: "6a211f7d90ef2a93f06a262b" },
   { id: "vrm:6a211fb8cf0cffae65faf147", label: "Blue", kind: "vrm", storeId: "6a211fb8cf0cffae65faf147" },
   { id: "vrm:6a211fda90ef2a93f06a2640", label: "Blue Atlantean", kind: "vrm", storeId: "6a211fda90ef2a93f06a2640" },
+  // Autons + Atlanteans (verified 2026-06-11): every VRM below is a VRM 1.0 humanoid with NO
+  // embedded animation clips (glTF JSON has no animations[] at all), so they all animate from the
+  // standard retargeted VRMA set (Idle/Walking/Wave; airborne = the walk-hold leap).
+  { id: "vrm:6a20d54890ef2a93f06a2021", label: "Ancient Auton", kind: "vrm", storeId: "6a20d54890ef2a93f06a2021" },
+  { id: "vrm:6a20d9d9cf0cffae65fae7ea", label: "Auton 2", kind: "vrm", storeId: "6a20d9d9cf0cffae65fae7ea" },
+  { id: "vrm:6a212300cf0cffae65faf251", label: "Atlantean", kind: "vrm", storeId: "6a212300cf0cffae65faf251" },
+  { id: "vrm:6a211e51cf0cffae65faf106", label: "Gold Atlantean 1", kind: "vrm", storeId: "6a211e51cf0cffae65faf106" },
+  { id: "vrm:6a211e8090ef2a93f06a25e1", label: "Gold Atlantean 2", kind: "vrm", storeId: "6a211e8090ef2a93f06a25e1" },
+  { id: "vrm:6a211eb090ef2a93f06a25f6", label: "Gold Atlantean 3", kind: "vrm", storeId: "6a211eb090ef2a93f06a25f6" },
+  { id: "vrm:6a211de0cf0cffae65faf0ed", label: "White Atlantean", kind: "vrm", storeId: "6a211de0cf0cffae65faf0ed" },
   // Shiba: Death, Eating, Gallop, Idle, Idle_2, Idle_2_HeadLow, Idle_HitReact1/2, Walk
   { id: "glb:6a1fdc6cd33fd7d0fec83a2a", label: "Shiba", kind: "glb", storeId: "6a1fdc6cd33fd7d0fec83a2a", heightHint: 0.5 },
   // Husky: Idle_Breathing, Idle_Playing, Run_Loop
@@ -153,15 +163,34 @@ export function categorizeEmbeddedClips(clips: readonly THREE.AnimationClip[]): 
 // ── The GLB rig: embedded clips, same interface/state machine as the VRM robots ────────────────
 class GlbAvatarRig extends LocomotionAvatarRig {
   private readonly model: THREE.Object3D;
+  private readonly allClips: readonly THREE.AnimationClip[];
 
-  constructor(root: THREE.Group, model: THREE.Object3D, clips: CategorizedClips) {
+  constructor(
+    root: THREE.Group,
+    model: THREE.Object3D,
+    clips: CategorizedClips,
+    allClips: readonly THREE.AnimationClip[] = [],
+  ) {
     super(root, new THREE.AnimationMixer(model));
     this.model = model;
+    this.allClips = allClips;
     for (const name of ["idle", "walk", "jump"] as const) {
       const clip = clips[name];
       if (clip) this.actions[name] = this.mixer.clipAction(clip);
     }
     this.play("idle", 0);
+  }
+
+  // Emotes resolve against the FULL embedded clip set (Bark/Sit/Dance/…), exact name first, then
+  // a contains-match; locomotion rig clips remain the fallback.
+  protected override resolveEmoteAction(name: string): THREE.AnimationAction | undefined {
+    const wanted = name.trim().toLowerCase();
+    if (!wanted) return undefined;
+    const clip =
+      this.allClips.find((c) => c.name.toLowerCase() === wanted) ??
+      this.allClips.find((c) => c.name.toLowerCase().includes(wanted));
+    if (clip) return this.mixer.clipAction(clip);
+    return super.resolveEmoteAction(name);
   }
 
   override play(name: RigClipName, fadeSec = 0.25): void {
@@ -209,7 +238,7 @@ async function attachGlbAvatar(
     obj.frustumCulled = false;
   });
   mountModelOnAvatar(group, model, entry.heightHint ?? 0.5);
-  return new GlbAvatarRig(group, model, clips);
+  return new GlbAvatarRig(group, model, clips, gltf.animations);
 }
 
 // ── Unified attach: catalog selection → the right rig ──────────────────────────────────────────

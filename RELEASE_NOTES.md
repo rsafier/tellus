@@ -4,6 +4,43 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.7 — 2026-06-11
+- **Agent-POV viewport fixed on hiDPI screens.** The picture-in-picture agent view double-applied
+  `devicePixelRatio` — three.js `setViewport`/`setScissor` already multiply by the pixel ratio
+  internally (on both the WebGL and WebGPU backends), and the restore used `domElement.width/height`
+  (physical pixels). On a 2× screen the "small PiP" was 4× too big and the restored main viewport 2×
+  too big, so enabling the viewport painted the agent's first-person view over the whole screen
+  (looked like being yanked into 1st person with broken physics). The PiP pass now saves the real
+  viewport/scissor/scissor-test state, draws the 220×140 rect in logical pixels, and restores the
+  saved state in a `finally`.
+- **1st/3rd-person camera toggle.** A new toolbelt **View** (Eye) button — or the **V** key — flips
+  between the classic orbit camera and a first-person camera at your avatar's head (same eye math as
+  the agent POV). Drag still looks, WASD still walks, jump/collision physics are completely
+  untouched (the camera is presentation-only); your own avatar + TV hide locally while first-person
+  is active (other players still see you). The mode persists in localStorage `tellus.cameraMode`,
+  and the agent PiP/vision capture work in both modes.
+- **Panel layout: no more overlaps.** Every bottom panel now has its own anchor so any combination
+  can be open at once: avatar picker = left edge, P2P = left-of-center, agent = right-of-center;
+  all three are height-capped (`min(560px, 100dvh - 120px)`) with internal scroll. The login dialog
+  stays a true modal (dimmed fullscreen overlay above everything, by design). The Agent and Avatar
+  buttons no longer force-close each other.
+- **Procedural grass/vegetation off by default.** The streamed grass/trees/rocks system is now
+  gated behind localStorage `tellus.grass=1` (re-enable hatch); when off a no-op stub stands in, so
+  there is zero per-frame vegetation cost.
+- **Seven new VRM avatars.** Ancient Auton, Auton 2, Atlantean, Gold Atlantean 1–3 and White
+  Atlantean join the picker. All seven were verified as VRM 1.0 humanoids with **no embedded
+  animation clips** (despite reports of built-ins), so they animate from the standard retargeted
+  VRMA set (Idle / Walking / Wave; airborne = the walk-hold leap).
+- **Per-thing animations + emotes.** The selected-object HUD gains an **Animation** dropdown
+  (models with embedded clips only): pick a clip to loop — it persists on the thing as `animation`,
+  syncs over `generated.upsert`, and every client converges (missing clips fall back to the old
+  idle-ish heuristic). Wire convention mirrors `presence.avatarId`: `""` = explicit default, absent
+  = a mid-rollout server stripped the field (keep the local value — verified against the live
+  server, whose echo otherwise wiped a just-picked clip). And incoming `{type:"emote", emote:{visitorId, animation}}` live frames play
+  that clip **once** over the avatar's locomotion, then resume walk/idle — VRM rigs resolve against
+  the VRMA set ("wave"), GLB animals against their embedded clips (Bark/Sit/…); unknown clips and
+  rigless avatars are ignored. Wire shapes + validators added to `world-protocol.ts`.
+
 ## 0.8.6 — 2026-06-11
 - **Remote view stops flickering.** A single failed snapshot poll no longer blanks the agent's
   "(remote view)" — the last frame stays up and failure only shows after 3 consecutive misses
