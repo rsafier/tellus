@@ -94,17 +94,18 @@ import {
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
-import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps } from "./tellus-types";
+import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps, WorldTemplateId, LandShapeOverrides } from "./tellus-types";
 import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
-import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
+import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, applyWorldTerrainTemplate, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, configureKtx2Support, textureFailedModelUrls, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, measureModelBounds, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import { installSessionFetch } from "./tellus-auth";
 import { AuthControls, PremiumUpsellChip } from "./tellus-auth-ui";
 import { buildAgentFeed, type AgentChatLine, type AgentToolChip } from "./agent-chat-format";
+import { defaultSkyboxUrlForTemplate, parseLandShapeOverrides, parseWorldTemplateId, templateForWorldId } from "./tellus-world-templates";
 import "./styles.css";
 
 // Attach X-Tellus-Session to every Hyades API call (agent endpoints, world meta PATCH, state, pay)
@@ -178,6 +179,20 @@ const agentChipStyle: React.CSSProperties = {
   whiteSpace: "nowrap",
   overflow: "hidden",
 };
+
+const WORLD_TEMPLATE_OPTIONS: Array<{ id: WorldTemplateId; label: string }> = [
+  { id: "tellus", label: "Tellus" },
+  { id: "wide-island", label: "Wide Island" },
+  { id: "lowlands", label: "Lowlands" },
+  { id: "ridge", label: "Ridge" },
+];
+
+function worldTemplateLabel(template: WorldTemplateId): string {
+  return (
+    WORLD_TEMPLATE_OPTIONS.find((option) => option.id === template)?.label ??
+    template
+  );
+}
 
 function AgentToolChipPill({ chip }: { chip: AgentToolChip }) {
   const label = chip.summary ? `${chip.name} · ${chip.summary}` : chip.name;
@@ -5207,8 +5222,91 @@ function App(): React.ReactElement {
   // returns SEEDED worlds, so we union it with locally-remembered ids + the current one.
   const [activeWorldId, setActiveWorldId] = useState<string | null>(null);
   const [worlds, setWorlds] = useState<string[]>([]);
+  const [newWorldTemplate, setNewWorldTemplate] = useState<WorldTemplateId>(
+    parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
+  );
+  const [newWorldPrivate, setNewWorldPrivate] = useState(false);
+  const [currentWorldTemplate, setCurrentWorldTemplate] = useState<WorldTemplateId>(
+    parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
+  );
+  const [currentWorldPrivate, setCurrentWorldPrivate] = useState(false);
+  const [worldCreateNote, setWorldCreateNote] = useState<string | null>(null);
+  const worldCreateNoteTimerRef = useRef<number | undefined>(undefined);
   const KNOWN_WORLDS_KEY = "tellus.knownWorlds";
   const ACTIVE_WORLD_KEY = "tellus.activeWorldId";
+  const NEW_WORLD_TEMPLATE_KEY = "tellus.newWorldTemplate";
+  const NEW_WORLD_PRIVATE_KEY = "tellus.newWorldPrivate";
+  const defaultWorldTemplateRef = useRef<WorldTemplateId>(
+    parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
+  );
+  const defaultSkyboxUrlRef = useRef(runtimeConfig.skyboxUrl);
+  const defaultLandShapeRef = useRef<LandShapeOverrides | undefined>(runtimeConfig.landShape);
+
+  interface WorldRenderProfile {
+    worldTemplate?: WorldTemplateId;
+    skyboxUrl?: string;
+    landShape?: LandShapeOverrides;
+    isPublic?: boolean;
+  }
+
+  const parseWorldRenderProfile = (value: unknown): WorldRenderProfile => {
+    if (!isRecord(value)) return {};
+    const worldTemplate =
+      typeof value.worldTemplate === "string" && value.worldTemplate.trim()
+        ? parseWorldTemplateId(value.worldTemplate)
+        : typeof value.world_template === "string" && value.world_template.trim()
+          ? parseWorldTemplateId(value.world_template)
+          : undefined;
+    const skyboxUrl =
+      typeof value.skyboxUrl === "string" && value.skyboxUrl.trim()
+        ? value.skyboxUrl.trim()
+        : typeof value.skybox_url === "string" && value.skybox_url.trim()
+          ? value.skybox_url.trim()
+          : undefined;
+    const landShape = parseLandShapeOverrides(
+      value.landShape ?? value.land_shape,
+    );
+    const isPublic =
+      typeof value.isPublic === "boolean"
+        ? value.isPublic
+        : typeof value.is_public === "boolean"
+          ? value.is_public
+          : undefined;
+    return { worldTemplate, skyboxUrl, landShape, isPublic };
+  };
+
+  const resolveWorldRenderProfile = async (worldId: string): Promise<{
+    template: WorldTemplateId;
+    skyboxUrl: string;
+    landShape?: LandShapeOverrides;
+    isPublic?: boolean;
+  }> => {
+    const templateFallback = templateForWorldId(
+      worldId,
+      defaultWorldTemplateRef.current,
+    );
+    let profile: WorldRenderProfile = {};
+    if (runtimeConfig.worldApiBase) {
+      try {
+        const response = await fetch(
+          `${runtimeConfig.worldApiBase}/api/tellus/worlds/${encodeURIComponent(worldId)}?userId=${encodeURIComponent(tellusUserId())}`,
+          { cache: "no-store" },
+        );
+        if (response.ok) {
+          profile = parseWorldRenderProfile(await response.json());
+        }
+      } catch {
+        /* no world metadata endpoint (or offline) */
+      }
+    }
+    const template = profile.worldTemplate ?? templateFallback;
+    const skyboxUrl =
+      profile.skyboxUrl ??
+      defaultSkyboxUrlForTemplate(template) ??
+      defaultSkyboxUrlRef.current;
+    const landShape = profile.landShape ?? defaultLandShapeRef.current;
+    return { template, skyboxUrl, landShape, isPublic: profile.isPublic };
+  };
   const loadKnownWorlds = (): string[] => {
     try {
       const raw = window.localStorage.getItem(KNOWN_WORLDS_KEY);
@@ -5269,18 +5367,25 @@ function App(): React.ReactElement {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48);
     if (!id) return;
-    const makePrivate = window.confirm(
-      "Make this world PRIVATE? Only you (this identity) can see and enter it.\n\nOK = private · Cancel = public",
+    const pickedTemplate = parseWorldTemplateId(
+      newWorldTemplate,
+      defaultWorldTemplateRef.current,
     );
+    const pickedSkybox = defaultSkyboxUrlForTemplate(pickedTemplate);
+    const makePrivate = newWorldPrivate;
     const enter = () => switchWorld(id);
-    if (makePrivate) {
-      // Claim ownership + mark private before entering, so the world loads gated to this user.
+    if (runtimeConfig.worldApiBase) {
+      // Seed metadata up front so template + skybox are world-specific before first entry.
       void fetch(
         `${runtimeConfig.worldApiBase}/api/tellus/worlds/${encodeURIComponent(id)}?userId=${encodeURIComponent(tellusUserId())}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ isPublic: false }),
+          body: JSON.stringify({
+            isPublic: !makePrivate,
+            worldTemplate: pickedTemplate,
+            skyboxUrl: pickedSkybox,
+          }),
         },
       )
         .then(enter)
@@ -5288,6 +5393,22 @@ function App(): React.ReactElement {
     } else {
       enter();
     }
+  };
+  const copyCurrentWorldSettings = () => {
+    setNewWorldTemplate(currentWorldTemplate);
+    setNewWorldPrivate(currentWorldPrivate);
+    if (worldCreateNoteTimerRef.current !== undefined) {
+      window.clearTimeout(worldCreateNoteTimerRef.current);
+    }
+    setWorldCreateNote(
+      `Copied current world settings: ${worldTemplateLabel(currentWorldTemplate)} · ${
+        currentWorldPrivate ? "Private" : "Public"
+      }`,
+    );
+    worldCreateNoteTimerRef.current = window.setTimeout(() => {
+      setWorldCreateNote(null);
+      worldCreateNoteTimerRef.current = undefined;
+    }, 2800);
   };
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
   // Store browse/search (server-side over the 3D Asset Manager): debounced query + paged results.
@@ -5572,6 +5693,21 @@ function App(): React.ReactElement {
         const models = await loadAssetLibraryModels().catch(() => []);
         if (cancelled) return;
         setAssetLibrary(models);
+        defaultWorldTemplateRef.current = parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus");
+        defaultSkyboxUrlRef.current = runtimeConfig.skyboxUrl;
+        defaultLandShapeRef.current = runtimeConfig.landShape;
+        setCurrentWorldTemplate(defaultWorldTemplateRef.current);
+        try {
+          const savedTemplate = window.localStorage.getItem(NEW_WORLD_TEMPLATE_KEY);
+          const savedPrivate = window.localStorage.getItem(NEW_WORLD_PRIVATE_KEY);
+          setNewWorldTemplate(
+            parseWorldTemplateId(savedTemplate, defaultWorldTemplateRef.current),
+          );
+          setNewWorldPrivate(savedPrivate === "1");
+        } catch {
+          setNewWorldTemplate(defaultWorldTemplateRef.current);
+          setNewWorldPrivate(false);
+        }
         const configDefault = runtimeConfig.worldId; // typically "main" — always keep it reachable
         rememberWorld(configDefault);
         let initial = configDefault;
@@ -5596,19 +5732,45 @@ function App(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(NEW_WORLD_TEMPLATE_KEY, newWorldTemplate);
+      window.localStorage.setItem(NEW_WORLD_PRIVATE_KEY, newWorldPrivate ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [newWorldTemplate, newWorldPrivate]);
+
+  useEffect(() => {
+    return () => {
+      if (worldCreateNoteTimerRef.current !== undefined) {
+        window.clearTimeout(worldCreateNoteTimerRef.current);
+      }
+    };
+  }, []);
+
   // (Re)create the world view whenever the active world changes — load that world's state, then mount it.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !activeWorldId) return;
     runtimeConfig.worldId = activeWorldId;
-    // World scale BEFORE any terrain/state work: derived from the world NAME (large-* → 3×,
-    // mega-* → 5×) so every client — and the Hyades terrain port — agrees with no protocol change.
-    setWorldScale(worldScaleForId(activeWorldId));
-    rebuildDistantIslandSpecs();
     let cancelled = false;
     let world: TellusWorldApi | null = null;
-    void loadTellusState()
-      .catch(() => undefined)
+    void resolveWorldRenderProfile(activeWorldId)
+      .then(async (profile) => {
+        if (cancelled) return;
+        setCurrentWorldTemplate(profile.template);
+        setCurrentWorldPrivate(profile.isPublic === false);
+        runtimeConfig.worldTemplate = profile.template;
+        runtimeConfig.skyboxUrl = profile.skyboxUrl;
+        runtimeConfig.landShape = profile.landShape;
+        applyWorldTerrainTemplate(profile.template, profile.landShape);
+        // World scale BEFORE any terrain/state work: derived from the world NAME (large-* → 3×,
+        // mega-* → 5×) so every client — and the Hyades terrain port — agrees with no protocol change.
+        setWorldScale(worldScaleForId(activeWorldId));
+        rebuildDistantIslandSpecs();
+        await loadTellusState().catch(() => undefined);
+      })
       .then(() => {
         if (cancelled) return;
         world = createTellusWorld(container, setSnapshot);
@@ -5797,11 +5959,84 @@ function App(): React.ReactElement {
               pointerEvents: "auto",
             }}
           >
-            <select
-              aria-label="Active world"
-              title="Switch world"
-              value={activeWorldId ?? ""}
-              onChange={(e) => switchWorld(e.target.value)}
+            <div style={{ display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>World</span>
+              <select
+                aria-label="Active world"
+                title="Switch world"
+                value={activeWorldId ?? ""}
+                onChange={(e) => switchWorld(e.target.value)}
+                style={{
+                  background: "rgba(0,0,0,0.5)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  font: "600 12px/1.2 ui-sans-serif, system-ui",
+                  maxWidth: 180,
+                }}
+              >
+                {!activeWorldId && <option value="">…</option>}
+                {worlds.map((w) => (
+                  <option key={w} value={w}>
+                    {w}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Template</span>
+              <select
+                aria-label="New world template"
+                title="Template for newly created worlds"
+                value={newWorldTemplate}
+                onChange={(e) =>
+                  setNewWorldTemplate(
+                    parseWorldTemplateId(e.target.value, defaultWorldTemplateRef.current),
+                  )
+                }
+                style={{
+                  background: "rgba(0,0,0,0.5)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  font: "600 12px/1.2 ui-sans-serif, system-ui",
+                  maxWidth: 150,
+                }}
+              >
+                {WORLD_TEMPLATE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Visibility</span>
+              <select
+                aria-label="New world visibility"
+                title="Visibility for newly created worlds"
+                value={newWorldPrivate ? "private" : "public"}
+                onChange={(e) => setNewWorldPrivate(e.target.value === "private")}
+                style={{
+                  background: "rgba(0,0,0,0.5)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  font: "600 12px/1.2 ui-sans-serif, system-ui",
+                  maxWidth: 120,
+                }}
+              >
+                <option value="public">Public</option>
+                <option value="private">Private</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              title="Copy template + visibility from the current world"
+              onClick={copyCurrentWorldSettings}
               style={{
                 background: "rgba(0,0,0,0.5)",
                 color: "#dfe7d8",
@@ -5809,19 +6044,14 @@ function App(): React.ReactElement {
                 borderRadius: 8,
                 padding: "4px 8px",
                 font: "600 12px/1.2 ui-sans-serif, system-ui",
-                maxWidth: 180,
+                cursor: "pointer",
               }}
             >
-              {!activeWorldId && <option value="">…</option>}
-              {worlds.map((w) => (
-                <option key={w} value={w}>
-                  {w}
-                </option>
-              ))}
-            </select>
+              Duplicate
+            </button>
             <button
               type="button"
-              title="Create a new world"
+              title={`Create a new ${newWorldPrivate ? "private" : "public"} world (${newWorldTemplate})`}
               onClick={createNewWorld}
               style={{
                 background: "rgba(0,0,0,0.5)",
@@ -5835,6 +6065,19 @@ function App(): React.ReactElement {
             >
               ＋ New
             </button>
+            {worldCreateNote && (
+              <span
+                style={{
+                  marginLeft: 2,
+                  fontSize: 10,
+                  color: "#9ad0ff",
+                  opacity: 0.86,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {worldCreateNote}
+              </span>
+            )}
           </div>
           <div className="top-right-cluster">
             <AuthControls />

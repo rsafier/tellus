@@ -8,6 +8,7 @@ import {
 } from "./tellus-constants";
 import {
   applyTellusTerrainState,
+  applyWorldTerrainTemplate,
   pondWaterLevel,
   rebuildDistantIslandSpecs,
 } from "./tellus-terrain";
@@ -19,6 +20,11 @@ import {
 } from "./tellus-scene-builders";
 import { loadRuntimeConfig, runtimeConfig } from "./tellus-runtime-config";
 import type { GeneratedThing, Vec3 } from "./tellus-types";
+import {
+  parseLandShapeOverrides,
+  parseWorldTemplateId,
+  templateForWorldId,
+} from "./tellus-world-templates";
 
 // ── Agent-view: the headless eye ─────────────────────────────────────────────────────────────────
 // A MINIMAL world renderer for the shared browser-driver container: terrain + placed things +
@@ -56,6 +62,41 @@ let ready = false;
 const boot = async () => {
   await loadRuntimeConfig().catch(() => undefined);
   runtimeConfig.worldId = worldId;
+
+  if (runtimeConfig.worldApiBase) {
+    try {
+      const response = await fetch(
+        `${runtimeConfig.worldApiBase}/api/tellus/worlds/${encodeURIComponent(worldId)}?userId=agent-view`,
+        { cache: "no-store" },
+      );
+      if (response.ok) {
+        const parsed = (await response.json()) as Record<string, unknown>;
+        const templateRaw = typeof parsed.worldTemplate === "string"
+          ? parsed.worldTemplate
+          : typeof parsed.world_template === "string"
+            ? parsed.world_template
+            : undefined;
+        if (templateRaw) {
+          runtimeConfig.worldTemplate = parseWorldTemplateId(
+            templateRaw,
+            runtimeConfig.worldTemplate,
+          );
+        }
+        const landShape = parseLandShapeOverrides(
+          parsed.landShape ?? parsed.land_shape,
+        );
+        if (landShape) runtimeConfig.landShape = landShape;
+      }
+    } catch {
+      /* world metadata endpoint unavailable */
+    }
+  }
+
+  const template = parseWorldTemplateId(
+    runtimeConfig.worldTemplate,
+    templateForWorldId(worldId, "tellus"),
+  );
+  applyWorldTerrainTemplate(template, runtimeConfig.landShape);
   setWorldScale(worldScaleForId(worldId));
   rebuildDistantIslandSpecs();
 

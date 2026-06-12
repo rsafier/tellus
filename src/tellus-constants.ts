@@ -21,8 +21,14 @@ export let WORLD_SCALE = 1;
 export let WORLD_RADIUS = 72;
 export let OCEAN_RADIUS = 240;
 export let CENTRAL_WALK_RADIUS = WORLD_RADIUS - 0.5;
-export let POND_RADIUS = 7.4;
-export const POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
+let CLASSIC_POND_RADIUS = 7.4;
+const CLASSIC_POND_CENTER: Vec3 = { x: 18, y: 0, z: -12 };
+export let POND_RADIUS = CLASSIC_POND_RADIUS;
+export const POND_CENTER: Vec3 = {
+  x: CLASSIC_POND_CENTER.x,
+  y: 0,
+  z: CLASSIC_POND_CENTER.z,
+};
 
 export function worldScaleForId(worldId: string): number {
   const id = worldId.toLowerCase();
@@ -40,9 +46,18 @@ export function setWorldScale(scale: number): void {
   WORLD_RADIUS = CLASSIC_WORLD_RADIUS * scale;
   OCEAN_RADIUS = 240 * scale;
   CENTRAL_WALK_RADIUS = WORLD_RADIUS - 0.5;
-  POND_RADIUS = 7.4 * scale;
-  POND_CENTER.x = 18 * scale;
-  POND_CENTER.z = -12 * scale;
+  POND_RADIUS = CLASSIC_POND_RADIUS * scale;
+  POND_CENTER.x = CLASSIC_POND_CENTER.x * scale;
+  POND_CENTER.z = CLASSIC_POND_CENTER.z * scale;
+}
+
+export function setClassicPondShape(x: number, z: number, radius: number): void {
+  CLASSIC_POND_CENTER.x = x;
+  CLASSIC_POND_CENTER.z = z;
+  CLASSIC_POND_RADIUS = radius;
+  POND_CENTER.x = x * WORLD_SCALE;
+  POND_CENTER.z = z * WORLD_SCALE;
+  POND_RADIUS = radius * WORLD_SCALE;
 }
 
 /** Walk speed grows on big worlds so traversal stays fun (1× → 13, 3× → ~24.7, 5× → ~36.4). */

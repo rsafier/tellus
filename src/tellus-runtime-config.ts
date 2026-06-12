@@ -9,6 +9,10 @@ import {
   MIN_DAY_NIGHT_CYCLE_MS,
 } from "./tellus-constants";
 import { boundedNumber, isRecord, readJsonResponse } from "./tellus-utils";
+import {
+  parseLandShapeOverrides,
+  parseWorldTemplateId,
+} from "./tellus-world-templates";
 
 export const runtimeConfig: TellusRuntimeConfig = {
   apiBase:
@@ -45,6 +49,7 @@ export const runtimeConfig: TellusRuntimeConfig = {
     import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "",
   worldId: import.meta.env.VITE_TELLUS_WORLD_ID ?? "main",
   skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
+  worldTemplate: parseWorldTemplateId(import.meta.env.VITE_TELLUS_WORLD_TEMPLATE, "tellus"),
   dayNightCycleMs: boundedNumber(
     import.meta.env.VITE_TELLUS_DAY_NIGHT_CYCLE_MS,
     DEFAULT_DAY_NIGHT_CYCLE_MS,
@@ -145,6 +150,16 @@ export function applyRuntimeConfig(config: unknown): void {
   const skyboxUrl = config.skyboxUrl;
   if (typeof skyboxUrl === "string" && skyboxUrl.trim()) {
     runtimeConfig.skyboxUrl = skyboxUrl.trim();
+  }
+
+  const worldTemplate = config.worldTemplate;
+  if (typeof worldTemplate === "string" && worldTemplate.trim()) {
+    runtimeConfig.worldTemplate = parseWorldTemplateId(worldTemplate, runtimeConfig.worldTemplate);
+  }
+
+  const landShape = parseLandShapeOverrides(config.landShape);
+  if (landShape) {
+    runtimeConfig.landShape = landShape;
   }
 
   const dayNightCycleMs = config.dayNightCycleMs;

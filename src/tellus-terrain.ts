@@ -23,6 +23,7 @@ import {
   PENDING_GENERATION_FALLBACK_MS,
   POND_CENTER,
   TERRAIN_VERTEX_COUNT,
+  setClassicPondShape,
   terrainColors,
   terrainPaintKinds,
   waterMountTerms,
@@ -44,6 +45,14 @@ import {
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
+import {
+  parseWorldTemplateId,
+  resolveLandShapeConfig,
+} from "./tellus-world-templates";
+import type {
+  LandShapeOverrides,
+  WorldTemplateId,
+} from "./tellus-types";
 
 export const terrainSculptOffsets = new Float32Array(
   TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
@@ -54,6 +63,30 @@ export let terrainStateDirty = false;
 export let terrainStateLoaded = false;
 export let terrainStateRevision = 0;
 export let tellusWorldBackendAvailable = false;
+
+let activeTemplate: WorldTemplateId = parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus");
+let activeLandShape = resolveLandShapeConfig(
+  activeTemplate,
+  runtimeConfig.landShape,
+);
+setClassicPondShape(
+  activeLandShape.pond.x,
+  activeLandShape.pond.z,
+  activeLandShape.pond.radius,
+);
+
+export function applyWorldTerrainTemplate(
+  template: WorldTemplateId,
+  overrides?: LandShapeOverrides,
+): void {
+  activeTemplate = template;
+  activeLandShape = resolveLandShapeConfig(template, overrides);
+  setClassicPondShape(
+    activeLandShape.pond.x,
+    activeLandShape.pond.z,
+    activeLandShape.pond.radius,
+  );
+}
 
 export function terrainPaintCode(kind: TerrainPaintKind): number {
   return terrainPaintKinds.indexOf(kind) + 1;
@@ -517,20 +550,33 @@ export function baseTerrainHeight(x: number, z: number): number {
   // server's terrain port applies the IDENTICAL transform — keep the two in lockstep.
   const cx = x / WORLD_SCALE;
   const cz = z / WORLD_SCALE;
+  const shape = activeLandShape;
   const r = Math.hypot(cx, cz);
-  const mountain = Math.max(0, 1 - r / 20);
-  const mound = Math.pow(mountain, 2.2) * 21;
-  const shoulder = Math.exp(-((cx + 16) ** 2 + (cz - 12) ** 2) / 190) * 4.2;
-  const southernRise = Math.exp(-((cx - 9) ** 2 + (cz + 24) ** 2) / 160) * 3.1;
+  const mountain = Math.max(0, 1 - r / shape.mountain.radius);
+  const mound = Math.pow(mountain, shape.mountain.exponent) * shape.mountain.height;
+  const shoulder =
+    Math.exp(
+      -((cx - shape.shoulder.x) ** 2 + (cz - shape.shoulder.z) ** 2) /
+      shape.shoulder.radius,
+    ) * shape.shoulder.height;
+  const southernRise =
+    Math.exp(
+      -((cx - shape.southernRise.x) ** 2 + (cz - shape.southernRise.z) ** 2) /
+      shape.southernRise.radius,
+    ) * shape.southernRise.height;
   const ridge =
-    Math.sin(cx * 0.22 + cz * 0.08) * 1.05 +
-    Math.cos(cz * 0.2 - cx * 0.06) * 0.72 +
-    Math.sin((cx + cz) * 0.11) * 0.42;
-  const rimStart = CLASSIC_WORLD_RADIUS * 0.72;
-  const rimWidth = CLASSIC_WORLD_RADIUS * 0.28;
-  const rimDrop = Math.max(0, (r - rimStart) / rimWidth) * 5.8;
-  const pond = Math.exp(-((cx - 18) ** 2 + (cz + 12) ** 2) / 65) * 2.5;
-  return mound + shoulder + southernRise + ridge - rimDrop - pond - 0.65;
+    Math.sin(cx * 0.22 + cz * 0.08) * shape.ridge.sinScale +
+    Math.cos(cz * 0.2 - cx * 0.06) * shape.ridge.cosScale +
+    Math.sin((cx + cz) * 0.11) * shape.ridge.diagonalScale;
+  const rimStart = CLASSIC_WORLD_RADIUS * shape.shore.startRatio;
+  const rimWidth = CLASSIC_WORLD_RADIUS * shape.shore.widthRatio;
+  const rimDrop = Math.max(0, (r - rimStart) / rimWidth) * shape.shore.drop;
+  const pond =
+    Math.exp(
+      -((cx - shape.pond.x) ** 2 + (cz - shape.pond.z) ** 2) /
+      shape.pond.falloff,
+    ) * shape.pond.depth;
+  return mound + shoulder + southernRise + ridge - rimDrop - pond + shape.baseOffset;
 }
 
 export function terrainHeight(x: number, z: number): number {
@@ -543,8 +589,8 @@ export function terrainKind(x: number, z: number, y: number): TerrainKind {
   // Classic-space: kind bands follow the scaled island features (matches the server port).
   const cx = x / WORLD_SCALE;
   const cz = z / WORLD_SCALE;
-  const pondDistance = Math.hypot(cx - 18, cz + 12);
-  if (pondDistance < 7 && y < 1.9) return "water";
+  const pondDistance = Math.hypot(cx - activeLandShape.pond.x, cz - activeLandShape.pond.z);
+  if (pondDistance < activeLandShape.pond.radius && y < 1.9) return "water";
   if (y > 13.5) return "snow";
   if (y > 6.8) return "rock";
   const pathBand = Math.abs(Math.sin(Math.atan2(cz, cx) * 3 + 0.5)) < 0.13;

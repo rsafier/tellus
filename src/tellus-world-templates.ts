@@ -1,0 +1,208 @@
+import type {
+  LandShapeConfig,
+  LandShapeOverrides,
+  WorldTemplateId,
+} from "./tellus-types";
+
+const TEMPLATE_IDS = new Set<WorldTemplateId>([
+  "tellus",
+  "wide-island",
+  "lowlands",
+  "ridge",
+]);
+
+const TEMPLATE_PRESETS: Record<
+  WorldTemplateId,
+  { defaultSkyboxUrl: string; landShape: LandShapeConfig }
+> = {
+  tellus: {
+    defaultSkyboxUrl: "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
+    landShape: {
+      mountain: { height: 21, radius: 20, exponent: 2.2 },
+      shoulder: { x: -16, z: 12, radius: 190, height: 4.2 },
+      southernRise: { x: 9, z: -24, radius: 160, height: 3.1 },
+      ridge: { sinScale: 1.05, cosScale: 0.72, diagonalScale: 0.42 },
+      shore: { startRatio: 0.72, widthRatio: 0.28, drop: 5.8 },
+      pond: { x: 18, z: -12, radius: 7.4, depth: 2.5, falloff: 65 },
+      baseOffset: -0.65,
+    },
+  },
+  "wide-island": {
+    defaultSkyboxUrl: "/skybox/free_-_skybox_in_the_cloud.glb",
+    landShape: {
+      mountain: { height: 17, radius: 27, exponent: 2.05 },
+      shoulder: { x: -19, z: 11, radius: 260, height: 3.5 },
+      southernRise: { x: 10, z: -27, radius: 230, height: 2.8 },
+      ridge: { sinScale: 0.8, cosScale: 0.62, diagonalScale: 0.32 },
+      shore: { startRatio: 0.78, widthRatio: 0.22, drop: 4.9 },
+      pond: { x: 24, z: -8, radius: 9.6, depth: 2.15, falloff: 92 },
+      baseOffset: -0.75,
+    },
+  },
+  lowlands: {
+    defaultSkyboxUrl: "/skybox/free_-_skybox_basic_sky.glb",
+    landShape: {
+      mountain: { height: 13, radius: 34, exponent: 1.85 },
+      shoulder: { x: -20, z: 15, radius: 280, height: 2.3 },
+      southernRise: { x: 12, z: -25, radius: 280, height: 2.1 },
+      ridge: { sinScale: 0.48, cosScale: 0.42, diagonalScale: 0.2 },
+      shore: { startRatio: 0.8, widthRatio: 0.2, drop: 4.1 },
+      pond: { x: 14, z: -8, radius: 10.5, depth: 1.65, falloff: 104 },
+      baseOffset: -1.05,
+    },
+  },
+  ridge: {
+    defaultSkyboxUrl: "/skybox/skybox_skydays_3.glb",
+    landShape: {
+      mountain: { height: 15, radius: 23, exponent: 2.35 },
+      shoulder: { x: -13, z: 10, radius: 175, height: 3.1 },
+      southernRise: { x: 6, z: -23, radius: 175, height: 2.4 },
+      ridge: { sinScale: 1.45, cosScale: 0.9, diagonalScale: 0.72 },
+      shore: { startRatio: 0.74, widthRatio: 0.26, drop: 6.2 },
+      pond: { x: -18, z: -16, radius: 8, depth: 2.2, falloff: 78 },
+      baseOffset: -0.7,
+    },
+  },
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function cloneLandShape(shape: LandShapeConfig): LandShapeConfig {
+  return {
+    mountain: { ...shape.mountain },
+    shoulder: { ...shape.shoulder },
+    southernRise: { ...shape.southernRise },
+    ridge: { ...shape.ridge },
+    shore: { ...shape.shore },
+    pond: { ...shape.pond },
+    baseOffset: shape.baseOffset,
+  };
+}
+
+function normalizePondOverrides(pond: LandShapeOverrides["pond"]): LandShapeOverrides["pond"] {
+  if (!pond) return pond;
+  const radius = finiteNumber(pond.radius);
+  const falloff = finiteNumber(pond.falloff) ?? (radius ? radius * radius * 1.2 : undefined);
+  return { ...pond, falloff };
+}
+
+export function parseWorldTemplateId(
+  value: unknown,
+  fallback: WorldTemplateId = "tellus",
+): WorldTemplateId {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim().toLowerCase();
+  return TEMPLATE_IDS.has(normalized as WorldTemplateId)
+    ? (normalized as WorldTemplateId)
+    : fallback;
+}
+
+export function templateForWorldId(
+  worldId: string,
+  fallback: WorldTemplateId = "tellus",
+): WorldTemplateId {
+  const id = worldId.trim().toLowerCase();
+  if (id.includes("ridge") || id.includes("mountain")) return "ridge";
+  if (id.includes("low") || id.includes("flat") || id.includes("meadow")) return "lowlands";
+  if (id.includes("wide") || id.includes("archipelago") || id.includes("isle")) {
+    return "wide-island";
+  }
+  return fallback;
+}
+
+export function parseLandShapeOverrides(value: unknown): LandShapeOverrides | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const mountain = isRecord(value.mountain)
+    ? {
+        height: finiteNumber(value.mountain.height),
+        radius: finiteNumber(value.mountain.radius),
+        exponent: finiteNumber(value.mountain.exponent),
+      }
+    : undefined;
+  const shoulder = isRecord(value.shoulder)
+    ? {
+        x: finiteNumber(value.shoulder.x),
+        z: finiteNumber(value.shoulder.z),
+        radius: finiteNumber(value.shoulder.radius),
+        height: finiteNumber(value.shoulder.height),
+      }
+    : undefined;
+  const southernRise = isRecord(value.southernRise)
+    ? {
+        x: finiteNumber(value.southernRise.x),
+        z: finiteNumber(value.southernRise.z),
+        radius: finiteNumber(value.southernRise.radius),
+        height: finiteNumber(value.southernRise.height),
+      }
+    : undefined;
+  const ridge = isRecord(value.ridge)
+    ? {
+        sinScale: finiteNumber(value.ridge.sinScale),
+        cosScale: finiteNumber(value.ridge.cosScale),
+        diagonalScale: finiteNumber(value.ridge.diagonalScale),
+      }
+    : undefined;
+  const shore = isRecord(value.shore)
+    ? {
+        startRatio: finiteNumber(value.shore.startRatio),
+        widthRatio: finiteNumber(value.shore.widthRatio),
+        drop: finiteNumber(value.shore.drop),
+      }
+    : undefined;
+  const pond = isRecord(value.pond)
+    ? normalizePondOverrides({
+        x: finiteNumber(value.pond.x),
+        z: finiteNumber(value.pond.z),
+        radius: finiteNumber(value.pond.radius),
+        depth: finiteNumber(value.pond.depth),
+        falloff: finiteNumber(value.pond.falloff),
+      })
+    : undefined;
+  const baseOffset = finiteNumber(value.baseOffset);
+
+  const hasAny =
+    mountain || shoulder || southernRise || ridge || shore || pond || baseOffset !== undefined;
+  if (!hasAny) return undefined;
+
+  return {
+    mountain,
+    shoulder,
+    southernRise,
+    ridge,
+    shore,
+    pond,
+    baseOffset,
+  };
+}
+
+export function resolveLandShapeConfig(
+  template: WorldTemplateId,
+  overrides?: LandShapeOverrides,
+): LandShapeConfig {
+  const preset = cloneLandShape(TEMPLATE_PRESETS[template].landShape);
+  if (!overrides) return preset;
+
+  const pond = normalizePondOverrides(overrides.pond);
+
+  return {
+    mountain: { ...preset.mountain, ...overrides.mountain },
+    shoulder: { ...preset.shoulder, ...overrides.shoulder },
+    southernRise: { ...preset.southernRise, ...overrides.southernRise },
+    ridge: { ...preset.ridge, ...overrides.ridge },
+    shore: { ...preset.shore, ...overrides.shore },
+    pond: { ...preset.pond, ...pond },
+    baseOffset:
+      overrides.baseOffset !== undefined ? overrides.baseOffset : preset.baseOffset,
+  };
+}
+
+export function defaultSkyboxUrlForTemplate(template: WorldTemplateId): string {
+  return TEMPLATE_PRESETS[template].defaultSkyboxUrl;
+}

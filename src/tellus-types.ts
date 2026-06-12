@@ -15,6 +15,61 @@ export type TerrainKind =
   | "water";
 export type TerrainPaintKind = Exclude<TerrainKind, "water">;
 export type TerrainEditMode = "raise" | "lower" | "flatten" | TerrainPaintKind;
+export type WorldTemplateId = "tellus" | "wide-island" | "lowlands" | "ridge";
+
+export interface TerrainMountainShape {
+  height: number;
+  radius: number;
+  exponent: number;
+}
+
+export interface TerrainBumpShape {
+  x: number;
+  z: number;
+  height: number;
+  radius: number;
+}
+
+export interface TerrainRidgeShape {
+  sinScale: number;
+  cosScale: number;
+  diagonalScale: number;
+}
+
+export interface TerrainShoreShape {
+  startRatio: number;
+  widthRatio: number;
+  drop: number;
+}
+
+export interface TerrainPondShape {
+  x: number;
+  z: number;
+  radius: number;
+  depth: number;
+  falloff: number;
+}
+
+export interface LandShapeConfig {
+  mountain: TerrainMountainShape;
+  shoulder: TerrainBumpShape;
+  southernRise: TerrainBumpShape;
+  ridge: TerrainRidgeShape;
+  shore: TerrainShoreShape;
+  pond: TerrainPondShape;
+  baseOffset: number;
+}
+
+export interface LandShapeOverrides {
+  mountain?: Partial<TerrainMountainShape>;
+  shoulder?: Partial<TerrainBumpShape>;
+  southernRise?: Partial<TerrainBumpShape>;
+  ridge?: Partial<TerrainRidgeShape>;
+  shore?: Partial<TerrainShoreShape>;
+  pond?: Partial<Omit<TerrainPondShape, "falloff">> & { falloff?: number };
+  baseOffset?: number;
+}
+
 export type GenerationProvider =
   | "local"
   | "asset-forge"
@@ -236,6 +291,8 @@ export interface TellusRuntimeConfig {
   worldApiBase: string;
   worldId: string;
   skyboxUrl: string;
+  worldTemplate: WorldTemplateId;
+  landShape?: LandShapeOverrides;
   dayNightCycleMs: number;
   dayNightStart: number;
   // When true, fold non-selected static (no-animation) duplicate generated placements that share a modelUrl
