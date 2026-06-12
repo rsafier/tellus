@@ -12,6 +12,11 @@ on the gnostr-cloud `master` triggers the CI build + rollout.
   agent-POV eye heights follow the scale (a giant sees from a giant's head). The pick persists in
   localStorage `tellus.avatarScale` and rides presence (`avatarScale`, server-clamped to [0.1, 8])
   so everyone sees your size; remote size changes ease in over ~0.3s.
+- **Passkeys work from every hostname.** The game serves on multiple domains
+  (tellus.gnostr.cloud — the passkey RP ID — and tellus.garden); adding a passkey from the latter
+  failed RP-ID validation. The server now serves `/.well-known/webauthn` (WebAuthn Related Origin
+  Requests; `TELLUS_WEBAUTHN_ORIGINS` env) listing both origins, and hyades 0.5.199 accepts both —
+  one passkey works everywhere the game lives.
 
 ## 0.8.7 — 2026-06-11
 - **Agent-POV viewport fixed on hiDPI screens.** The picture-in-picture agent view double-applied
