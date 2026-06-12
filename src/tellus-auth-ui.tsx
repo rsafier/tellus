@@ -298,6 +298,12 @@ function McpAccessSection({ account }: { account: TellusAccount }): React.ReactE
         Drive your avatar from any MCP client or your own automation — same tools the in-world agents use.
       </span>
       <span className="auth-kv">
+        <span className="auth-muted">guide</span>
+        <a className="auth-small-button" href="/tellus-mcp-skill.md" download target="_blank" rel="noopener noreferrer">
+          Download the LLM skill doc
+        </a>
+      </span>
+      <span className="auth-kv">
         <span className="auth-muted">endpoint</span>
         <code style={{ wordBreak: "break-all" }}>{endpoint}</code>
         <button type="button" className="auth-small-button" onClick={() => copy(endpoint, "endpoint")}>
