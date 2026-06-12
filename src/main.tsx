@@ -30,7 +30,7 @@ import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { createVegetation } from "./tellus-vegetation";
 import { PROCEDURAL_CATALOG } from "./tellus-veg-archetypes";
-import { makeProceduralModelUrl, sanitizeProceduralModelUrl, parseProceduralModelUrl } from "./tellus-procedural-assets";
+import { makeProceduralModelUrl, sanitizeProceduralModelUrl, parseProceduralModelUrl, MIRROR_ARCHETYPE_ID, MAX_LIVE_MIRRORS, liveMirrorCount, resetLiveMirrors } from "./tellus-procedural-assets";
 import { createAmbientPhysics, resolveObstacles, type ObstacleCircle } from "./tellus-physics";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
@@ -72,6 +72,7 @@ import {
   restoreProceduralAvatar,
   setAvatarUserScale,
   tickAvatarScale,
+  VrmObjectRig,
   type AvatarRig,
 } from "./tellus-vrm-avatar";
 import {
@@ -208,6 +209,10 @@ function createTellusWorld(
   const logs: TellusLog[] = [];
   const generatedMeshes = new Map<string, THREE.Object3D>();
   const generatedAnimationMixers = new Map<string, THREE.AnimationMixer>();
+  // Placed VRM things (auton/Atlantean store models) animate through a real VRM rig — a VRMA idle clip
+  // looped by default, advanced (mixer + spring bones) each frame here. Parallel to the plain-GLB
+  // mixers above; a thing is in exactly one of the two maps.
+  const generatedVrmRigs = new Map<string, VrmObjectRig>();
   // GPU-instancing of static duplicated generated models (flag-gated; default OFF). One InstancePool per
   // modelUrl holds one THREE.InstancedMesh per sub-mesh of the shared GLB; folded ("instanced") things keep
   // their regular mesh in the scene but `visible = false`, and we copy that hidden mesh's per-sub-mesh
@@ -621,6 +626,25 @@ function createTellusWorld(
       ]);
     },
   };
+  // Mirror diagnostics (smoke tests / console): how many placed mirrors render live (have a
+  // Reflector) vs as static tinted glass, plus the live-cap.
+  window.__tellusMirrorDebug = () => {
+    let live = 0;
+    let glass = 0;
+    for (const mesh of generatedMeshes.values()) {
+      if (mesh.userData.mirrorReflector) live++;
+      else if (mesh.userData.mirrorGlass) glass++;
+    }
+    return { live, glass, liveCap: MAX_LIVE_MIRRORS, trackedLive: liveMirrorCount() };
+  };
+  const countSkinnedMeshes = (root: THREE.Object3D | undefined): number => {
+    if (!root) return 0;
+    let n = 0;
+    root.traverse((obj) => {
+      if ((obj as THREE.SkinnedMesh).isSkinnedMesh) n++;
+    });
+    return n;
+  };
   // Per-thing render diagnostics (smoke tests / console). Cheap: only walks state when called.
   window.__tellusThingsDebug = () =>
     generated.map((thing) => {
@@ -654,8 +678,17 @@ function createTellusWorld(
           ? (({ x, y, z }) => ({ x, y, z }))(mesh.getWorldPosition(new THREE.Vector3()))
           : undefined,
         worldScale: mesh ? mesh.getWorldScale(new THREE.Vector3()).y : undefined,
+        // Embedded clip count of the loaded file. VRM autons are clip-less (0) but animate via a
+        // retargeted VRMA action — `vrm` flags that, `playing` is true, and `vrmaClips` lists the
+        // VRMA catalog clips the rig retargeted.
         clipCount: generatedModelClips(mesh).length,
-        playing: generatedAnimationMixers.has(thing.id),
+        vrm: Boolean(mesh?.userData.vrmObjectRig),
+        vrmaClips: mesh?.userData.vrmObjectRig
+          ? (mesh.userData.vrmObjectRig as VrmObjectRig).clipNames()
+          : [],
+        skinnedMeshCount: countSkinnedMeshes(mesh),
+        playing:
+          generatedAnimationMixers.has(thing.id) || generatedVrmRigs.has(thing.id),
       };
     });
   window.__tellusAvatarDebug = () => {
@@ -1246,8 +1279,9 @@ function createTellusWorld(
   // A thing is animated (→ never instanced) if it has a live mixer, or its mounted mesh carries a non-empty
   // userData.animations array.
   const isThingAnimated = (thing: GeneratedThing): boolean => {
-    if (generatedAnimationMixers.has(thing.id)) return true;
+    if (generatedAnimationMixers.has(thing.id) || generatedVrmRigs.has(thing.id)) return true;
     const mesh = generatedMeshes.get(thing.id);
+    if (mesh?.userData.vrmObjectRig) return true; // VRM thing → never instanced (skinned + per-frame)
     const anims = mesh?.userData.animations;
     return Array.isArray(anims) && anims.length > 0;
   };
@@ -1563,6 +1597,12 @@ function createTellusWorld(
   };
 
   const stopGeneratedAnimation = (id: string) => {
+    const rig = generatedVrmRigs.get(id);
+    if (rig) {
+      // VRM rigs own their mixer + VRM scene disposal; do that via disposeObject when the mesh is
+      // removed. Here we only forget the rig so it stops advancing.
+      generatedVrmRigs.delete(id);
+    }
     const mixer = generatedAnimationMixers.get(id);
     if (!mixer) return;
     mixer.stopAllAction();
@@ -1577,8 +1617,26 @@ function createTellusWorld(
     );
   };
 
+  // The clip names the Animation HUD lists for a thing: a VRM thing exposes the VRMA catalog clips;
+  // a plain GLB thing exposes its embedded clip names.
+  const generatedClipNamesForThing = (id: string): string[] => {
+    const mesh = generatedMeshes.get(id);
+    if (mesh?.userData.vrmObjectRig) {
+      return (mesh.userData.vrmObjectRig as VrmObjectRig).clipNames();
+    }
+    return generatedModelClips(mesh).map((clip) => clip.name);
+  };
+
   const startGeneratedAnimation = (id: string, model: THREE.Object3D) => {
     stopGeneratedAnimation(id);
+    // VRM things animate through their VRM rig (retargeted VRMA clips), not an embedded-clip mixer.
+    const vrmRig = model.userData.vrmObjectRig as VrmObjectRig | undefined;
+    if (vrmRig) {
+      if (!vrmRig.hasClips()) return;
+      vrmRig.play(thingById(id)?.animation?.trim() || undefined, 0);
+      generatedVrmRigs.set(id, vrmRig);
+      return;
+    }
     const clips = generatedModelClips(model);
     if (clips.length === 0) return;
     // Play ONE clip. Multi-clip rigs (store animals ship Bark/Bite/Death/Idle/Jump/…) used to play
@@ -1827,7 +1885,7 @@ function createTellusWorld(
     if (currentMesh?.userData.loadedModelUrl === thing.modelUrl) {
       return;
     }
-    void loadGeneratedModel(thing.modelUrl, thing)
+    void loadGeneratedModel(thing.modelUrl, thing, useWebGPU)
       .then((model) => {
         if (destroyed || !thingById(thing.id)) {
           disposeObject(model);
@@ -2544,7 +2602,7 @@ function createTellusWorld(
             tool: "generate",
             text: `Pixel3D returned a model URL for ${thing.kind}; loading it into Tellus.`,
           });
-          const model = await loadGeneratedModel(modelUrl, thing);
+          const model = await loadGeneratedModel(modelUrl, thing, useWebGPU);
           if (destroyed || generationPausedForThing(thing) || !thingById(thing.id)) {
             disposeObject(model);
             return;
@@ -2657,7 +2715,7 @@ function createTellusWorld(
             tool: "generate",
             text: `${providerName} used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ? absoluteTellusApiUrl(result.sourceImageUrl) : "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ? absoluteTellusApiUrl(result.storedModelUrl) : thing.modelUrl}; loading it into Tellus.`,
           });
-          const model = await loadGeneratedModel(thing.modelUrl, thing);
+          const model = await loadGeneratedModel(thing.modelUrl, thing, useWebGPU);
           if (destroyed || generationPausedForThing(thing) || !thingById(thing.id)) {
             disposeObject(model);
             return;
@@ -2772,15 +2830,18 @@ function createTellusWorld(
     });
     publishGeneratedThing(thing);
     publish();
-    void loadGeneratedModel(modelUrl, thing)
+    void loadGeneratedModel(modelUrl, thing, useWebGPU)
       .then((modelObject) => {
         if (destroyed) return;
         const oldMesh = generatedMeshes.get(thing.id);
         if (oldMesh) {
+          stopGeneratedAnimation(thing.id);
           scene.remove(oldMesh);
           disposeObject(oldMesh);
         }
+        modelObject.userData.loadedModelUrl = modelUrl;
         generatedMeshes.set(thing.id, modelObject);
+        startGeneratedAnimation(thing.id, modelObject); // VRM idle / embedded clip starts looping
         scene.add(modelObject);
         syncTransformControls();
         publish();
@@ -3609,6 +3670,11 @@ function createTellusWorld(
     for (const mixer of generatedAnimationMixers.values()) {
       mixer.update(delta);
     }
+    // Placed VRM things: advance the mixer + VRM spring bones (a static idle still needs spring-bone
+    // settle; a looping VRMA clip plays here).
+    for (const rig of generatedVrmRigs.values()) {
+      rig.update(delta);
+    }
     // Avatar rigs: local walk/idle/jump from the player position delta + airborne flag; remotes
     // self-derive inside the rig from presence updates. update(dt) advances mixer + VRM.
     const localRig = avatarRigs.get(visitorId);
@@ -4217,8 +4283,7 @@ function createTellusWorld(
     getAvatarScale: () => localAvatarScale,
     setCameraMode,
     getCameraMode: () => cameraMode,
-    getGeneratedClipNames: (id: string) =>
-      generatedModelClips(generatedMeshes.get(id)).map((clip) => clip.name),
+    getGeneratedClipNames: (id: string) => generatedClipNamesForThing(id),
     setGeneratedAnimation: (id: string, animation: string) => {
       const thing = thingById(id);
       if (!thing) return;
@@ -4266,6 +4331,12 @@ function createTellusWorld(
       for (const id of generatedAnimationMixers.keys()) {
         stopGeneratedAnimation(id);
       }
+      // Dispose placed VRM rigs (own mixer + skinned scene buffers) and clear the live-mirror slots.
+      for (const rig of generatedVrmRigs.values()) {
+        rig.dispose();
+      }
+      generatedVrmRigs.clear();
+      resetLiveMirrors();
       // Dispose the static-duplicate instancing pools (InstancedMeshes own their own instanceMatrix buffers;
       // geometry/materials are shared with the GLB cache, so InstancedMesh.dispose() leaves those alone).
       for (const modelUrl of [...instancePools.keys()]) {
@@ -4289,6 +4360,7 @@ function createTellusWorld(
       delete window.__tellusAvatarDebug;
       delete window.__tellusViewDebug;
       delete window.__tellusThingsDebug;
+      delete window.__tellusMirrorDebug;
       for (const rig of avatarRigs.values()) {
         rig.dispose();
       }
@@ -6956,6 +7028,29 @@ function App(): React.ReactElement {
                     </span>
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className="inventory-item"
+                  onClick={() => {
+                    const seed = (Math.random() * 0xffffffff) >>> 0;
+                    worldRef.current?.addLibraryAsset({
+                      id: `proc-mirror-${seed.toString(16)}`,
+                      name: "Mirror",
+                      description: "Mirror",
+                      modelUrl: makeProceduralModelUrl(MIRROR_ARCHETYPE_ID, seed),
+                      source: "generated",
+                    });
+                  }}
+                >
+                  <span style={{ fontSize: 16, width: 16, textAlign: "center" }}>🪞</span>
+                  <span>
+                    <strong>Mirror</strong>
+                    <small>
+                      reflective standing mirror · up to {MAX_LIVE_MIRRORS} reflect live (extras
+                      render as tinted glass)
+                    </small>
+                  </span>
+                </button>
               </div>
             )}
             {assetPanelTab === "search" && (

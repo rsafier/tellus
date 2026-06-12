@@ -4,6 +4,25 @@ Tellus — the 3D web "world" game client (React + three.js), backed by the in-c
 Newest first. Versions are the deployed image tag (`192.168.1.187:30500/tellus:<tag>`); a `v<tag>` git tag
 on the gnostr-cloud `master` triggers the CI build + rollout.
 
+## 0.8.10
+- **Placed VRM objects animate.** The auton/Atlantean store models are VRMs (skin + `VRMC_vrm`,
+  zero embedded clips). As avatars they already animate; placed as world OBJECTS they went through
+  the plain `GLTFLoader` path and stood frozen. The generated-thing render path now sniffs the glTF
+  for the VRM extension and, for a VRM thing, mounts it through the same VRM rig the avatars use —
+  looping a retargeted VRMA idle clip by default (or the clip the per-thing Animation HUD picks).
+  Plain GLBs stay on the existing embedded-clip path. The Animation dropdown lists the VRMA catalog
+  clips (idle/walk/wave) for a VRM thing and the embedded clip names for a GLB thing. `update(dt)`
+  advances the VRM mixer + spring bones each frame; `__tellusThingsDebug` gains `vrm` /
+  `skinnedMeshCount` / `vrmaClips` (autons are clip-less so file `clipCount` is 0, but `playing` is
+  true with the VRMA action active).
+- **Placeable mirrors.** A new one-click Mirror in the Nature panel places a framed ~2.5m standing
+  mirror that rides the generated-things system (persists + syncs like any procedural asset, via a
+  synthetic `procedural://mirror` URL). On WebGL it renders a real reflection through three's
+  `Reflector` at a modest 512×1024 render target; live mirrors are capped (3) so extra mirrors —
+  and the whole WebGPU path, where `Reflector` can't compile — fall back to a semi-reflective
+  env-mapped tinted-glass plane (no console errors either way). `__tellusMirrorDebug` reports live
+  vs glass counts and the cap.
+
 ## 0.8.9
 - **Agent panel: "Reset thread" escape hatch.** New subdued control next to Start/Stop (two-step
   inline confirm) that calls the server's `POST …/agent/reset-thread` (hyades 0.5.201) to start a

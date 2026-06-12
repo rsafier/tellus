@@ -358,9 +358,25 @@ declare global {
       instanced: boolean;
       worldPos?: { x: number; y: number; z: number };
       worldScale?: number;
+      /** Embedded clip count of the loaded file (VRM autons are clip-less → 0). */
       clipCount: number;
+      /** True when the thing is a placed VRM rendered through the VRM rig. */
+      vrm?: boolean;
+      /** Retargeted VRMA catalog clip names available on a VRM thing. */
+      vrmaClips?: string[];
+      /** Skinned-mesh count of the mounted model (a VRM auton has ≥1). */
+      skinnedMeshCount?: number;
+      /** True while an embedded-clip mixer OR a VRM rig is advancing this thing. */
       playing: boolean;
     }>;
+    // Diagnostics for placed mirrors (smoke tests / console): how many render live (Reflector) vs as
+    // static tinted glass, and the live-mirror cap.
+    __tellusMirrorDebug?: () => {
+      live: number;
+      glass: number;
+      liveCap: number;
+      trackedLive: number;
+    };
     // Diagnostics for the camera/viewport work (smoke tests / console): drive the agent-POV PiP
     // and the 1st/3rd-person camera without a live agent, and inject a synthetic remote presence
     // so the PiP has an avatar to render from.
