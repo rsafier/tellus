@@ -1,0 +1,126 @@
+# Tellus frontend (the Bun server.ts: static SPA from dist/ + the /api/* proxy routes) on k3s,
+# fronted publicly at https://tellus.gnostr.cloud via the SHARED cloudflared tunnel (see
+# deploy/cloudflare-tellus-hostname.sh). The WORLD itself talks straight from the browser to
+# https://hyades.gnostr.cloud (baked into public/tellus-config.json: worldApiBase); this Service only
+# serves the SPA + the server-side /api/* endpoints (chat, generate-3d proxy, tellus-state, ...).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tellus
+---
+# Server-side secret for the /api/* routes (the WORLD needs none of these — browser -> hyades direct).
+# HYADES_API_KEY must be a bearer with the 'generate3d' capability. It is MANAGED OUT-OF-BAND (NOT in this
+# file) so `kubectl apply -f` never clobbers it. Create/rotate it once:
+#   kubectl -n tellus create secret generic tellus-secrets \
+#     --from-literal=hyadesApiKey='<generate3d-capable key>' --dry-run=client -o yaml | kubectl apply -f -
+# (then: kubectl -n tellus rollout restart deploy/tellus)
+# Deployment-specific runtime config, mounted over the image's baked public/tellus-config.json. This
+# deployment serves its OWN /api/* (so apiBase = same-origin ""), and the world points at Hyades. Keeping
+# this here (not in the image) lets the config differ per deployment without a rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tellus-runtime-config
+  namespace: tellus
+data:
+  tellus-config.json: |
+    {
+      "assetForgeApiBase": "",
+      "apiBase": "",
+      "generationProvider": "pixal3d-gradio",
+      "playerGenerationProvider": "instantmesh-gradio",
+      "agentGenerationProvider": "pixal3d-gradio",
+      "agentModel": "GLM-5.1",
+      "worldApiBase": "https://hyades.gnostr.cloud",
+      "worldId": "main",
+      "skyboxUrl": "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
+      "dayNightCycleMs": 600000,
+      "dayNightStart": 0.18,
+      "enabledAgents": ["johnny"],
+      "instanceStaticDuplicates": true,
+      "avatars": {}
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tellus
+  namespace: tellus
+  labels: { app: tellus }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tellus }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: tellus }
+    spec:
+      containers:
+        - name: tellus
+          image: 192.168.1.187:30500/tellus:0.1.17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: production
+            # Route 3D generation through the Hyades cluster (PR: feat/route-generation-to-hyades).
+            - name: TELLUS_3D_BACKEND
+              value: hyades
+            - name: HYADES_3D_API_BASE
+              value: https://hyades.gnostr.cloud
+            - name: HYADES_BASE_URL
+              value: https://hyades.gnostr.cloud
+            # LLM (the /api/chat agent) -> Hyades OpenAI-compatible gateway, model glm-5.1.
+            - name: TELLUS_LLM_BACKEND
+              value: hyades
+            - name: HYADES_LLM_BASE
+              value: https://hyades.gnostr.cloud/v1
+            - name: HYADES_LLM_MODEL
+              value: glm-5.1
+            # Vision (world-feedback image analysis) -> Hyades multimodal, replacing the Z.ai vision MCP.
+            - name: TELLUS_VISION_BACKEND
+              value: hyades
+            - name: HYADES_VISION_MODEL
+              value: holo3.1
+            - name: HYADES_API_KEY
+              valueFrom:
+                secretKeyRef: { name: tellus-secrets, key: hyadesApiKey }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - name: runtime-config
+              mountPath: /app/dist/tellus-config.json
+              subPath: tellus-config.json
+      volumes:
+        - name: runtime-config
+          configMap:
+            name: tellus-runtime-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tellus
+  namespace: tellus
+  labels: { app: tellus }
+spec:
+  type: ClusterIP
+  selector: { app: tellus }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000

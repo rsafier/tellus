@@ -1539,9 +1539,14 @@ async function executeHyadesGeneration(params: {
   if (!key) throw new Error("HYADES_3D_API_KEY (or HYADES_API_KEY) is not configured");
   const base = hyadesApiBase();
   const prompt = payload.prompt?.trim() || "tiny Tellus world object";
+  // Concept image is generated inside /3d/jobs (Z Image Turbo); a caller-supplied image_url skips it.
   const imageUrl = payload.imageUrl?.trim();
 
-  const submitBody: Record<string, unknown> = { prompt, provider: backend };
+  const submitBody: Record<string, unknown> = {
+    prompt,
+    provider: backend,
+    share_to_store: true, // Tellus generations belong in the shared game asset library
+  };
   if (imageUrl) submitBody.image_url = imageUrl;
   if (typeof payload.sampleSteps === "number" && payload.sampleSteps > 0) {
     submitBody.sample_steps = payload.sampleSteps;

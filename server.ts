@@ -1,9 +1,7 @@
-import chatHandler from "./api/chat";
 import generate3DHandler from "./api/generate-3d";
 import generatedAssetsHandler from "./api/generated-assets";
 import gradioFileHandler from "./api/gradio-file";
 import tellusStateHandler from "./api/tellus-state";
-import worldFeedbackHandler from "./api/world-feedback";
 
 const distRoot = new URL("./dist/", import.meta.url);
 
@@ -86,8 +84,15 @@ Bun.serve({
     if (url.pathname === "/health") {
       return withCors(Response.json({ ok: true, service: "tellus" }));
     }
-    if (url.pathname.startsWith("/api/chat")) {
-      return withCors(await chatHandler(request));
+    // WebAuthn Related Origin Requests (L3): the game is served on multiple hostnames
+    // (tellus.gnostr.cloud = the passkey RP ID, tellus.garden, …) but passkeys bind to ONE RP ID.
+    // Browsers asked to use RP ID X from origin Y fetch https://X/.well-known/webauthn and accept Y
+    // iff listed here (content-type MUST be application/json). Keep in sync with the hyades silo's
+    // Tellus__WebAuthnOrigins (the server-side origin allow-list).
+    if (url.pathname === "/.well-known/webauthn") {
+      const origins = (process.env.TELLUS_WEBAUTHN_ORIGINS ?? "https://tellus.gnostr.cloud,https://tellus.garden")
+        .split(",").map((o) => o.trim()).filter(Boolean);
+      return withCors(Response.json({ origins }));
     }
     if (url.pathname.startsWith("/api/generate-3d")) {
       return withCors(await generate3DHandler(request));
@@ -97,9 +102,6 @@ Bun.serve({
     }
     if (url.pathname.startsWith("/api/tellus-state")) {
       return withCors(await tellusStateHandler(request));
-    }
-    if (url.pathname.startsWith("/api/world-feedback")) {
-      return withCors(await worldFeedbackHandler(request));
     }
     if (url.pathname.startsWith("/generated-assets/")) {
       return withCors(await generatedAssetsHandler(request));

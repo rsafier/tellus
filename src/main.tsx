@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowDown,
@@ -9,14 +9,13 @@ import {
   Bot,
   Box,
   CircleHelp,
+  Eye,
   Layers,
   Map as MapIcon,
-  MessageCircle,
   Mic,
   Minus,
   Mountain,
-  Pause,
-  Play,
+  PersonStanding,
   Plus,
   RotateCcw,
   RotateCw,
@@ -24,13 +23,19 @@ import {
   Send,
   Ship,
   Trash2,
+  Video,
   Waves,
 } from "lucide-react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { createVegetation } from "./tellus-vegetation";
+import { PROCEDURAL_CATALOG } from "./tellus-veg-archetypes";
+import { makeProceduralModelUrl, sanitizeProceduralModelUrl, parseProceduralModelUrl, MIRROR_ARCHETYPE_ID, MAX_LIVE_MIRRORS, liveMirrorCount, resetLiveMirrors } from "./tellus-procedural-assets";
+import { createAmbientPhysics, resolveObstacles, type ObstacleCircle } from "./tellus-physics";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { clone as skeletonClone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import {
   MeshBasicNodeMaterial,
   WebGPURenderer,
@@ -48,3800 +53,140 @@ import {
   viewportSharedTexture,
 } from "three/tsl";
 import {
+  WebRtcMesh,
+  enumerateMediaDevices,
+  type MeshStats,
+} from "./webrtc-mesh";
+import {
+  applyStaticToScreen,
+  applyVideoToScreen,
+  createRemoteVisitorMesh,
+  createVisitorMesh,
+  tickSharedStatic,
+} from "./world-builders";
+import {
+  AVATAR_SCALE_MAX,
+  AVATAR_SCALE_MIN,
+  clampAvatarScale,
+  getAvatarUserScale,
+  restoreProceduralAvatar,
+  setAvatarUserScale,
+  tickAvatarScale,
+  VrmObjectRig,
+  type AvatarRig,
+} from "./tellus-vrm-avatar";
+import {
+  AVATAR_CATALOG,
+  attachAvatarRig,
+  avatarThumbnailUrl,
+  setStoredAvatarId,
+  setStoredAvatarScale,
+  storedAvatarId,
+  storedAvatarScale,
+  type AvatarCatalogEntry,
+} from "./tellus-avatar-catalog";
+import {
   type TellusTerrainState,
   type WorldGeneratedThing,
   type WorldPresence,
   type WorldPatch,
+  emoteFromWorldPatch,
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
+import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps } from "./tellus-types";
+import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
+import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
+import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
+import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
+import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
+import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, configureKtx2Support, textureFailedModelUrls, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
+import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, measureModelBounds, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
+import { installSessionFetch } from "./tellus-auth";
+import { AuthControls, PremiumUpsellChip } from "./tellus-auth-ui";
+import { buildAgentFeed, type AgentChatLine, type AgentToolChip } from "./agent-chat-format";
 import "./styles.css";
 
-type AgentId = "johnny" | "mira" | "sol" | "atlas";
+// Attach X-Tellus-Session to every Hyades API call (agent endpoints, world meta PATCH, state, pay)
+// before ANY fetch fires — the /live WebSocket keeps the soft ?userId= identity instead.
+installSessionFetch();
 
-type TerrainKind =
-  | "meadow"
-  | "rock"
-  | "snow"
-  | "beach"
-  | "dirt"
-  | "flowers"
-  | "water";
-type TerrainPaintKind = Exclude<TerrainKind, "water">;
-type TerrainEditMode = "raise" | "lower" | "flatten" | TerrainPaintKind;
-type GenerationProvider =
-  | "local"
-  | "asset-forge"
-  | "instantmesh-gradio"
-  | "pixal3d-gradio"
-  | "anigen-gradio";
-type DirectGenerationProvider = Extract<
-  GenerationProvider,
-  "instantmesh-gradio" | "pixal3d-gradio" | "anigen-gradio"
->;
-type RoleGenerationProvider = DirectGenerationProvider | "local";
-type InstantMeshTarget = "dgx" | "local";
-type GeneratedKind =
-  | "tree"
-  | "flower"
-  | "stone"
-  | "animal"
-  | "path"
-  | "shrine"
-  | "seed"
-  | "balloon"
-  | "object";
-
-type ToolName = "generate" | "interact";
-type AssetPanelTab = "search" | "world-assets" | "inventory";
-type ToolMenu = "terrain" | "ai";
-
-interface Vec3 {
-  x: number;
-  y: number;
-  z: number;
+// Per-user embodied-agent status shape returned by the Hyades world agent endpoints (camelCase).
+interface AgentStatus {
+  worldId?: string;
+  enabled: boolean;
+  optedIn: boolean;
+  offlinePersistence: boolean;
+  ownerPresent: boolean;
+  tokensSpentToday: number;
+  dailyTokenBudget: number;
+  selfSection: string;
+  corePrompt: string;
+  visitorId: string;
+  agentId: string;
+  idleBackoffLevel: number;
+  intervalSeconds: number;
+  pausedReason: string | null;
+  tickCount: number;
+  lastTickAt: string | null;
+  /** True while the agent is mid-turn (LLM call in flight) — the "thinking" indicator. */
+  processing?: boolean;
 }
 
-interface TellusAgent {
-  id: AgentId;
-  name: string;
-  epithet: string;
-  color: number;
-  goal: string;
-  avatarUrl?: string;
-  position: Vec3;
-  target: Vec3;
-  nextActionAt: number;
-  nextReflectionAt: number;
-}
-
-interface GeneratedThing {
-  id: string;
-  kind: GeneratedKind;
-  prompt: string;
-  creatorId: AgentId | "visitor";
-  ownerUserId?: string;
-  position: Vec3;
-  rotationX?: number;
-  rotationY: number;
-  rotationZ?: number;
-  scale: number;
-  color: number;
-  modelUrl?: string;
-  pipelineId?: string;
-  generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
-}
-
-interface AssetLibraryModel {
-  id: string;
-  name: string;
-  description?: string;
-  file_format?: string;
-  file_size?: number;
-  download_count?: number;
-  modelUrl?: string;
-  source?: "asset-library" | "generated";
-}
-
-interface AssetLibraryResponse {
-  models?: AssetLibraryModel[];
-}
-
-interface DistantIslandSpec {
-  seed: number;
-  angle: number;
-  distance: number;
-  x: number;
-  z: number;
-  size: number;
-  topRadius: number;
-  bottomRadius: number;
-  height: number;
-  scaleZ: number;
-  rotationY: number;
-  sculptOffsets: Float32Array;
-  paint: Uint8Array;
-}
-
-interface TellusLog {
-  id: string;
-  tick: number;
-  agentId: AgentId | "visitor" | "world";
-  agentName: string;
-  tool: ToolName;
+// One turn of the server-side agent's recent conversation (its dialog). role "assistant" = the agent speaking;
+// "tool" = a tool call/result (rendered dimmer/smaller in the feed).
+interface AgentTranscriptMessage {
+  role: "assistant" | "tool";
   text: string;
-  screenshotUrl?: string;
 }
 
-interface GenerateRequest {
-  prompt: string;
-  location: Vec3 | "near-agent" | "near-mountain" | "near-pond";
-  scale?: number;
-  creatorId: AgentId | "visitor";
-  ownerUserId?: string;
+// Shape of GET .../agent/transcript — last 40 of the agent's conversation turns.
+interface AgentTranscriptResponse {
+  messages?: AgentTranscriptMessage[];
 }
 
-interface InteractRequest {
-  targetId: string;
-  intent: string;
-  actorId: AgentId | "visitor";
+// One entry of the agent's self-section ("Memories") edit log, from GET .../agent/memories.
+interface AgentMemoryEntry {
+  editedAt?: string;
+  editedBy?: string;
+  newValue?: string;
 }
 
-interface TellusSnapshot {
-  agents: TellusAgent[];
-  generated: GeneratedThing[];
-  logs: TellusLog[];
-  paused: boolean;
-  generationProvider: GenerationProvider;
-  playerGenerationProvider: RoleGenerationProvider;
-  agentGenerationProvider: RoleGenerationProvider;
-  instantMeshTarget: InstantMeshTarget;
-  userId: string;
-  visitorPosition?: Vec3;
-  remoteVisitors: WorldPresence[];
-  selectedThingId?: string;
-  sailingThingId?: string;
+// Shape of GET .../agent/memories — current self-section + recent edit log.
+interface AgentMemoriesResponse {
+  selfSection?: string;
+  log?: AgentMemoryEntry[];
+  entries?: AgentMemoryEntry[];
 }
 
-interface TellusWorldApi {
-  generate(request: GenerateRequest): GeneratedThing;
-  addLibraryAsset(model: AssetLibraryModel): GeneratedThing;
-  interact(request: InteractRequest): TellusLog;
-  selectGenerated(id?: string): void;
-  goToGenerated(id: string): void;
-  moveGenerated(id: string, dx: number, dz: number): void;
-  rotateGenerated(id: string, radians: number, axis?: "x" | "y" | "z"): void;
-  scaleGenerated(id: string, multiplier: number): void;
-  resetGeneratedScale(id: string): void;
-  liftGenerated(id: string, amount: number): void;
-  groundGenerated(id: string): void;
-  deleteGenerated(id: string): void;
-  moveGeneratedToWater(id: string): void;
-  boardGenerated(id: string): void;
-  disembark(): void;
-  sculptTerrain(mode: TerrainEditMode): void;
-  talkToAgent(agentId: AgentId, message: string): void;
-  updateAgentGoal(agentId: AgentId, goal: string): void;
-  importGeneratedThings(things: WorldGeneratedThing[]): void;
-  setGenerationProvider(provider: GenerationProvider): void;
-  setPlayerGenerationProvider(provider: RoleGenerationProvider): void;
-  setAgentGenerationProvider(provider: RoleGenerationProvider): void;
-  setInstantMeshTarget(target: InstantMeshTarget): void;
-  setPaused(paused: boolean): void;
-  submitVisitorPrompt(prompt: string): void;
-  snapshot(): TellusSnapshot;
-  destroy(): void;
-}
-
-interface TellusRuntimeConfig {
-  apiBase: string;
-  assetForgeApiBase: string;
-  agentModel: string;
-  generationProvider: GenerationProvider;
-  playerGenerationProvider: RoleGenerationProvider;
-  agentGenerationProvider: RoleGenerationProvider;
-  instantMeshTarget: InstantMeshTarget;
-  instantMeshTargets: Record<InstantMeshTarget, string>;
-  worldApiBase: string;
-  worldId: string;
-  skyboxUrl: string;
-  worldTemplate: string;
-  landShape: LandShapeTemplate;
-  dayNightCycleMs: number;
-  dayNightStart: number;
-  enabledAgents: AgentId[];
-  avatars: Partial<Record<AgentId, string>>;
-}
-
-interface LandShapeTemplate {
-  mountain: {
-    height: number;
-    radius: number;
-    exponent: number;
-  };
-  shoulder: {
-    x: number;
-    z: number;
-    height: number;
-    spread: number;
-  };
-  southernRise: {
-    x: number;
-    z: number;
-    height: number;
-    spread: number;
-  };
-  ridge: {
-    sinScale: number;
-    cosScale: number;
-    diagonalScale: number;
-  };
-  shore: {
-    startRatio: number;
-    drop: number;
-  };
-  pond: {
-    x: number;
-    z: number;
-    radius: number;
-    depth: number;
-    waterOffset: number;
-    waterTerrainThreshold: number;
-  };
-  baseOffset: number;
-}
-
-interface AgentDecision {
-  action?: "generate" | "moveSelf" | "sculptTerrain" | "moveAsset" | "rotateAsset" | "scaleAsset" | "moveAssetToWater";
-  prompt: string;
-  intent?: string;
-  speech?: string;
-  terrainMode?: TerrainEditMode;
-  targetId?: string;
-  dx?: number;
-  dz?: number;
-  rotation?: number;
-  scaleMultiplier?: number;
-}
-
-interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-      reasoning_content?: string;
-    };
-  }>;
-}
-
-interface WorldFeedbackResponse {
-  summary?: string;
-  error?: string;
-}
-
-interface AssetForgePipelineStart {
-  pipelineId: string;
-  status: string;
-  message: string;
-}
-
-interface AssetForgePipelineStatus {
-  id: string;
-  status: "initializing" | "processing" | "completed" | "failed" | string;
-  progress: number;
-  finalAsset?: {
-    modelUrl?: string;
-  };
-  error?: string;
-}
-
-interface DirectGenerationResponse {
-  jobId: string;
-  status?: "queued" | "generating" | "completed" | "failed";
-  modelUrl?: string;
-  provider: string;
-  rawModelUrl?: string;
-  storedModelUrl?: string;
-  storedModelPath?: string;
-  sourceImageUrl?: string;
-  sourceImagePath?: string;
-  textImageProvider?: string;
-  manifestUrl?: string;
-  error?: string;
-}
-
-interface GeneratedAssetManifestEntry {
-  id?: string;
-  prompt?: string;
-  kind?: string;
-  createdAt?: string;
-  modelUrl?: string;
-}
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-interface SpeechRecognitionLike extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  start(): void;
-  stop(): void;
-  onresult:
-    | ((event: {
-        results: ArrayLike<ArrayLike<{ transcript: string }>>;
-      }) => void)
-    | null;
-  onend: (() => void) | null;
-  onerror: (() => void) | null;
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-    __tellusRoot?: ReturnType<typeof createRoot>;
-    // Optional identity a host (e.g. a headless-browser agent sidecar) can pin BEFORE the app boots, so an
-    // embodied external agent appears as a stable, distinct visitor instead of a fresh random one.
-    __hyadesIdentity?: { visitorId?: string; avatarUrl?: string };
-    // Stable agent-control hook (attached in createTellusWorld). Lets an external driver read world state and
-    // take actions through the same in-world dispatch the built-in agents use. Object-literal property names
-    // survive the production build (esbuild does not mangle keys / member access by default).
-    tellusAgent?: {
-      getState: (radius?: number) => unknown;
-      getNearby: (radius?: number) => unknown;
-      sendAction: (verb: string, args?: Record<string, unknown>) => unknown;
-    };
-    __tellusSnapshot?: () => TellusSnapshot;
-    __tellusImportGenerated?: (things: unknown) => number;
-    __tellusImportSnapshot?: (snapshot: unknown) => number;
-    __tellusSaveGeneratedPlacements?: () => number;
-  }
-}
-
-const WORLD_RADIUS = 72;
-const OCEAN_RADIUS = 240;
-const SEA_LEVEL = -3.35;
-const DISTANT_ISLAND_COUNT = 18;
-const TERRAIN_SEGMENTS = 96;
-const DISTANT_TERRAIN_SEGMENTS = 32;
-const DISTANT_TERRAIN_VERTEX_COUNT = DISTANT_TERRAIN_SEGMENTS + 1;
-const CENTRAL_WALK_RADIUS = WORLD_RADIUS - 0.5;
-const DISTANT_WALK_LOCAL_RADIUS = 1.02;
-const AGENT_SPEED = 5.2;
-const PLAYER_SPEED = 13;
-const AUTONOMOUS_ASSET_INTERVAL_MS = 60_000;
-const AUTONOMOUS_REFLECTION_OFFSET_MS = AUTONOMOUS_ASSET_INTERVAL_MS / 2;
-const AUTONOMOUS_AGENT_GENERATION_ENABLED = false;
-const PENDING_GENERATION_FALLBACK_MS = 3 * 60 * 1000;
-const TERRAIN_VERTEX_COUNT = TERRAIN_SEGMENTS + 1;
-const TERRAIN_SCULPT_RADIUS = 6.2;
-const TERRAIN_SCULPT_STEP = 0.72;
-const WORLD_FEEDBACK_INTERVAL_MS = 75_000;
-const WORLD_FEEDBACK_START_DELAY_MS = 14_000;
-const SKYBOX_FALLBACK_URLS = [
-  "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
-  "/skybox/free_-_skybox_in_the_cloud.glb",
-  "/skybox/skybox_skydays_3.glb",
-  "/skybox/free_-_skybox_basic_sky.glb",
-];
-const SKYBOX_VERTICAL_OFFSET = 0;
-const DEFAULT_DAY_NIGHT_CYCLE_MS = 10 * 60 * 1000;
-const DEFAULT_DAY_NIGHT_START = 0.18;
-const MIN_DAY_NIGHT_CYCLE_MS = 60_000;
-const MOON_MODEL_URL = "/moon/moon.glb";
-const MOON_DISTANCE = 124;
-const MOON_SIZE = 26;
-const MOON_ARC_AZIMUTH = 0.54;
-const MOON_ARC_LATERAL_SWAY = 0.58;
-const terrainSculptOffsets = new Float32Array(
-  TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT,
-);
-const terrainPaint = new Uint8Array(TERRAIN_VERTEX_COUNT * TERRAIN_VERTEX_COUNT);
-let terrainSaveTimer: number | undefined;
-let terrainStateDirty = false;
-let terrainStateLoaded = false;
-let terrainStateRevision = 0;
-let pageVisitorId: string | undefined;
-let stableUserId: string | undefined;
-const PIXEL3D_PROVIDER = "pixel3d-gradio";
-let tellusWorldBackendAvailable = false;
-
-function boundedNumber(
-  value: string | number | undefined,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, parsed));
-}
-
-function cloneLandShapeTemplate(template: LandShapeTemplate): LandShapeTemplate {
-  return {
-    mountain: { ...template.mountain },
-    shoulder: { ...template.shoulder },
-    southernRise: { ...template.southernRise },
-    ridge: { ...template.ridge },
-    shore: { ...template.shore },
-    pond: { ...template.pond },
-    baseOffset: template.baseOffset,
-  };
-}
-
-function landShapeWith(
-  base: LandShapeTemplate,
-  patch: Partial<{
-    mountain: Partial<LandShapeTemplate["mountain"]>;
-    shoulder: Partial<LandShapeTemplate["shoulder"]>;
-    southernRise: Partial<LandShapeTemplate["southernRise"]>;
-    ridge: Partial<LandShapeTemplate["ridge"]>;
-    shore: Partial<LandShapeTemplate["shore"]>;
-    pond: Partial<LandShapeTemplate["pond"]>;
-    baseOffset: number;
-  }>,
-): LandShapeTemplate {
-  return {
-    mountain: { ...base.mountain, ...patch.mountain },
-    shoulder: { ...base.shoulder, ...patch.shoulder },
-    southernRise: { ...base.southernRise, ...patch.southernRise },
-    ridge: { ...base.ridge, ...patch.ridge },
-    shore: { ...base.shore, ...patch.shore },
-    pond: { ...base.pond, ...patch.pond },
-    baseOffset: patch.baseOffset ?? base.baseOffset,
-  };
-}
-
-const DEFAULT_LAND_SHAPE: LandShapeTemplate = {
-  mountain: {
-    height: 21,
-    radius: 20,
-    exponent: 2.2,
-  },
-  shoulder: {
-    x: -16,
-    z: 12,
-    height: 4.2,
-    spread: 190,
-  },
-  southernRise: {
-    x: 9,
-    z: -24,
-    height: 3.1,
-    spread: 160,
-  },
-  ridge: {
-    sinScale: 1.05,
-    cosScale: 0.72,
-    diagonalScale: 0.42,
-  },
-  shore: {
-    startRatio: 0.72,
-    drop: 5.8,
-  },
-  pond: {
-    x: 18,
-    z: -12,
-    radius: 7.4,
-    depth: 2.5,
-    waterOffset: 0.55,
-    waterTerrainThreshold: 1.9,
-  },
-  baseOffset: -0.65,
+// Compact tool chip: one-line pill in the feed's dimmed style language (same HUD palette as the old
+// raw tool lines, just contained). Doubles as the collapsed-group toggle (as a <button>).
+const agentChipStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  alignSelf: "flex-start",
+  flex: "none", // the feed is a scrollable flex column — without this, overflow SQUISHES the pill
+  maxWidth: "100%",
+  padding: "1px 8px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.05)",
+  color: "#dfe7d8",
+  fontSize: 10,
+  opacity: 0.6,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
 };
 
-const LAND_SHAPE_PRESETS: Record<string, LandShapeTemplate> = {
-  tellus: cloneLandShapeTemplate(DEFAULT_LAND_SHAPE),
-  "wide-island": landShapeWith(DEFAULT_LAND_SHAPE, {
-    mountain: { height: 15, radius: 27, exponent: 2 },
-    shoulder: { x: -24, z: 18, height: 3.4, spread: 320 },
-    southernRise: { x: 20, z: -22, height: 3.8, spread: 260 },
-    ridge: { sinScale: 0.7, cosScale: 0.55, diagonalScale: 0.32 },
-    shore: { startRatio: 0.82, drop: 4.4 },
-    pond: { x: 24, z: -8, radius: 9.6, depth: 2.1 },
-    baseOffset: -0.45,
-  }),
-  lowlands: landShapeWith(DEFAULT_LAND_SHAPE, {
-    mountain: { height: 7.5, radius: 34, exponent: 2.4 },
-    shoulder: { x: -20, z: 10, height: 2.2, spread: 280 },
-    southernRise: { x: 18, z: -20, height: 1.8, spread: 260 },
-    ridge: { sinScale: 0.42, cosScale: 0.34, diagonalScale: 0.24 },
-    shore: { startRatio: 0.78, drop: 3.6 },
-    pond: { x: 8, z: -18, radius: 13.2, depth: 1.7, waterOffset: 0.42 },
-    baseOffset: -0.25,
-  }),
-  ridge: landShapeWith(DEFAULT_LAND_SHAPE, {
-    mountain: { height: 13, radius: 18, exponent: 2.8 },
-    shoulder: { x: -10, z: 25, height: 5.5, spread: 180 },
-    southernRise: { x: 24, z: -18, height: 5.2, spread: 170 },
-    ridge: { sinScale: 1.8, cosScale: 1.1, diagonalScale: 0.9 },
-    shore: { startRatio: 0.7, drop: 6.6 },
-    pond: { x: -16, z: -18, radius: 6.8, depth: 1.9 },
-    baseOffset: -0.8,
-  }),
-};
-
-function configuredLandShapeTemplateName(): string {
-  return import.meta.env.VITE_TELLUS_WORLD_TEMPLATE?.trim() || "tellus";
-}
-
-const runtimeConfig: TellusRuntimeConfig = {
-  apiBase:
-    import.meta.env.VITE_TELLUS_API_BASE?.replace(/\/+$/, "") ?? "",
-  assetForgeApiBase:
-    import.meta.env.VITE_ASSET_FORGE_API_BASE?.replace(/\/+$/, "") ?? "",
-  agentModel:
-    import.meta.env.VITE_TELLUS_AGENT_MODEL ??
-    "GLM-5.1",
-  generationProvider:
-    (import.meta.env.VITE_TELLUS_GENERATION_PROVIDER as
-      | TellusRuntimeConfig["generationProvider"]
-      | undefined) ?? "instantmesh-gradio",
-  playerGenerationProvider:
-    (import.meta.env.VITE_TELLUS_PLAYER_GENERATION_PROVIDER as
-      | RoleGenerationProvider
-      | undefined) ?? "instantmesh-gradio",
-  agentGenerationProvider:
-    (import.meta.env.VITE_TELLUS_AGENT_GENERATION_PROVIDER as
-      | RoleGenerationProvider
-      | undefined) ?? "pixal3d-gradio",
-  instantMeshTarget:
-    (import.meta.env.VITE_TELLUS_INSTANTMESH_TARGET as InstantMeshTarget | undefined) ??
-    "dgx",
-  instantMeshTargets: {
-    dgx:
-      import.meta.env.VITE_TELLUS_INSTANTMESH_DGX_URL?.replace(/\/+$/, "") ??
-      "http://192.168.1.177:43839",
-    local:
-      import.meta.env.VITE_TELLUS_INSTANTMESH_LOCAL_URL?.replace(/\/+$/, "") ??
-      "http://127.0.0.1:43839",
-  },
-  worldApiBase:
-    import.meta.env.VITE_TELLUS_WORLD_API_BASE?.replace(/\/+$/, "") ?? "",
-  worldId: import.meta.env.VITE_TELLUS_WORLD_ID ?? "main",
-  skyboxUrl: import.meta.env.VITE_TELLUS_SKYBOX_URL ?? "",
-  worldTemplate: configuredLandShapeTemplateName(),
-  landShape: cloneLandShapeTemplate(
-    LAND_SHAPE_PRESETS[configuredLandShapeTemplateName()] ?? DEFAULT_LAND_SHAPE,
-  ),
-  dayNightCycleMs: boundedNumber(
-    import.meta.env.VITE_TELLUS_DAY_NIGHT_CYCLE_MS,
-    DEFAULT_DAY_NIGHT_CYCLE_MS,
-    MIN_DAY_NIGHT_CYCLE_MS,
-    60 * 60 * 1000,
-  ),
-  dayNightStart: boundedNumber(
-    import.meta.env.VITE_TELLUS_DAY_NIGHT_START,
-    DEFAULT_DAY_NIGHT_START,
-    0,
-    1,
-  ),
-  enabledAgents: ["johnny"],
-  avatars: {
-    johnny: import.meta.env.VITE_TELLUS_JOHNNY_AVATAR_URL,
-    mira: import.meta.env.VITE_TELLUS_MIRA_AVATAR_URL,
-    sol: import.meta.env.VITE_TELLUS_SOL_AVATAR_URL,
-  },
-};
-const gltfObjectCache = new Map<string, Promise<THREE.Object3D>>();
-const dracoLoader = new DRACOLoader().setDecoderPath(
-  "https://www.gstatic.com/draco/versioned/decoders/1.5.7/",
-);
-
-function createGltfLoader(): GLTFLoader {
-  return new GLTFLoader()
-    .setDRACOLoader(dracoLoader)
-    .setMeshoptDecoder(MeshoptDecoder);
-}
-
-const generationProviderLabels: Record<GenerationProvider, string> = {
-  local: "Local placeholder",
-  "asset-forge": "Pixel3D legacy",
-  "instantmesh-gradio": "Fast asset",
-  "pixal3d-gradio": "High quality",
-  "anigen-gradio": "Animated",
-};
-const instantMeshTargetLabels: Record<InstantMeshTarget, string> = {
-  dgx: "DGX",
-  local: "Local",
-};
-const allAgentIds = ["johnny", "mira", "sol", "atlas"] as const;
-
-type MaterialWithTextureMaps = THREE.Material & {
-  map?: THREE.Texture | null;
-  emissiveMap?: THREE.Texture | null;
-};
-
-const terrainColors: Record<TerrainKind, THREE.Color> = {
-  meadow: new THREE.Color(0x5fa22e),
-  rock: new THREE.Color(0x6f7467),
-  snow: new THREE.Color(0xd4e7e2),
-  beach: new THREE.Color(0xf6dcbd),
-  dirt: new THREE.Color(0x8a7241),
-  flowers: new THREE.Color(0x6daa35),
-  water: new THREE.Color(0x256f92),
-};
-
-const terrainPaintKinds = [
-  "meadow",
-  "beach",
-  "dirt",
-  "rock",
-  "snow",
-  "flowers",
-] as const satisfies readonly TerrainPaintKind[];
-
-function terrainPaintCode(kind: TerrainPaintKind): number {
-  return terrainPaintKinds.indexOf(kind) + 1;
-}
-
-function terrainPaintKindFromCode(code: number): TerrainPaintKind | null {
-  return terrainPaintKinds[code - 1] ?? null;
-}
-
-function isTerrainPaintMode(mode: TerrainEditMode): mode is TerrainPaintKind {
-  return terrainPaintKinds.includes(mode as TerrainPaintKind);
-}
-
-function terrainVertexColor(
-  kind: TerrainKind,
-  x: number,
-  z: number,
-  seed: number,
-): THREE.Color {
-  const color = terrainColors[kind].clone();
-  if (kind === "flowers") {
-    const fleck = rand(seed * 7 + 2309);
-    if (fleck > 0.92) return new THREE.Color(0xffd36a);
-    if (fleck > 0.84) return new THREE.Color(0xf2a6cc);
-    if (fleck > 0.78) return new THREE.Color(0xc8dfff);
-    color.lerp(new THREE.Color(0x89b84a), 0.35);
-  } else if (kind === "rock") {
-    const pebble = rand(seed * 5 + 7919);
-    color.lerp(
-      pebble > 0.66 ? new THREE.Color(0xa8956a) : new THREE.Color(0x46505a),
-      0.24,
-    );
-  }
-  const noise = 0.9 + rand(seed + Math.floor(x * 13) + Math.floor(z * 17)) * 0.18;
-  return color.multiplyScalar(noise);
-}
-
-function createFlowerSpriteTexture(petalColor: string): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
-  const context = canvas.getContext("2d");
-  if (!context) return new THREE.CanvasTexture(canvas);
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.translate(32, 32);
-  context.fillStyle = petalColor;
-  for (let petal = 0; petal < 5; petal++) {
-    context.save();
-    context.rotate((petal / 5) * Math.PI * 2);
-    context.beginPath();
-    context.ellipse(0, -13, 8, 15, 0, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-  }
-  context.fillStyle = "#f4d35e";
-  context.beginPath();
-  context.arc(0, 0, 7, 0, Math.PI * 2);
-  context.fill();
-  context.strokeStyle = "rgba(41, 69, 28, 0.32)";
-  context.lineWidth = 2;
-  context.beginPath();
-  context.arc(0, 0, 25, 0, Math.PI * 2);
-  context.stroke();
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
-  return texture;
-}
-
-function createFlowerSpriteMaterials(): THREE.SpriteMaterial[] {
-  return ["#fff7d6", "#f6adc8", "#d4ddff", "#ffe28a"].map(
-    (petalColor) =>
-      new THREE.SpriteMaterial({
-        map: createFlowerSpriteTexture(petalColor),
-        transparent: true,
-        depthWrite: false,
-        sizeAttenuation: true,
-      }),
-  );
-}
-
-function createAgentSeeds(): TellusAgent[] {
-  const seeds: TellusAgent[] = [
-    {
-      id: "johnny",
-      name: "Johnny",
-      epithet: "world-forger",
-      color: 0x7ec850,
-      goal: "Freely imagine and generate any useful 3D asset for Tellus: terrain features, plants, animals, buildings, tools, vehicles, paths, water features, landmarks, habitats, companions, or strange beautiful objects.",
-      avatarUrl: runtimeConfig.avatars.johnny,
-      position: { x: -15, y: 0, z: 11 },
-      target: { x: -11, y: 0, z: 9 },
-      nextActionAt: 0,
-      nextReflectionAt: 0,
-    },
-    {
-      id: "mira",
-      name: "Mira",
-      epithet: "animal-lover",
-      color: 0xe8b86d,
-      goal: "Create creatures, animals, birds, fish, and reptiles each with a corresponding habitat, make homes for creatures great and small.",
-      avatarUrl: runtimeConfig.avatars.mira,
-      position: { x: 18, y: 0, z: 6 },
-      target: { x: 13, y: 0, z: 4 },
-      nextActionAt: 800,
-      nextReflectionAt: 0,
-    },
-    {
-      id: "sol",
-      name: "Sol",
-      epithet: "",
-      color: 0x98a7ff,
-      goal: "Build housing, shrines, and holy places in special spots that pay homage to nature.",
-      avatarUrl: runtimeConfig.avatars.sol,
-      position: { x: -5, y: 0, z: -21 },
-      target: { x: -3, y: 0, z: -17 },
-      nextActionAt: 1600,
-      nextReflectionAt: 0,
-    },
-     {
-      id: "atlas",
-      name: "atlas",
-      epithet: "",
-      color: 0x98a7ff,
-      goal: "Build roads, bridges, paths, trails, to connect the islands together, and create boats, hot air balloons, horses, waterways, streams, rivers, ponds, lagoons, wells, waterfalls and aquaducts.",
-      avatarUrl: runtimeConfig.avatars.sol,
-      position: { x: -5, y: 0, z: -21 },
-      target: { x: -3, y: 0, z: -17 },
-      nextActionAt: 2400,
-      nextReflectionAt: 0,
-    },
-  ];
-  const enabled = new Set(runtimeConfig.enabledAgents);
-  return seeds.filter((agent) => enabled.has(agent.id));
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function rand(seed: number): number {
-  const value = Math.sin(seed * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
-function terrainGridIndex(xIndex: number, zIndex: number): number {
-  return zIndex * TERRAIN_VERTEX_COUNT + xIndex;
-}
-
-function distantTerrainGridIndex(xIndex: number, zIndex: number): number {
-  return zIndex * DISTANT_TERRAIN_VERTEX_COUNT + xIndex;
-}
-
-function terrainSculptOffsetAt(x: number, z: number): number {
-  const gx = clamp(
-    ((x / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
-    0,
-    TERRAIN_SEGMENTS,
-  );
-  const gz = clamp(
-    ((z / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
-    0,
-    TERRAIN_SEGMENTS,
-  );
-  const x0 = Math.floor(gx);
-  const z0 = Math.floor(gz);
-  const x1 = Math.min(TERRAIN_SEGMENTS, x0 + 1);
-  const z1 = Math.min(TERRAIN_SEGMENTS, z0 + 1);
-  const tx = gx - x0;
-  const tz = gz - z0;
-  const a = terrainSculptOffsets[terrainGridIndex(x0, z0)];
-  const b = terrainSculptOffsets[terrainGridIndex(x1, z0)];
-  const c = terrainSculptOffsets[terrainGridIndex(x0, z1)];
-  const d = terrainSculptOffsets[terrainGridIndex(x1, z1)];
+function AgentToolChipPill({ chip }: { chip: AgentToolChip }) {
+  const label = chip.summary ? `${chip.name} · ${chip.summary}` : chip.name;
   return (
-    a * (1 - tx) * (1 - tz) +
-    b * tx * (1 - tz) +
-    c * (1 - tx) * tz +
-    d * tx * tz
+    <span style={agentChipStyle} title={label}>
+      <span aria-hidden="true">🔧</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+    </span>
   );
-}
-
-function centralTerrainGridCoords(
-  x: number,
-  z: number,
-): { xIndex: number; zIndex: number } {
-  return {
-    xIndex: Math.round(
-      clamp(
-        ((x / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
-        0,
-        TERRAIN_SEGMENTS,
-      ),
-    ),
-    zIndex: Math.round(
-      clamp(
-        ((z / (WORLD_RADIUS * 2)) + 0.5) * TERRAIN_SEGMENTS,
-        0,
-        TERRAIN_SEGMENTS,
-      ),
-    ),
-  };
-}
-
-function centralTerrainPaintAt(x: number, z: number): TerrainPaintKind | null {
-  const { xIndex, zIndex } = centralTerrainGridCoords(x, z);
-  return terrainPaintKindFromCode(terrainPaint[terrainGridIndex(xIndex, zIndex)]);
-}
-
-function distantIslandLocalPoint(
-  spec: DistantIslandSpec,
-  x: number,
-  z: number,
-): { x: number; z: number } {
-  const dx = x - spec.x;
-  const dz = z - spec.z;
-  const cos = Math.cos(-spec.rotationY);
-  const sin = Math.sin(-spec.rotationY);
-  return {
-    x: dx * cos - dz * sin,
-    z: dx * sin + dz * cos,
-  };
-}
-
-function distantIslandWorldPoint(
-  spec: DistantIslandSpec,
-  localX: number,
-  localZ: number,
-): { x: number; z: number } {
-  const cos = Math.cos(spec.rotationY);
-  const sin = Math.sin(spec.rotationY);
-  return {
-    x: spec.x + localX * cos - localZ * sin,
-    z: spec.z + localX * sin + localZ * cos,
-  };
-}
-
-function distance2D(a: Vec3, b: Vec3): number {
-  return Math.hypot(a.x - b.x, a.z - b.z);
-}
-
-function createDistantIslandSpec(index: number): DistantIslandSpec {
-  const seed = 1800 + index * 43;
-  const angle =
-    (index / DISTANT_ISLAND_COUNT) * Math.PI * 2 + rand(900 + index) * 0.32;
-  const distance = 58 + rand(1400 + index) * 72;
-  const isDestinationIsland = index % 5 === 1 || index % 7 === 4;
-  const size = isDestinationIsland
-    ? 2.05 + rand(2500 + index) * 0.85
-    : 0.9 + rand(2600 + index) * 0.42;
-  const topRadius = (4.6 + rand(seed + 1) * 4) * size;
-  const bottomRadius = (8.5 + rand(seed + 2) * 7) * size;
-  return {
-    seed,
-    angle,
-    distance,
-    x: Math.cos(angle) * distance,
-    z: Math.sin(angle) * distance,
-    size,
-    topRadius,
-    bottomRadius,
-    height: 1.2 + rand(seed + 3) * 0.9,
-    scaleZ: 0.55 + rand(seed + 5) * 0.65,
-    rotationY: rand(seed + 6) * Math.PI,
-    sculptOffsets: new Float32Array(
-      DISTANT_TERRAIN_VERTEX_COUNT * DISTANT_TERRAIN_VERTEX_COUNT,
-    ),
-    paint: new Uint8Array(
-      DISTANT_TERRAIN_VERTEX_COUNT * DISTANT_TERRAIN_VERTEX_COUNT,
-    ),
-  };
-}
-
-const distantIslandSpecs = Array.from(
-  { length: DISTANT_ISLAND_COUNT },
-  (_, index) => createDistantIslandSpec(index),
-);
-
-function distantIslandLocalRadius(
-  spec: DistantIslandSpec,
-  x: number,
-  z: number,
-): number {
-  const { x: localX, z: localZ } = distantIslandLocalPoint(spec, x, z);
-  const radiusX = spec.bottomRadius * 0.92;
-  const radiusZ = radiusX * spec.scaleZ;
-  return Math.hypot(localX / radiusX, localZ / radiusZ);
-}
-
-function distantIslandSculptOffsetAt(
-  spec: DistantIslandSpec,
-  x: number,
-  z: number,
-): number {
-  const { x: localX, z: localZ } = distantIslandLocalPoint(spec, x, z);
-  const radiusX = spec.bottomRadius * 0.92;
-  const radiusZ = radiusX * spec.scaleZ;
-  const gx = clamp(
-    ((localX / (radiusX * 2)) + 0.5) * DISTANT_TERRAIN_SEGMENTS,
-    0,
-    DISTANT_TERRAIN_SEGMENTS,
-  );
-  const gz = clamp(
-    ((localZ / (radiusZ * 2)) + 0.5) * DISTANT_TERRAIN_SEGMENTS,
-    0,
-    DISTANT_TERRAIN_SEGMENTS,
-  );
-  const x0 = Math.floor(gx);
-  const z0 = Math.floor(gz);
-  const x1 = Math.min(DISTANT_TERRAIN_SEGMENTS, x0 + 1);
-  const z1 = Math.min(DISTANT_TERRAIN_SEGMENTS, z0 + 1);
-  const tx = gx - x0;
-  const tz = gz - z0;
-  const a = spec.sculptOffsets[distantTerrainGridIndex(x0, z0)];
-  const b = spec.sculptOffsets[distantTerrainGridIndex(x1, z0)];
-  const c = spec.sculptOffsets[distantTerrainGridIndex(x0, z1)];
-  const d = spec.sculptOffsets[distantTerrainGridIndex(x1, z1)];
-  return (
-    a * (1 - tx) * (1 - tz) +
-    b * tx * (1 - tz) +
-    c * (1 - tx) * tz +
-    d * tx * tz
-  );
-}
-
-function distantIslandGridWorldPoint(
-  spec: DistantIslandSpec,
-  xIndex: number,
-  zIndex: number,
-): { localX: number; localZ: number; x: number; z: number; localRadius: number } {
-  const radiusX = spec.bottomRadius * 0.92;
-  const radiusZ = radiusX * spec.scaleZ;
-  const localX =
-    (xIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusX * 2;
-  const localZ =
-    (zIndex / DISTANT_TERRAIN_SEGMENTS - 0.5) * radiusZ * 2;
-  const world = distantIslandWorldPoint(spec, localX, localZ);
-  return {
-    localX,
-    localZ,
-    x: world.x,
-    z: world.z,
-    localRadius: Math.hypot(localX / radiusX, localZ / radiusZ),
-  };
-}
-
-function distantTerrainGridCoords(
-  spec: DistantIslandSpec,
-  x: number,
-  z: number,
-): { xIndex: number; zIndex: number } {
-  const { x: localX, z: localZ } = distantIslandLocalPoint(spec, x, z);
-  const radiusX = spec.bottomRadius * 0.92;
-  const radiusZ = radiusX * spec.scaleZ;
-  return {
-    xIndex: Math.round(
-      clamp(
-        ((localX / (radiusX * 2)) + 0.5) * DISTANT_TERRAIN_SEGMENTS,
-        0,
-        DISTANT_TERRAIN_SEGMENTS,
-      ),
-    ),
-    zIndex: Math.round(
-      clamp(
-        ((localZ / (radiusZ * 2)) + 0.5) * DISTANT_TERRAIN_SEGMENTS,
-        0,
-        DISTANT_TERRAIN_SEGMENTS,
-      ),
-    ),
-  };
-}
-
-function distantTerrainPaintAt(
-  spec: DistantIslandSpec,
-  x: number,
-  z: number,
-): TerrainPaintKind | null {
-  const { xIndex, zIndex } = distantTerrainGridCoords(spec, x, z);
-  return terrainPaintKindFromCode(
-    spec.paint[distantTerrainGridIndex(xIndex, zIndex)],
-  );
-}
-
-function nearestDistantIsland(
-  x: number,
-  z: number,
-  maxLocalRadius = 1,
-): DistantIslandSpec | undefined {
-  let nearest: DistantIslandSpec | undefined;
-  let nearestLocalRadius = Infinity;
-  for (const spec of distantIslandSpecs) {
-    const localRadius = distantIslandLocalRadius(spec, x, z);
-    if (localRadius <= maxLocalRadius && localRadius < nearestLocalRadius) {
-      nearest = spec;
-      nearestLocalRadius = localRadius;
-    }
-  }
-  return nearest;
-}
-
-function distantIslandHeight(spec: DistantIslandSpec, x: number, z: number): number {
-  const localRadius = clamp(distantIslandLocalRadius(spec, x, z), 0, 1);
-  const crown = Math.pow(1 - localRadius, 1.75) * spec.height * 0.72;
-  return SEA_LEVEL + 0.28 + crown + distantIslandSculptOffsetAt(spec, x, z);
-}
-
-function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
-  if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) {
-    return { x, y: terrainHeight(x, z), z };
-  }
-  const distantIsland = nearestDistantIsland(x, z, DISTANT_WALK_LOCAL_RADIUS);
-  if (distantIsland) {
-    return { x, y: distantIslandHeight(distantIsland, x, z), z };
-  }
-  return fallback ? { ...fallback } : normalizedDiscPosition(x, z);
-}
-
-function groundHeightAt(x: number, z: number): number | null {
-  if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) return terrainHeight(x, z);
-  const distantIsland = nearestDistantIsland(x, z, DISTANT_WALK_LOCAL_RADIUS);
-  return distantIsland ? distantIslandHeight(distantIsland, x, z) : null;
-}
-
-function isIntentionallyElevated(thing: GeneratedThing): boolean {
-  const groundY = groundHeightAt(thing.position.x, thing.position.z);
-  return groundY !== null && thing.position.y > groundY + 0.35;
-}
-
-function normalizedDiscPosition(x: number, z: number): Vec3 {
-  const radius = Math.hypot(x, z);
-  if (radius <= CENTRAL_WALK_RADIUS) {
-    return { x, y: terrainHeight(x, z), z };
-  }
-  const scale = CENTRAL_WALK_RADIUS / radius;
-  const nx = x * scale;
-  const nz = z * scale;
-  return { x: nx, y: terrainHeight(nx, nz), z: nz };
-}
-
-function oceanPosition(x: number, z: number): Vec3 {
-  const radius = Math.hypot(x, z);
-  const maxRadius = OCEAN_RADIUS - 12;
-  if (radius <= maxRadius) return { x, y: SEA_LEVEL + 0.14, z };
-  const scale = maxRadius / radius;
-  return { x: x * scale, y: SEA_LEVEL + 0.14, z: z * scale };
-}
-
-function waterBlockedByLand(position: Vec3): boolean {
-  if (Math.hypot(position.x, position.z) < WORLD_RADIUS + 1.2) return true;
-  return Boolean(nearestDistantIsland(position.x, position.z, 1.08));
-}
-
-function waterVehiclePosition(x: number, z: number, fallback?: Vec3): Vec3 {
-  const position = oceanPosition(x, z);
-  if (!waterBlockedByLand(position)) return position;
-  return fallback ? { ...fallback } : oceanPosition(WORLD_RADIUS + 5, 0);
-}
-
-function distantIslandShorePosition(spec: DistantIslandSpec, x: number, z: number): Vec3 {
-  const dx = x - spec.x;
-  const dz = z - spec.z;
-  const cos = Math.cos(-spec.rotationY);
-  const sin = Math.sin(-spec.rotationY);
-  const localX = dx * cos - dz * sin;
-  const localZ = dx * sin + dz * cos;
-  const angle = Math.atan2(localZ / spec.scaleZ, localX) || 0.2;
-  const radiusX = spec.bottomRadius * 0.68;
-  const radiusZ = radiusX * spec.scaleZ;
-  const shoreLocalX = Math.cos(angle) * radiusX;
-  const shoreLocalZ = Math.sin(angle) * radiusZ;
-  const worldCos = Math.cos(spec.rotationY);
-  const worldSin = Math.sin(spec.rotationY);
-  const shoreX = spec.x + shoreLocalX * worldCos - shoreLocalZ * worldSin;
-  const shoreZ = spec.z + shoreLocalX * worldSin + shoreLocalZ * worldCos;
-  return {
-    x: shoreX,
-    y: distantIslandHeight(spec, shoreX, shoreZ),
-    z: shoreZ,
-  };
-}
-
-type VehicleMode = "water" | "air" | "ground";
-
-const waterMountTerms = [
-  "dolphin",
-  "orca",
-  "whale",
-  "sea turtle",
-  "giant turtle",
-  "hippocampus",
-  "seahorse mount",
-];
-
-const airMountTerms = [
-  "giant eagle",
-  "eagle",
-  "griffin",
-  "gryphon",
-  "dragon",
-  "wyvern",
-  "pegasus",
-  "roc",
-  "flying mount",
-];
-
-const groundMountTerms = [
-  "horse",
-  "pony",
-  "stag",
-  "elk",
-  "camel",
-  "llama",
-  "giant wolf",
-  "mount",
-  "rideable",
-];
-
-function promptIncludesAny(prompt: string, terms: string[]): boolean {
-  return terms.some((term) => prompt.includes(term));
-}
-
-function vehicleMode(thing: GeneratedThing): VehicleMode | null {
-  const lower = thing.prompt.toLowerCase();
-  if (
-    thing.kind === "balloon" ||
-    promptIncludesAny(lower, airMountTerms) ||
-    lower.includes("balloon") ||
-    lower.includes("airship") ||
-    lower.includes("zeppelin") ||
-    lower.includes("glider") ||
-    lower.includes("flying") ||
-    lower.includes("air boat")
-  ) {
-    return "air";
-  }
-  if (
-    promptIncludesAny(lower, waterMountTerms) ||
-    lower.includes("boat") ||
-    lower.includes("ship") ||
-    lower.includes("sail") ||
-    lower.includes("canoe") ||
-    lower.includes("raft") ||
-    lower.includes("skiff") ||
-    lower.includes("dinghy")
-  ) {
-    return "water";
-  }
-  if (
-    promptIncludesAny(lower, groundMountTerms) ||
-    lower.includes("vehicle") ||
-    lower.includes("cart") ||
-    lower.includes("wagon") ||
-    lower.includes("carriage") ||
-    lower.includes("car ") ||
-    lower.includes("truck")
-  ) {
-    return "ground";
-  }
-  return null;
-}
-
-function isMountThing(thing: GeneratedThing): boolean {
-  return thing.kind === "animal" && vehicleMode(thing) !== null;
-}
-
-function isVehicleThing(thing: GeneratedThing): boolean {
-  return vehicleMode(thing) !== null;
-}
-
-function isFreeMovingVehicle(thing: GeneratedThing): boolean {
-  const mode = vehicleMode(thing);
-  return mode === "water" || mode === "air";
-}
-
-function airPosition(x: number, z: number): Vec3 {
-  const radius = Math.hypot(x, z);
-  const maxRadius = OCEAN_RADIUS - 14;
-  const scale = radius > maxRadius ? maxRadius / radius : 1;
-  const nx = x * scale;
-  const nz = z * scale;
-  const groundY =
-    Math.hypot(nx, nz) <= WORLD_RADIUS
-      ? terrainHeight(nx, nz)
-      : SEA_LEVEL;
-  return { x: nx, y: groundY + 12, z: nz };
-}
-
-function movedVehiclePosition(
-  thing: GeneratedThing,
-  x: number,
-  z: number,
-  fallback?: Vec3,
-): Vec3 {
-  const mode = vehicleMode(thing);
-  if (mode === "air") return airPosition(x, z);
-  if (mode === "water") return waterVehiclePosition(x, z, fallback);
-  return groundedPosition(x, z, fallback);
-}
-
-function baseTerrainHeight(x: number, z: number): number {
-  const shape = runtimeConfig.landShape;
-  const r = Math.hypot(x, z);
-  const mountain = Math.max(0, 1 - r / shape.mountain.radius);
-  const mound = Math.pow(mountain, shape.mountain.exponent) * shape.mountain.height;
-  const shoulder =
-    Math.exp(
-      -(
-        (x - shape.shoulder.x) ** 2 +
-        (z - shape.shoulder.z) ** 2
-      ) / shape.shoulder.spread,
-    ) * shape.shoulder.height;
-  const southernRise =
-    Math.exp(
-      -(
-        (x - shape.southernRise.x) ** 2 +
-        (z - shape.southernRise.z) ** 2
-      ) / shape.southernRise.spread,
-    ) * shape.southernRise.height;
-  const ridge =
-    Math.sin(x * 0.22 + z * 0.08) * shape.ridge.sinScale +
-    Math.cos(z * 0.2 - x * 0.06) * shape.ridge.cosScale +
-    Math.sin((x + z) * 0.11) * shape.ridge.diagonalScale;
-  const rimStart = WORLD_RADIUS * shape.shore.startRatio;
-  const rimWidth = WORLD_RADIUS * 0.28;
-  const rimDrop = Math.max(0, (r - rimStart) / rimWidth) * shape.shore.drop;
-  const pond =
-    Math.exp(
-      -(
-        (x - shape.pond.x) ** 2 +
-        (z - shape.pond.z) ** 2
-      ) / (shape.pond.radius * shape.pond.radius * 1.18),
-    ) * shape.pond.depth;
-  return mound + shoulder + southernRise + ridge - rimDrop - pond + shape.baseOffset;
-}
-
-function terrainHeight(x: number, z: number): number {
-  return baseTerrainHeight(x, z) + terrainSculptOffsetAt(x, z);
-}
-
-function terrainKind(x: number, z: number, y: number): TerrainKind {
-  const painted = centralTerrainPaintAt(x, z);
-  if (painted) return painted;
-  const { pond } = runtimeConfig.landShape;
-  const pondDistance = Math.hypot(x - pond.x, z - pond.z);
-  if (pondDistance < pond.radius * 0.95 && y < pond.waterTerrainThreshold) {
-    return "water";
-  }
-  if (y > 13.5) return "snow";
-  if (y > 6.8) return "rock";
-  const pathBand = Math.abs(Math.sin(Math.atan2(z, x) * 3 + 0.5)) < 0.13;
-  if (pathBand && Math.hypot(x, z) > 8) return "dirt";
-  return "meadow";
-}
-
-function pondWaterLevel(): number {
-  const { pond } = runtimeConfig.landShape;
-  return baseTerrainHeight(pond.x, pond.z) + pond.waterOffset;
-}
-
-function makeId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 7)}`;
-}
-
-function browserUuid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return makeId("uuid");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function numberFromRecord(
-  record: Record<string, unknown>,
-  key: string,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  const value = record[key];
-  return typeof value === "number"
-    ? boundedNumber(value, fallback, min, max)
-    : fallback;
-}
-
-function mergeLandShapeConfig(
-  base: LandShapeTemplate,
-  config: Record<string, unknown>,
-): LandShapeTemplate {
-  const next = cloneLandShapeTemplate(base);
-  const mountain = config.mountain;
-  if (isRecord(mountain)) {
-    next.mountain.height = numberFromRecord(mountain, "height", next.mountain.height, 0, 40);
-    next.mountain.radius = numberFromRecord(mountain, "radius", next.mountain.radius, 4, WORLD_RADIUS);
-    next.mountain.exponent = numberFromRecord(mountain, "exponent", next.mountain.exponent, 0.4, 6);
-  }
-  const shoulder = config.shoulder;
-  if (isRecord(shoulder)) {
-    next.shoulder.x = numberFromRecord(shoulder, "x", next.shoulder.x, -WORLD_RADIUS, WORLD_RADIUS);
-    next.shoulder.z = numberFromRecord(shoulder, "z", next.shoulder.z, -WORLD_RADIUS, WORLD_RADIUS);
-    next.shoulder.height = numberFromRecord(shoulder, "height", next.shoulder.height, -10, 16);
-    next.shoulder.spread = numberFromRecord(shoulder, "spread", next.shoulder.spread, 20, 600);
-  }
-  const southernRise = config.southernRise;
-  if (isRecord(southernRise)) {
-    next.southernRise.x = numberFromRecord(southernRise, "x", next.southernRise.x, -WORLD_RADIUS, WORLD_RADIUS);
-    next.southernRise.z = numberFromRecord(southernRise, "z", next.southernRise.z, -WORLD_RADIUS, WORLD_RADIUS);
-    next.southernRise.height = numberFromRecord(southernRise, "height", next.southernRise.height, -10, 16);
-    next.southernRise.spread = numberFromRecord(southernRise, "spread", next.southernRise.spread, 20, 600);
-  }
-  const ridge = config.ridge;
-  if (isRecord(ridge)) {
-    next.ridge.sinScale = numberFromRecord(ridge, "sinScale", next.ridge.sinScale, -4, 4);
-    next.ridge.cosScale = numberFromRecord(ridge, "cosScale", next.ridge.cosScale, -4, 4);
-    next.ridge.diagonalScale = numberFromRecord(ridge, "diagonalScale", next.ridge.diagonalScale, -4, 4);
-  }
-  const shore = config.shore;
-  if (isRecord(shore)) {
-    next.shore.startRatio = numberFromRecord(shore, "startRatio", next.shore.startRatio, 0.35, 0.95);
-    next.shore.drop = numberFromRecord(shore, "drop", next.shore.drop, 0, 14);
-  }
-  const pond = config.pond;
-  if (isRecord(pond)) {
-    next.pond.x = numberFromRecord(pond, "x", next.pond.x, -WORLD_RADIUS, WORLD_RADIUS);
-    next.pond.z = numberFromRecord(pond, "z", next.pond.z, -WORLD_RADIUS, WORLD_RADIUS);
-    next.pond.radius = numberFromRecord(pond, "radius", next.pond.radius, 1, 28);
-    next.pond.depth = numberFromRecord(pond, "depth", next.pond.depth, 0, 8);
-    next.pond.waterOffset = numberFromRecord(pond, "waterOffset", next.pond.waterOffset, -2, 3);
-    next.pond.waterTerrainThreshold = numberFromRecord(
-      pond,
-      "waterTerrainThreshold",
-      next.pond.waterTerrainThreshold,
-      -4,
-      8,
-    );
-  }
-  next.baseOffset = numberFromRecord(config, "baseOffset", next.baseOffset, -8, 8);
-  return next;
-}
-
-function applyRuntimeConfig(config: unknown): void {
-  if (!isRecord(config)) return;
-
-  const assetForgeApiBase = config.assetForgeApiBase;
-  if (
-    !import.meta.env.VITE_ASSET_FORGE_API_BASE?.trim() &&
-    typeof assetForgeApiBase === "string" &&
-    assetForgeApiBase.trim()
-  ) {
-    runtimeConfig.assetForgeApiBase = assetForgeApiBase.trim().replace(/\/+$/, "");
-  }
-
-  const apiBase = config.apiBase;
-  if (
-    !import.meta.env.VITE_TELLUS_API_BASE?.trim() &&
-    typeof apiBase === "string"
-  ) {
-    runtimeConfig.apiBase = apiBase.trim().replace(/\/+$/, "");
-  }
-
-  const agentModel = config.agentModel;
-  if (
-    !import.meta.env.VITE_TELLUS_AGENT_MODEL?.trim() &&
-    typeof agentModel === "string" &&
-    agentModel.trim()
-  ) {
-    runtimeConfig.agentModel = agentModel.trim();
-  }
-
-  const generationProvider = config.generationProvider;
-  if (
-    !import.meta.env.VITE_TELLUS_GENERATION_PROVIDER?.trim() &&
-    (generationProvider === "local" ||
-      generationProvider === "asset-forge" ||
-      generationProvider === "instantmesh-gradio" ||
-      generationProvider === "pixal3d-gradio" ||
-      generationProvider === "anigen-gradio")
-  ) {
-    runtimeConfig.generationProvider = generationProvider;
-  }
-
-  const playerGenerationProvider = config.playerGenerationProvider;
-  if (
-    !import.meta.env.VITE_TELLUS_PLAYER_GENERATION_PROVIDER?.trim() &&
-    (playerGenerationProvider === "local" ||
-      playerGenerationProvider === "instantmesh-gradio" ||
-      playerGenerationProvider === "pixal3d-gradio" ||
-      playerGenerationProvider === "anigen-gradio")
-  ) {
-    runtimeConfig.playerGenerationProvider = playerGenerationProvider;
-  }
-
-  const agentGenerationProvider = config.agentGenerationProvider;
-  if (
-    !import.meta.env.VITE_TELLUS_AGENT_GENERATION_PROVIDER?.trim() &&
-    (agentGenerationProvider === "local" ||
-      agentGenerationProvider === "instantmesh-gradio" ||
-      agentGenerationProvider === "pixal3d-gradio" ||
-      agentGenerationProvider === "anigen-gradio")
-  ) {
-    runtimeConfig.agentGenerationProvider = agentGenerationProvider;
-  }
-
-  const instantMeshTarget = config.instantMeshTarget;
-  if (
-    !import.meta.env.VITE_TELLUS_INSTANTMESH_TARGET?.trim() &&
-    (instantMeshTarget === "dgx" || instantMeshTarget === "local")
-  ) {
-    runtimeConfig.instantMeshTarget = instantMeshTarget;
-  }
-
-  const instantMeshTargets = config.instantMeshTargets;
-  if (isRecord(instantMeshTargets)) {
-    for (const target of ["dgx", "local"] as const) {
-      const baseUrl = instantMeshTargets[target];
-      if (typeof baseUrl === "string" && baseUrl.trim()) {
-        runtimeConfig.instantMeshTargets[target] = baseUrl.trim().replace(/\/+$/, "");
-      }
-    }
-  }
-
-  const skyboxUrl = config.skyboxUrl;
-  if (typeof skyboxUrl === "string" && skyboxUrl.trim()) {
-    runtimeConfig.skyboxUrl = skyboxUrl.trim();
-  }
-
-  const worldTemplate = config.worldTemplate;
-  if (
-    !import.meta.env.VITE_TELLUS_WORLD_TEMPLATE?.trim() &&
-    typeof worldTemplate === "string" &&
-    worldTemplate.trim()
-  ) {
-    const templateName = worldTemplate.trim();
-    runtimeConfig.worldTemplate = templateName;
-    runtimeConfig.landShape = cloneLandShapeTemplate(
-      LAND_SHAPE_PRESETS[templateName] ?? runtimeConfig.landShape,
-    );
-  }
-
-  const landShape = config.landShape;
-  if (isRecord(landShape)) {
-    runtimeConfig.landShape = mergeLandShapeConfig(runtimeConfig.landShape, landShape);
-  }
-
-  const dayNightCycleMs = config.dayNightCycleMs;
-  if (typeof dayNightCycleMs === "number") {
-    runtimeConfig.dayNightCycleMs = boundedNumber(
-      dayNightCycleMs,
-      runtimeConfig.dayNightCycleMs,
-      MIN_DAY_NIGHT_CYCLE_MS,
-      60 * 60 * 1000,
-    );
-  }
-
-  const dayNightStart = config.dayNightStart;
-  if (typeof dayNightStart === "number") {
-    runtimeConfig.dayNightStart = boundedNumber(
-      dayNightStart,
-      runtimeConfig.dayNightStart,
-      0,
-      1,
-    );
-  }
-
-  const worldApiBase = config.worldApiBase;
-  if (
-    !import.meta.env.VITE_TELLUS_WORLD_API_BASE?.trim() &&
-    typeof worldApiBase === "string"
-  ) {
-    runtimeConfig.worldApiBase = worldApiBase.trim().replace(/\/+$/, "");
-  }
-
-  const worldId = config.worldId;
-  if (
-    !import.meta.env.VITE_TELLUS_WORLD_ID?.trim() &&
-    typeof worldId === "string" &&
-    worldId.trim()
-  ) {
-    runtimeConfig.worldId = worldId.trim();
-  }
-
-  const enabledAgents = config.enabledAgents;
-  if (Array.isArray(enabledAgents)) {
-    const configuredAgentIds = enabledAgents.filter(
-      (agentId): agentId is AgentId =>
-        typeof agentId === "string" &&
-        allAgentIds.includes(agentId as AgentId),
-    );
-    if (configuredAgentIds.length > 0) {
-      runtimeConfig.enabledAgents = [...new Set(configuredAgentIds)];
-    }
-  }
-
-  const avatars = config.avatars;
-  if (!isRecord(avatars)) return;
-
-  for (const agentId of allAgentIds) {
-    const avatarUrl = avatars[agentId];
-    if (typeof avatarUrl === "string" && avatarUrl.trim()) {
-      runtimeConfig.avatars[agentId] = avatarUrl.trim();
-    }
-  }
-}
-
-async function loadRuntimeConfigFile(path: string): Promise<void> {
-  const response = await fetch(path, { cache: "no-store" });
-  if (response.status === 404) return;
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) return;
-  applyRuntimeConfig(await readJsonResponse<unknown>(response));
-}
-
-async function loadRuntimeConfig(): Promise<void> {
-  await loadRuntimeConfigFile("/tellus-config.json");
-  if (
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1"
-  ) {
-    await loadRuntimeConfigFile("/tellus-config.local.json");
-  }
-}
-
-function terrainOffsetsPayload(): number[] {
-  return Array.from(terrainSculptOffsets, (value) => Number(value.toFixed(4)));
-}
-
-function terrainPaintPayload(): number[] {
-  return Array.from(terrainPaint);
-}
-
-function distantTerrainOffsetsPayload(): Record<string, number[]> {
-  return Object.fromEntries(
-    distantIslandSpecs.map((spec) => [
-      String(spec.seed),
-      Array.from(spec.sculptOffsets, (value) => Number(value.toFixed(4))),
-    ]),
-  );
-}
-
-function distantTerrainPaintPayload(): Record<string, number[]> {
-  return Object.fromEntries(
-    distantIslandSpecs.map((spec) => [String(spec.seed), Array.from(spec.paint)]),
-  );
-}
-
-function tellusState(): TellusTerrainState {
-  return {
-    version: 2,
-    revision: terrainStateRevision,
-    terrainSculptOffsets: terrainOffsetsPayload(),
-    terrainPaint: terrainPaintPayload(),
-    distantIslandSculptOffsets: distantTerrainOffsetsPayload(),
-    distantIslandPaint: distantTerrainPaintPayload(),
-    savedAt: new Date().toISOString(),
-  };
-}
-
-function tellusStatePayload(): string {
-  return JSON.stringify(tellusState());
-}
-
-function terrainStorageKey(): string {
-  return `tellus.terrain.${runtimeConfig.worldId}`;
-}
-
-function isResetTerrainState(value: unknown): boolean {
-  return isRecord(value) && value.savedAt === "reset-after-smoke";
-}
-
-function saveTerrainStateLocally(body: string): void {
-  try {
-    window.localStorage.setItem(terrainStorageKey(), body);
-  } catch (error) {
-    console.warn("Tellus local terrain save failed", error);
-  }
-}
-
-function loadTerrainStateLocally(): TellusTerrainState | null {
-  try {
-    const raw = window.localStorage.getItem(terrainStorageKey());
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    return isTellusTerrainState(parsed) && !isResetTerrainState(parsed)
-      ? parsed
-      : null;
-  } catch (error) {
-    console.warn("Tellus local terrain load failed", error);
-    return null;
-  }
-}
-
-function tellusWorldHttpUrl(route: "state" | "action"): string {
-  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}`;
-}
-
-function tellusAssetLibraryUrl(path: string): string {
-  return `${runtimeConfig.worldApiBase}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-async function loadAssetLibraryModels(): Promise<AssetLibraryModel[]> {
-  const [libraryModels, generatedEntries] = await Promise.all([
-    (async () => {
-      if (!runtimeConfig.worldApiBase) return [];
-      const response = await fetch(tellusAssetLibraryUrl("/api/assets/models?per_page=24"), {
-        cache: "no-store",
-      });
-      if (!response.ok) return [];
-      const parsed = await readJsonResponse<AssetLibraryResponse>(response);
-      return Array.isArray(parsed.models)
-        ? parsed.models
-            .filter(
-              (model): model is AssetLibraryModel =>
-                typeof model.id === "string" && typeof model.name === "string",
-            )
-            .map((model) => ({ ...model, source: "asset-library" as const }))
-        : [];
-    })(),
-    generatedAssetManifestEntries().catch(() => []),
-  ]);
-  const generatedModels = generatedEntries
-    .map((entry): AssetLibraryModel | null => {
-      if (typeof entry.id !== "string" || typeof entry.modelUrl !== "string") {
-        return null;
-      }
-      const modelUrl = entry.modelUrl;
-      const prompt =
-        typeof entry.prompt === "string" && entry.prompt.trim()
-          ? entry.prompt.trim()
-          : "generated asset";
-      return {
-        id: `generated:${entry.id}`,
-        name: prompt,
-        description: prompt,
-        file_format: "glb",
-        modelUrl: absoluteTellusApiUrl(modelUrl),
-        source: "generated",
-      };
-    })
-    .filter((model): model is AssetLibraryModel => model !== null);
-  const seen = new Set<string>();
-  return [...generatedModels, ...libraryModels].filter((model) => {
-    const key = model.modelUrl ?? model.id;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function tellusWorldWebSocketUrl(visitorId: string): string {
-  const httpUrl = new URL(tellusWorldHttpUrl("state"), window.location.href);
-  httpUrl.pathname = httpUrl.pathname.replace(/\/state\/?$/, "/live");
-  httpUrl.searchParams.set("visitorId", visitorId);
-  httpUrl.protocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
-  return httpUrl.toString();
-}
-
-function tellusVisitorId(): string {
-  if (!pageVisitorId) {
-    // Honor a host-pinned identity (window.__hyadesIdentity or a ?visitorId= query param) before falling
-    // back to a fresh random id — lets an embodied external agent join as a stable, distinct visitor.
-    const injected =
-      window.__hyadesIdentity?.visitorId ??
-      new URLSearchParams(window.location.search).get("visitorId") ??
-      undefined;
-    pageVisitorId = injected && injected.trim() ? injected.trim() : browserUuid();
-  }
-  return pageVisitorId;
-}
-
-function tellusUserId(): string {
-  if (stableUserId) return stableUserId;
-  const storageKey = "tellus.userId";
-  const existing = window.localStorage.getItem(storageKey);
-  if (existing) {
-    stableUserId = existing;
-    return stableUserId;
-  }
-  stableUserId = browserUuid();
-  window.localStorage.setItem(storageKey, stableUserId);
-  return stableUserId;
-}
-
-function speakTellusText(text: string): void {
-  if (!("speechSynthesis" in window)) return;
-  const trimmed = text.trim();
-  if (!trimmed) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(trimmed);
-  utterance.rate = 0.96;
-  utterance.pitch = 1.04;
-  window.speechSynthesis.speak(utterance);
-}
-
-function applyTellusTerrainState(parsed: unknown): boolean {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return false;
-  }
-  const offsets = (parsed as { terrainSculptOffsets?: unknown }).terrainSculptOffsets;
-  const paint = (parsed as { terrainPaint?: unknown }).terrainPaint;
-  terrainSculptOffsets.fill(0);
-  terrainPaint.fill(0);
-  if (Array.isArray(offsets)) {
-    for (let i = 0; i < Math.min(offsets.length, terrainSculptOffsets.length); i++) {
-      const value = offsets[i];
-      terrainSculptOffsets[i] = typeof value === "number" && Number.isFinite(value)
-        ? clamp(value, -9, 9)
-        : 0;
-    }
-  }
-  if (Array.isArray(paint)) {
-    for (let i = 0; i < Math.min(paint.length, terrainPaint.length); i++) {
-      const value = paint[i];
-      terrainPaint[i] =
-        typeof value === "number" && Number.isFinite(value)
-          ? clamp(Math.round(value), 0, terrainPaintKinds.length)
-          : 0;
-    }
-  }
-  const distantOffsets = (parsed as {
-    distantIslandSculptOffsets?: unknown;
-  }).distantIslandSculptOffsets;
-  const distantPaint = (parsed as {
-    distantIslandPaint?: unknown;
-  }).distantIslandPaint;
-  for (const spec of distantIslandSpecs) {
-    spec.sculptOffsets.fill(0);
-    spec.paint.fill(0);
-    if (distantOffsets && typeof distantOffsets === "object") {
-      const values = (distantOffsets as Record<string, unknown>)[String(spec.seed)];
-      if (Array.isArray(values)) {
-        for (let i = 0; i < Math.min(values.length, spec.sculptOffsets.length); i++) {
-          const value = values[i];
-          spec.sculptOffsets[i] =
-            typeof value === "number" && Number.isFinite(value)
-              ? clamp(value, -9, 9)
-              : 0;
-        }
-      }
-    }
-    if (distantPaint && typeof distantPaint === "object") {
-      const values = (distantPaint as Record<string, unknown>)[String(spec.seed)];
-      if (Array.isArray(values)) {
-        for (let i = 0; i < Math.min(values.length, spec.paint.length); i++) {
-          const value = values[i];
-          spec.paint[i] =
-            typeof value === "number" && Number.isFinite(value)
-              ? clamp(Math.round(value), 0, terrainPaintKinds.length)
-              : 0;
-        }
-      }
-    }
-  }
-  const revision = (parsed as { revision?: unknown }).revision;
-  terrainStateRevision =
-    typeof revision === "number" && Number.isFinite(revision)
-      ? Math.max(terrainStateRevision, revision)
-      : terrainStateRevision;
-  return true;
-}
-
-function terrainFromWorldPatch(parsed: unknown): TellusTerrainState | null {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  const patch = parsed as Partial<WorldPatch>;
-  if (
-    (patch.type === "world.snapshot" || patch.type === "terrain.updated") &&
-    isTellusTerrainState(patch.terrain)
-  ) {
-    return patch.terrain;
-  }
-  return null;
-}
-
-function presenceFromWorldPatch(parsed: unknown): WorldPresence[] | null {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  const patch = parsed as Partial<WorldPatch>;
-  if (
-    (patch.type === "world.snapshot" || patch.type === "presence.updated") &&
-    Array.isArray(patch.presence)
-  ) {
-    return patch.presence.filter(
-      (presence): presence is WorldPresence =>
-        typeof presence.visitorId === "string" &&
-        typeof presence.connectedAt === "string" &&
-        typeof presence.lastSeenAt === "string",
-    );
-  }
-  return null;
-}
-
-function generatedFromWorldPatch(parsed: unknown): WorldGeneratedThing[] | null {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  const patch = parsed as Partial<WorldPatch>;
-  if (patch.type === "world.snapshot" && Array.isArray(patch.generated)) {
-    return patch.generated.filter(isWorldGeneratedThing);
-  }
-  if (patch.type === "generated.updated" && isWorldGeneratedThing(patch.thing)) {
-    return [patch.thing];
-  }
-  return null;
-}
-
-let initialWorldGeneratedThings: WorldGeneratedThing[] = [];
-
-async function loadTellusWorldState(): Promise<boolean> {
-  if (!runtimeConfig.worldApiBase) return false;
-  const response = await fetch(tellusWorldHttpUrl("state"), { cache: "no-store" });
-  if (!response.ok) return false;
-  const parsed = await response.json();
-  const terrain = terrainFromWorldPatch(parsed);
-  if (!terrain) return false;
-  initialWorldGeneratedThings = generatedFromWorldPatch(parsed) ?? [];
-  applyTellusTerrainState(terrain);
-  return true;
-}
-
-async function saveTellusWorldState(body: string, keepalive = false): Promise<boolean> {
-  if (!tellusWorldBackendAvailable) return false;
-  const response = await fetch(tellusWorldHttpUrl("action"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "terrain.replace",
-      visitorId: tellusVisitorId(),
-      terrain: JSON.parse(body) as TellusTerrainState,
-    }),
-    keepalive,
-  });
-  if (!response.ok) {
-    tellusWorldBackendAvailable = false;
-    return false;
-  }
-  return true;
-}
-
-async function loadTellusState(): Promise<void> {
-  terrainStateLoaded = false;
-  try {
-    try {
-      tellusWorldBackendAvailable = await loadTellusWorldState();
-      if (tellusWorldBackendAvailable) return;
-    } catch (error) {
-      tellusWorldBackendAvailable = false;
-      console.warn("Tellus world backend failed to load", error);
-    }
-
-    const localSavedTerrain = loadTerrainStateLocally();
-    if (localSavedTerrain) {
-      applyTellusTerrainState(localSavedTerrain);
-      return;
-    }
-
-    const response = await fetch(tellusApiUrl("/api/tellus-state"), { cache: "no-store" });
-    if (!response.ok) {
-      terrainStateLoaded = true;
-      terrainStateDirty = false;
-      return;
-    }
-    const localTerrainState = await response.json();
-    if (isResetTerrainState(localTerrainState)) {
-      terrainStateLoaded = true;
-      terrainStateDirty = false;
-      return;
-    }
-    if (!applyTellusTerrainState(localTerrainState)) {
-      terrainStateLoaded = true;
-      terrainStateDirty = false;
-    }
-  } finally {
-    terrainStateLoaded = true;
-    terrainStateDirty = false;
-  }
-}
-
-function saveTellusStateSoon(): void {
-  terrainStateDirty = true;
-  terrainStateRevision++;
-  if (!terrainStateLoaded) return;
-  if (terrainSaveTimer !== undefined) {
-    window.clearTimeout(terrainSaveTimer);
-  }
-  const saveRevision = terrainStateRevision;
-  terrainSaveTimer = window.setTimeout(() => {
-    terrainSaveTimer = undefined;
-    const body = tellusStatePayload();
-    saveTerrainStateLocally(body);
-    void saveTellusWorldState(body)
-      .then((savedToWorld) => {
-        if (savedToWorld) return new Response(null, { status: 204 });
-        return fetch(tellusApiUrl("/api/tellus-state"), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-      })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`state save returned ${response.status}`);
-        }
-        if (terrainStateRevision === saveRevision) {
-          terrainStateDirty = false;
-        }
-      })
-      .catch((error) => {
-        console.warn("Tellus state save failed", error);
-      });
-  }, 650);
-}
-
-function saveTellusStateNow(): void {
-  if (!terrainStateDirty || !terrainStateLoaded) return;
-  if (terrainSaveTimer !== undefined) {
-    window.clearTimeout(terrainSaveTimer);
-    terrainSaveTimer = undefined;
-  }
-  const body = tellusStatePayload();
-  saveTerrainStateLocally(body);
-  const saveRevision = terrainStateRevision;
-  void saveTellusWorldState(body, true)
-    .then((savedToWorld) => {
-      if (savedToWorld) return new Response(null, { status: 204 });
-      if (!runtimeConfig.apiBase && navigator.sendBeacon?.("/api/tellus-state", new Blob([body], {
-        type: "application/json",
-      }))) {
-        terrainStateDirty = false;
-        return new Response(null, { status: 204 });
-      }
-      return fetch(tellusApiUrl("/api/tellus-state"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body,
-        keepalive: true,
-      });
-    })
-    .then((response) => {
-      if (!response.ok) {
-        throw new Error(`state save returned ${response.status}`);
-      }
-      if (terrainStateRevision === saveRevision) {
-        terrainStateDirty = false;
-      }
-    })
-    .catch((error) => {
-      console.warn("Tellus state save failed", error);
-    });
-}
-
-function toAssetId(prompt: string, prefix: string): string {
-  const slug = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 42);
-  return `tellus-${prefix}-${slug || "creation"}-${Date.now().toString(36)}`;
-}
-
-function absoluteAssetForgeUrl(path: string): string {
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  return `${runtimeConfig.assetForgeApiBase}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-function tellusApiUrl(path: string): string {
-  return `${runtimeConfig.apiBase}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-function absoluteTellusApiUrl(path: string): string {
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  return tellusApiUrl(path);
-}
-
-let generatedAssetManifestCache:
-  | { loadedAt: number; entries: GeneratedAssetManifestEntry[]; byId: Map<string, string> }
-  | undefined;
-
-async function generatedAssetManifestEntries(): Promise<GeneratedAssetManifestEntry[]> {
-  const now = Date.now();
-  if (generatedAssetManifestCache && now - generatedAssetManifestCache.loadedAt < 5000) {
-    return generatedAssetManifestCache.entries;
-  }
-  const response = await fetch(tellusApiUrl("/generated-assets/manifest.json"), {
-    cache: "no-store",
-  });
-  if (!response.ok) return [];
-  const parsed = (await response.json()) as unknown;
-  const entries = Array.isArray(parsed)
-    ? (parsed as GeneratedAssetManifestEntry[]).filter(
-        (entry) =>
-          typeof entry.id === "string" &&
-          typeof entry.modelUrl === "string",
-      )
-    : [];
-  const byId = new Map<string, string>();
-  for (const entry of entries) {
-    byId.set(entry.id as string, absoluteTellusApiUrl(entry.modelUrl as string));
-  }
-  generatedAssetManifestCache = { loadedAt: now, entries, byId };
-  return entries;
-}
-
-async function generatedAssetManifestModelUrls(): Promise<Map<string, string>> {
-  await generatedAssetManifestEntries();
-  const byId = generatedAssetManifestCache?.byId ?? new Map<string, string>();
-  return byId;
-}
-
-async function readJsonResponse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const body = await response.text();
-    const message = extractErrorMessage(body);
-    throw new Error(`${response.status}${message ? ` ${message}` : ""}`);
-  }
-  return (await response.json()) as T;
-}
-
-function isStalePendingGeneratedThing(thing: WorldGeneratedThing): boolean {
-  if (thing.modelUrl) return false;
-  if (
-    thing.generationStatus !== "queued" &&
-    thing.generationStatus !== "generating"
-  ) {
-    return false;
-  }
-  const updatedAt = Date.parse(thing.updatedAt);
-  return (
-    Number.isFinite(updatedAt) &&
-    Date.now() - updatedAt > PENDING_GENERATION_FALLBACK_MS
-  );
-}
-
-function captureCanvasDataUrl(canvas: HTMLCanvasElement): string {
-  const maxSide = 768;
-  const sourceWidth = Math.max(1, canvas.width);
-  const sourceHeight = Math.max(1, canvas.height);
-  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
-  const width = Math.max(1, Math.floor(sourceWidth * scale));
-  const height = Math.max(1, Math.floor(sourceHeight * scale));
-  const output = document.createElement("canvas");
-  output.width = width;
-  output.height = height;
-  const context = output.getContext("2d");
-  if (!context) throw new Error("Could not create image capture context");
-  context.drawImage(canvas, 0, 0, width, height);
-  return output.toDataURL("image/jpeg", 0.72);
-}
-
-async function requestWorldFeedback(imageDataUrl: string): Promise<string> {
-  const response = await fetch(tellusApiUrl("/api/world-feedback"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      imageDataUrl,
-      prompt:
-        "Describe the visible Tellus world in 4-6 concise bullet points for an autonomous in-world agent. Focus on visible terrain, water, generated objects, agent/avatar positions, spatial relationships, and anything that looks unfinished or surprising.",
-    }),
-  });
-  const contentType = response.headers.get("Content-Type") ?? "";
-  if (!contentType.includes("application/json")) {
-    throw new Error(
-      `World feedback service returned ${response.status} ${
-        response.statusText || "non-JSON response"
-      }`.trim(),
-    );
-  }
-  const payload = (await response.json()) as WorldFeedbackResponse;
-  if (!response.ok) {
-    throw new Error(
-      payload.error ||
-        `World feedback service returned ${response.status} ${
-          response.statusText || "error"
-        }`.trim(),
-    );
-  }
-  if (!payload.summary?.trim()) {
-    throw new Error(payload.error || "World feedback returned no summary");
-  }
-  return payload.summary.trim().slice(0, 1600);
-}
-
-function extractErrorMessage(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    if (isRecord(parsed) && typeof parsed.error === "string") {
-      return sanitizeLogText(parsed.error);
-    }
-  } catch {
-    // Fall through to text cleanup.
-  }
-  return sanitizeLogText(body);
-}
-
-function sanitizeLogText(text: string): string {
-  return text
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 220);
-}
-
-async function startPixel3DGeneration(
-  thing: GeneratedThing,
-  signal?: AbortSignal,
-): Promise<AssetForgePipelineStart> {
-  if (!runtimeConfig.assetForgeApiBase) {
-    throw new Error("VITE_ASSET_FORGE_API_BASE is not configured");
-  }
-
-  const assetId = toAssetId(thing.prompt, thing.kind);
-  const response = await fetch(`${runtimeConfig.assetForgeApiBase}/api/generation/pipeline`, {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      assetId,
-      name: thing.prompt.slice(0, 72),
-      description: thing.prompt,
-      type: thing.kind === "animal" ? "character" : "environment",
-      subtype: thing.kind,
-      generationType: thing.kind === "animal" ? "avatar" : "model",
-      quality: "standard",
-      enableRigging: thing.kind === "animal",
-      enableRetexturing: false,
-      enableSprites: false,
-      customPrompts: {
-        gameStyle:
-          "A tropical island paradise WebGPU floating-world, assets for Tellus should be on white background with only one object each, stylized, game-ready low-poly proportions.",
-      },
-      metadata: {
-        provider: PIXEL3D_PROVIDER,
-        useGPT5Enhancement: false,
-      },
-    }),
-  });
-
-  return readJsonResponse<AssetForgePipelineStart>(response);
-}
-
-async function waitForPixel3DModelUrl(
-  pipelineId: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const deadline = Date.now() + 15 * 60 * 1000;
-  while (Date.now() < deadline) {
-    signal?.throwIfAborted();
-    await new Promise((resolve) => window.setTimeout(resolve, 4000));
-    signal?.throwIfAborted();
-    const response = await fetch(
-      `${runtimeConfig.assetForgeApiBase}/api/generation/pipeline/${pipelineId}`,
-      { signal },
-    );
-    const status = await readJsonResponse<AssetForgePipelineStatus>(response);
-    if (status.status === "failed") {
-      throw new Error(status.error ?? `Pipeline ${pipelineId} failed`);
-    }
-    if (status.status === "completed" && status.finalAsset?.modelUrl) {
-      return absoluteAssetForgeUrl(status.finalAsset.modelUrl);
-    }
-  }
-  throw new Error(`Pipeline ${pipelineId} timed out`);
-}
-
-function hasExternalGenerationProvider(provider = runtimeConfig.generationProvider): boolean {
-  if (provider === "asset-forge") {
-    return Boolean(runtimeConfig.assetForgeApiBase);
-  }
-  return (
-    provider === "instantmesh-gradio" ||
-    provider === "pixal3d-gradio" ||
-    provider === "anigen-gradio"
-  );
-}
-
-function isMissingApiRouteError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /\b(404|405)\b/.test(error.message) || error.message.includes("endpoint unavailable");
-}
-
-function generationProviderForThing(thing: GeneratedThing): GenerationProvider {
-  if (
-    runtimeConfig.generationProvider === "local" ||
-    runtimeConfig.generationProvider === "asset-forge"
-  ) {
-    return runtimeConfig.generationProvider;
-  }
-  return thing.creatorId === "visitor"
-    ? runtimeConfig.playerGenerationProvider
-    : runtimeConfig.agentGenerationProvider;
-}
-
-async function startDirectInstantMeshGeneration(
-  thing: GeneratedThing,
-  provider: DirectGenerationProvider,
-  signal?: AbortSignal,
-): Promise<DirectGenerationResponse> {
-  const response = await fetch(tellusApiUrl("/api/generate-3d"), {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      id: thing.id,
-      prompt: thing.prompt,
-      kind: thing.kind,
-      provider,
-      instantMeshBaseUrl:
-        provider === "instantmesh-gradio"
-          ? runtimeConfig.instantMeshTargets[runtimeConfig.instantMeshTarget]
-          : undefined,
-    }),
-  });
-  const contentType = response.headers.get("Content-Type") ?? "";
-  if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
-    throw new Error("Direct generation endpoint unavailable");
-  }
-  return readJsonResponse<DirectGenerationResponse>(response);
-}
-
-async function waitForDirectGeneration(
-  initial: DirectGenerationResponse,
-  signal?: AbortSignal,
-  onStatus?: (status: DirectGenerationResponse["status"]) => void,
-): Promise<DirectGenerationResponse> {
-  if (initial.modelUrl && initial.status !== "failed") return initial;
-  const deadline = Date.now() + 22 * 60 * 1000;
-  let lastStatus = initial.status;
-  while (Date.now() < deadline) {
-    signal?.throwIfAborted();
-    await new Promise((resolve) => window.setTimeout(resolve, 4000));
-    signal?.throwIfAborted();
-    const response = await fetch(
-      tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(initial.jobId)}`),
-      { signal },
-    );
-    const contentType = response.headers.get("Content-Type") ?? "";
-    if ((response.status === 404 || response.status === 405) && !contentType.includes("application/json")) {
-      throw new Error("Direct generation endpoint unavailable");
-    }
-    const status = await readJsonResponse<DirectGenerationResponse>(response);
-    if (status.status === "failed") {
-      throw new Error(status.error ?? `Generation job ${initial.jobId} failed`);
-    }
-    if (status.status && status.status !== lastStatus) {
-      lastStatus = status.status;
-      onStatus?.(status.status);
-    }
-    if (status.modelUrl) return status;
-  }
-  throw new Error(`Generation job ${initial.jobId} timed out`);
-}
-
-function cancelDirectGeneration(jobId?: string): void {
-  if (!jobId) return;
-  void fetch(tellusApiUrl(`/api/generate-3d?jobId=${encodeURIComponent(jobId)}`), {
-    method: "DELETE",
-    keepalive: true,
-  }).catch(() => undefined);
-}
-
-function createTerrainGeometry(): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const indices: number[] = [];
-
-  for (let z = 0; z <= TERRAIN_SEGMENTS; z++) {
-    const vz = (z / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
-    for (let x = 0; x <= TERRAIN_SEGMENTS; x++) {
-      const vx = (x / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
-      const r = Math.hypot(vx, vz);
-      const inside = r <= WORLD_RADIUS;
-      const edgeScale = inside ? 1 : WORLD_RADIUS / r;
-      const px = vx * edgeScale;
-      const pz = vz * edgeScale;
-      const py = inside ? terrainHeight(px, pz) : -4.5;
-      const kind = inside ? terrainKind(px, pz, py) : "rock";
-      const color = terrainVertexColor(kind, px, pz, x * 1009 + z * 9176);
-      positions.push(px, py, pz);
-      colors.push(color.r, color.g, color.b);
-    }
-  }
-
-  const row = TERRAIN_SEGMENTS + 1;
-  for (let z = 0; z < TERRAIN_SEGMENTS; z++) {
-    for (let x = 0; x < TERRAIN_SEGMENTS; x++) {
-      const a = z * row + x;
-      const b = a + 1;
-      const c = a + row;
-      const d = c + 1;
-      indices.push(a, c, b, b, c, d);
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(positions, 3),
-  );
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function createFloatingRim(): THREE.Mesh {
-  const geometry = new THREE.CylinderGeometry(
-    WORLD_RADIUS,
-    WORLD_RADIUS * 0.82,
-    9,
-    128,
-    1,
-    true,
-  );
-  geometry.translate(0, -6.5, 0);
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x6a5b48,
-    roughness: 0.9,
-    metalness: 0,
-  });
-  return new THREE.Mesh(geometry, material);
-}
-
-function createFallbackOceanMaterial(): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({
-    color: 0x49a8d8,
-    transparent: true,
-    opacity: 0.72,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-}
-
-function createOceanSurface(useBackdropWater: boolean): THREE.Mesh {
-  const geometry = new THREE.CircleGeometry(OCEAN_RADIUS, 192);
-  const material = useBackdropWater
-    ? createBackdropWaterMaterial()
-    : createFallbackOceanMaterial();
-  const ocean = new THREE.Mesh(geometry, material);
-  ocean.name = "tellus-surrounding-ocean";
-  ocean.rotation.x = -Math.PI / 2;
-  ocean.position.y = SEA_LEVEL;
-  ocean.renderOrder = -4;
-  return ocean;
-}
-
-function createDistantIslandTerrainGeometry(
-  spec: DistantIslandSpec,
-): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const indices: number[] = [];
-
-  for (let zIndex = 0; zIndex <= DISTANT_TERRAIN_SEGMENTS; zIndex++) {
-    for (let xIndex = 0; xIndex <= DISTANT_TERRAIN_SEGMENTS; xIndex++) {
-      const point = distantIslandGridWorldPoint(spec, xIndex, zIndex);
-      const y = distantIslandHeight(spec, point.x, point.z) - SEA_LEVEL;
-      positions.push(point.localX, y, point.localZ);
-      const painted = distantTerrainPaintAt(spec, point.x, point.z);
-      const color = painted
-        ? terrainVertexColor(
-            painted,
-            point.x,
-            point.z,
-            spec.seed + xIndex * 41 + zIndex * 83,
-          )
-        : new THREE.Color(0x5a9735).lerp(
-            new THREE.Color(0x7a6a4a),
-            clamp(point.localRadius * 0.42, 0, 0.42),
-          );
-      if (!painted) {
-        const noise = 0.9 + rand(spec.seed + xIndex * 41 + zIndex * 83) * 0.14;
-        color.multiplyScalar(noise);
-      }
-      colors.push(color.r, color.g, color.b);
-    }
-  }
-
-  const row = DISTANT_TERRAIN_VERTEX_COUNT;
-  for (let z = 0; z < DISTANT_TERRAIN_SEGMENTS; z++) {
-    for (let x = 0; x < DISTANT_TERRAIN_SEGMENTS; x++) {
-      const a = z * row + x;
-      const b = a + 1;
-      const c = a + row;
-      const d = c + 1;
-      const aPoint = distantIslandGridWorldPoint(spec, x, z);
-      const bPoint = distantIslandGridWorldPoint(spec, x + 1, z);
-      const cPoint = distantIslandGridWorldPoint(spec, x, z + 1);
-      const dPoint = distantIslandGridWorldPoint(spec, x + 1, z + 1);
-      if (
-        Math.max(
-          aPoint.localRadius,
-          bPoint.localRadius,
-          cPoint.localRadius,
-          dPoint.localRadius,
-        ) > 1
-      ) {
-        continue;
-      }
-      indices.push(a, c, b, b, c, d);
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(positions, 3),
-  );
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function createDistantIsland(spec: DistantIslandSpec): THREE.Group {
-  const group = new THREE.Group();
-  group.name = `tellus-distant-island-${spec.seed}`;
-  group.position.set(spec.x, SEA_LEVEL - 0.02, spec.z);
-
-  const islandColor = new THREE.Color(0x4f8b2e).lerp(
-    new THREE.Color(0x243d35),
-    rand(spec.seed + 4) * 0.45,
-  );
-  const island = new THREE.Mesh(
-    new THREE.CylinderGeometry(
-      spec.topRadius,
-      spec.bottomRadius,
-      spec.height,
-      18,
-      1,
-    ),
-    new THREE.MeshStandardMaterial({
-      color: islandColor,
-      roughness: 0.94,
-      metalness: 0,
-    }),
-  );
-  island.position.y = spec.height * 0.42;
-  island.scale.z = spec.scaleZ;
-  island.rotation.y = spec.rotationY;
-  group.add(island);
-
-  const topTerrain = new THREE.Mesh(
-    createDistantIslandTerrainGeometry(spec),
-    new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.9,
-      metalness: 0,
-    }),
-  );
-  topTerrain.name = `tellus-distant-terrain-${spec.seed}`;
-  topTerrain.rotation.y = spec.rotationY;
-  topTerrain.receiveShadow = true;
-  group.add(topTerrain);
-
-  const hillCount = 2 + Math.floor(rand(spec.seed + 7) * (spec.size > 1.5 ? 5 : 3));
-  const hillMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0x5d8f42).lerp(
-      new THREE.Color(0x7a6a4a),
-      rand(spec.seed + 11) * 0.28,
-    ),
-    roughness: 0.92,
-    metalness: 0,
-  });
-  for (let i = 0; i < hillCount; i++) {
-    const localAngle = rand(spec.seed + i * 19) * Math.PI * 2;
-    const localRadius = (1.2 + rand(spec.seed + i * 23) * 5.2) * spec.size;
-    const localX = Math.cos(localAngle) * localRadius;
-    const localZ = Math.sin(localAngle) * localRadius * spec.scaleZ;
-    const world = distantIslandWorldPoint(spec, localX, localZ);
-    const surfaceY = distantIslandHeight(spec, world.x, world.z) - SEA_LEVEL;
-    const hillRadius = (1.9 + rand(spec.seed + i * 13) * 3.6) *
-      (0.7 + spec.size * 0.2);
-    const hillHeight = (0.55 + rand(spec.seed + i * 17) * 1.5) *
-      (0.8 + spec.size * 0.22);
-    const hill = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 18, 10),
-      hillMaterial.clone(),
-    );
-    hill.position.set(localX, surfaceY + hillHeight * 0.28, localZ);
-    hill.scale.set(hillRadius, hillHeight, hillRadius * (0.72 + spec.scaleZ * 0.24));
-    hill.rotation.y = rand(spec.seed + i * 29) * Math.PI;
-    group.add(hill);
-  }
-  return group;
-}
-
-function createDistantArchipelago(): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "tellus-distant-archipelago";
-  for (const spec of distantIslandSpecs) {
-    group.add(createDistantIsland(spec));
-  }
-  return group;
-}
-
-function createSkyDome(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(320, 48, 24);
-  const material = new THREE.MeshBasicMaterial({
-    color: 0xa9c8f2,
-    side: THREE.BackSide,
-  });
-  return new THREE.Mesh(geometry, material);
-}
-
-function createMoonHorizonOccluderTexture(): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
-  const context = canvas.getContext("2d");
-  if (!context) return new THREE.CanvasTexture(canvas);
-  context.clearRect(0, 0, canvas.width, canvas.height);
-
-  const verticalFade = context.createLinearGradient(0, 0, 0, canvas.height);
-  verticalFade.addColorStop(0, "rgba(255, 255, 255, 0)");
-  verticalFade.addColorStop(0.2, "rgba(255, 255, 255, 0.28)");
-  verticalFade.addColorStop(0.44, "rgba(255, 255, 255, 0.82)");
-  verticalFade.addColorStop(1, "rgba(255, 255, 255, 1)");
-  context.fillStyle = verticalFade;
-  context.fillRect(0, 0, canvas.width, canvas.height);
-
-  const edgeFade = context.createLinearGradient(0, 0, canvas.width, 0);
-  edgeFade.addColorStop(0, "rgba(0, 0, 0, 0)");
-  edgeFade.addColorStop(0.2, "rgba(0, 0, 0, 1)");
-  edgeFade.addColorStop(0.8, "rgba(0, 0, 0, 1)");
-  edgeFade.addColorStop(1, "rgba(0, 0, 0, 0)");
-  context.globalCompositeOperation = "destination-in";
-  context.fillStyle = edgeFade;
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.globalCompositeOperation = "source-over";
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-function createMoonCloudVeil(): {
-  group: THREE.Group;
-  materials: THREE.MeshBasicMaterial[];
-} {
-  const group = new THREE.Group();
-  group.name = "tellus-moon-cloud-veil";
-  group.renderOrder = -70;
-  group.visible = false;
-  const materials: THREE.MeshBasicMaterial[] = [];
-  const material = new THREE.MeshBasicMaterial({
-    map: createMoonHorizonOccluderTexture(),
-    color: 0x3a2376,
-    transparent: true,
-    opacity: 0,
-    depthTest: false,
-    depthWrite: false,
-    toneMapped: false,
-  });
-  const cloud = new THREE.Mesh(
-    new THREE.PlaneGeometry(MOON_SIZE * 5.2, MOON_SIZE * 1.45),
-    material,
-  );
-  cloud.renderOrder = -70;
-  cloud.position.y = -MOON_SIZE * 0.26;
-  cloud.position.z = 0.08;
-  materials.push(material);
-  group.add(cloud);
-  return { group, materials };
-}
-
-function createBackdropWaterMaterial(): MeshBasicNodeMaterial {
-  const t = time.mul(0.62);
-  const waterUV = positionWorld.xzy;
-  const broadFlow = mx_worley_noise_float(waterUV.mul(0.36).add(t.mul(0.52)));
-  const waveCells = mx_worley_noise_float(
-    waterUV.mul(1.35).add(broadFlow.mul(0.38)).add(t),
-  );
-  const surfaceIntensity = waveCells.mul(broadFlow).mul(1.18);
-  const waterColor = surfaceIntensity.mix(color(0x0476b7), color(0x7bd7f5));
-  const illuminatedColor = waterColor.add(
-    color(0xb7f6ff).mul(surfaceIntensity.mul(0.12)),
-  );
-
-  const depth = linearDepth();
-  const depthWater = viewportLinearDepth.sub(depth);
-  const depthEffect = depthWater.remapClamp(-0.002, 0.045);
-  const refractionUV = screenUV.add(
-    vec2(
-      broadFlow.sub(0.5).mul(0.0035),
-      surfaceIntensity.sub(0.5).mul(0.055),
-    ),
-  );
-  const depthTestForRefraction = linearDepth(
-    viewportDepthTexture(refractionUV),
-  ).sub(depth);
-  const depthRefraction = depthTestForRefraction.remapClamp(0, 0.1);
-  const finalUV = depthTestForRefraction.lessThan(0).select(screenUV, refractionUV);
-  const viewportTexture = viewportSharedTexture(finalUV);
-
-  const material = new MeshBasicNodeMaterial();
-  material.colorNode = illuminatedColor;
-  material.backdropNode = depthEffect.mix(
-    viewportSharedTexture(),
-    viewportTexture.mul(depthRefraction.mix(1, illuminatedColor)),
-  );
-  material.backdropAlphaNode = depthRefraction.oneMinus().mul(0.86);
-  material.transparent = true;
-  material.depthWrite = false;
-  material.side = THREE.DoubleSide;
-  return material;
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
-  if (Array.isArray(material)) {
-    for (const item of material) item.dispose();
-    return;
-  }
-  material.dispose();
-}
-
-function disposeObject(object: THREE.Object3D): void {
-  object.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    child.geometry.dispose();
-    disposeMaterial(child.material);
-  });
-}
-
-function fitModelToHeight(model: THREE.Object3D, targetHeight: number): THREE.Object3D {
-  const bounds = new THREE.Box3().setFromObject(model);
-  const size = bounds.getSize(new THREE.Vector3());
-  const center = bounds.getCenter(new THREE.Vector3());
-  const scale = size.y > 0 ? targetHeight / size.y : 1;
-  model.scale.setScalar(scale);
-  model.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale);
-  model.traverse((child) => {
-    child.frustumCulled = false;
-    if (!(child instanceof THREE.Mesh)) return;
-    child.castShadow = true;
-    child.receiveShadow = true;
-  });
-  return model;
-}
-
-function placeObjectAboveGround(
-  object: THREE.Object3D,
-  position: Vec3,
-  clearance = 0.04,
-): void {
-  object.position.set(position.x, position.y, position.z);
-  const bounds = new THREE.Box3().setFromObject(object);
-  if (!Number.isFinite(bounds.min.y)) return;
-  object.position.y += position.y - bounds.min.y + clearance;
-}
-
-async function loadGltfObject(url: string): Promise<THREE.Object3D> {
-  const cached =
-    gltfObjectCache.get(url) ??
-    createGltfLoader().loadAsync(url).then((gltf) => gltf.scene);
-  gltfObjectCache.set(url, cached);
-  return (await cached).clone(true);
-}
-
-async function loadGeneratedGltfObject(
-  url: string,
-): Promise<{ model: THREE.Object3D; animations: THREE.AnimationClip[] }> {
-  const gltf = await createGltfLoader().loadAsync(url);
-  return { model: gltf.scene, animations: gltf.animations };
-}
-
-function prepareSkyboxModel(model: THREE.Object3D): THREE.Object3D {
-  const bounds = new THREE.Box3().setFromObject(model);
-  const center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const largestAxis = Math.max(size.x, size.y, size.z);
-  const scale = largestAxis > 0 ? 520 / largestAxis : 1;
-
-  model.name = "tellus-external-skybox";
-  model.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
-  model.scale.setScalar(scale);
-  model.renderOrder = -100;
-  model.userData.skyboxBoundsCenter = center;
-  model.userData.skyboxBoundsScale = scale;
-
-  model.traverse((child) => {
-    child.frustumCulled = false;
-    if (!(child instanceof THREE.Mesh)) return;
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    const skyMaterials = materials.map((material) => {
-      const mappedMaterial = material as MaterialWithTextureMaps;
-      const map = mappedMaterial.map ?? mappedMaterial.emissiveMap ?? null;
-      const skyMaterial = new THREE.MeshBasicMaterial({
-        map,
-        color: map ? 0xffffff : 0xaac8f2,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        depthTest: false,
-        fog: false,
-        toneMapped: false,
-      });
-      material.side = THREE.DoubleSide;
-      material.depthWrite = false;
-      return skyMaterial;
-    });
-    child.material = Array.isArray(child.material) ? skyMaterials : skyMaterials[0];
-  });
-
-  return model;
-}
-
-function collectSkyboxTintMaterials(
-  model: THREE.Object3D,
-): THREE.MeshBasicMaterial[] {
-  const materials: THREE.MeshBasicMaterial[] = [];
-  model.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-    const meshMaterials = Array.isArray(child.material)
-      ? child.material
-      : [child.material];
-    for (const material of meshMaterials) {
-      if (material instanceof THREE.MeshBasicMaterial) {
-        materials.push(material);
-      }
-    }
-  });
-  return materials;
-}
-
-function prepareMoonModel(model: THREE.Object3D): {
-  model: THREE.Object3D;
-  materials: THREE.MeshStandardMaterial[];
-} {
-  const bounds = new THREE.Box3().setFromObject(model);
-  const center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const largestAxis = Math.max(size.x, size.y, size.z);
-  const scale = largestAxis > 0 ? MOON_SIZE / largestAxis : 1;
-  const moonMaterials: THREE.MeshStandardMaterial[] = [];
-
-  model.name = "tellus-moon";
-  model.scale.setScalar(scale);
-  model.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
-  model.renderOrder = -80;
-
-  model.traverse((child) => {
-    child.frustumCulled = false;
-    if (!(child instanceof THREE.Mesh)) return;
-    child.renderOrder = -80;
-    child.castShadow = false;
-    child.receiveShadow = false;
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    const preparedMaterials = materials.map((material) => {
-      const mappedMaterial = material as MaterialWithTextureMaps;
-      const moonMaterial = new THREE.MeshStandardMaterial({
-        map: mappedMaterial.map ?? null,
-        emissiveMap: mappedMaterial.map ?? null,
-        color: 0xf4f0e6,
-        emissive: 0xffffff,
-        emissiveIntensity: 1.8,
-        roughness: 0.72,
-        metalness: 0,
-        transparent: false,
-        opacity: 1,
-        depthTest: true,
-        depthWrite: false,
-      });
-      moonMaterials.push(moonMaterial);
-      return moonMaterial;
-    });
-    child.material = Array.isArray(child.material)
-      ? preparedMaterials
-      : preparedMaterials[0];
-  });
-
-  return { model, materials: moonMaterials };
-}
-
-async function loadSkyboxModel(): Promise<
-  { model: THREE.Object3D; url: string } | null
-> {
-  const urls = [
-    runtimeConfig.skyboxUrl,
-    ...SKYBOX_FALLBACK_URLS,
-  ].filter(
-    (url, index, all): url is string =>
-      typeof url === "string" &&
-      url.trim().length > 0 &&
-      all.indexOf(url) === index,
-  );
-
-  for (const url of urls) {
-    try {
-      return { model: prepareSkyboxModel(await loadGltfObject(url)), url };
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
-}
-
-async function loadAgentAvatar(agent: TellusAgent): Promise<THREE.Object3D | null> {
-  if (!agent.avatarUrl) return null;
-  const avatar = await loadGltfObject(agent.avatarUrl);
-  avatar.name = `avatar-${agent.id}`;
-  return fitModelToHeight(avatar, 2.45);
-}
-
-function assetTargetHeight(thing: GeneratedThing): number {
-  const lower = thing.prompt.toLowerCase();
-  const variation = clamp(thing.scale, 0.25, 12);
-  const mode = vehicleMode(thing);
-  if (mode === "air") return clamp(4.8 * variation, 1.6, 54);
-  if (mode === "water") return clamp(1.45 * variation, 0.45, 18);
-  if (mode === "ground") return clamp(2.05 * variation, 0.65, 24);
-  if (thing.kind === "tree") return clamp(4.2 * variation, 0.8, 52);
-  if (
-    lower.includes("hut") ||
-    lower.includes("house") ||
-    lower.includes("cottage") ||
-    lower.includes("cabin") ||
-    lower.includes("workshop") ||
-    lower.includes("building")
-  ) {
-    return clamp(3.6 * variation, 0.9, 48);
-  }
-  if (lower.includes("tower")) return clamp(5.2 * variation, 1.2, 64);
-  if (
-    lower.includes("bridge") ||
-    lower.includes("dock") ||
-    lower.includes("pier") ||
-    lower.includes("path") ||
-    lower.includes("road") ||
-    thing.kind === "path"
-  ) {
-    return clamp(0.42 * variation, 0.12, 8);
-  }
-  if (thing.kind === "animal") return clamp(1.55 * variation, 0.45, 24);
-  if (thing.kind === "flower") return clamp(0.58 * variation, 0.16, 9);
-  if (thing.kind === "stone") return clamp(1.0 * variation, 0.25, 18);
-  if (thing.kind === "shrine") return clamp(2.2 * variation, 0.55, 32);
-  return clamp(1.35 * variation, 0.35, 24);
-}
-
-async function loadGeneratedModel(url: string, thing: GeneratedThing): Promise<THREE.Object3D> {
-  const { model, animations } = await loadGeneratedGltfObject(url);
-  model.name = `pixel3d-${thing.id}`;
-  const fitted = fitModelToHeight(model, assetTargetHeight(thing));
-  fitted.userData = { ...fitted.userData, tellusId: thing.id, kind: thing.kind };
-  if (animations.length > 0) {
-    fitted.userData.animations = animations;
-  }
-  applyThingRotation(fitted, thing);
-  if (isFreeMovingVehicle(thing)) {
-    fitted.position.set(thing.position.x, thing.position.y, thing.position.z);
-  } else {
-    placeObjectAboveGround(fitted, thing.position, 0.08);
-  }
-  return fitted;
-}
-
-function createPondWater(): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "tellus-pond-water";
-  group.userData = { waterSurface: true };
-
-  const { pond } = runtimeConfig.landShape;
-  const waterLevel = pondWaterLevel();
-  const water = new THREE.Mesh(
-    new THREE.CircleGeometry(pond.radius, 96),
-    new THREE.MeshBasicMaterial({
-      color: 0x6fb7d7,
-      transparent: true,
-      opacity: 0.55,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
-  );
-  water.name = "tellus-pond-surface";
-  water.rotation.x = -Math.PI / 2;
-  water.position.set(pond.x, waterLevel, pond.z);
-  water.renderOrder = 2;
-
-  const rippleMaterial = new THREE.MeshBasicMaterial({
-    color: 0xd3f2ff,
-    transparent: true,
-    opacity: 0.3,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const rippleGeometry = new THREE.RingGeometry(0.88, 0.93, 96);
-  const ripples = new THREE.Group();
-  ripples.name = "tellus-pond-ripples";
-  ripples.position.set(pond.x, waterLevel + 0.035, pond.z);
-  ripples.rotation.x = -Math.PI / 2;
-
-  for (let i = 0; i < 4; i++) {
-    const ripple = new THREE.Mesh(rippleGeometry, rippleMaterial.clone());
-    const scale = pond.radius * (0.28 + i * 0.18);
-    ripple.scale.setScalar(scale);
-    ripple.userData = { rippleIndex: i };
-    ripples.add(ripple);
-  }
-
-  const shore = new THREE.Mesh(
-    new THREE.RingGeometry(pond.radius * 0.96, pond.radius * 1.08, 128),
-    new THREE.MeshStandardMaterial({
-      color: 0x7b6b48,
-      roughness: 0.95,
-      metalness: 0,
-    }),
-  );
-  shore.name = "tellus-pond-shore";
-  shore.rotation.x = -Math.PI / 2;
-  shore.position.set(pond.x, waterLevel - 0.035, pond.z);
-
-  group.add(shore, water, ripples);
-  return group;
-}
-
-function createAgentMesh(agent: TellusAgent): THREE.Group {
-  const group = new THREE.Group();
-  group.name = `agent-${agent.id}`;
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: agent.color,
-    roughness: 0.72,
-  });
-  const darkMaterial = new THREE.MeshStandardMaterial({
-    color: 0x182018,
-    roughness: 0.8,
-  });
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.55, 1.25, 6, 12),
-    bodyMaterial,
-  );
-  body.position.y = 1.15;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.48, 16, 12),
-    bodyMaterial,
-  );
-  head.position.y = 2.25;
-  const halo = new THREE.Mesh(
-    new THREE.TorusGeometry(0.7, 0.035, 8, 32),
-    darkMaterial,
-  );
-  halo.position.y = 2.8;
-  halo.rotation.x = Math.PI / 2;
-  group.add(body, head, halo);
-  return group;
-}
-
-function createVisitorMesh(): THREE.Group {
-  const group = new THREE.Group();
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf0d39a,
-    roughness: 0.68,
-  });
-  const robeMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2f5947,
-    roughness: 0.8,
-  });
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.5, 1.2, 6, 12),
-    robeMaterial,
-  );
-  body.position.y = 1.1;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.43, 16, 12),
-    bodyMaterial,
-  );
-  head.position.y = 2.15;
-  const marker = new THREE.Mesh(
-    new THREE.ConeGeometry(0.16, 0.5, 16),
-    bodyMaterial,
-  );
-  marker.position.set(0, 2.72, 0);
-  group.add(body, head, marker);
-  return group;
-}
-
-function createRemoteVisitorMesh(): THREE.Group {
-  const group = new THREE.Group();
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0x8fb8ff,
-    roughness: 0.7,
-  });
-  const markerMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf5f0b8,
-    emissive: 0x334466,
-    emissiveIntensity: 0.35,
-    roughness: 0.55,
-  });
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.46, 1.08, 6, 12),
-    bodyMaterial,
-  );
-  body.position.y = 1.02;
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.38, 16, 12),
-    bodyMaterial,
-  );
-  head.position.y = 1.98;
-  const marker = new THREE.Mesh(
-    new THREE.TorusGeometry(0.52, 0.035, 8, 28),
-    markerMaterial,
-  );
-  marker.position.y = 2.58;
-  marker.rotation.x = Math.PI / 2;
-  group.add(body, head, marker);
-  return group;
-}
-
-function inferGeneratedKind(
-  prompt: string,
-  agentId: AgentId | "visitor",
-): GeneratedKind {
-  const lower = prompt.toLowerCase();
-  if (
-    lower.includes("creature") ||
-    lower.includes("companion") ||
-    lower.includes("beast") ||
-    lower.includes("critter") ||
-    lower.includes("animal") ||
-    lower.includes("fox") ||
-    lower.includes("bird") ||
-    lower.includes("eagle") ||
-    lower.includes("horse") ||
-    lower.includes("dolphin") ||
-    lower.includes("orca") ||
-    lower.includes("whale") ||
-    lower.includes("fish") ||
-    lower.includes("reptile")
-  )
-    return "animal";
-  if (
-    lower.includes("hut") ||
-    lower.includes("house") ||
-    lower.includes("workshop") ||
-    lower.includes("building") ||
-    lower.includes("cottage") ||
-    lower.includes("cabin") ||
-    lower.includes("tower") ||
-    lower.includes("lantern") ||
-    lower.includes("bridge") ||
-    lower.includes("dock") ||
-    lower.includes("boat") ||
-    lower.includes("tool") ||
-    lower.includes("vehicle") ||
-    lower.includes("statue") ||
-    lower.includes("object") ||
-    lower.includes("prop")
-  )
-    return "object";
-  if (
-    lower.includes("tree") ||
-    lower.includes("apple") ||
-    lower.includes("forest") ||
-    lower.includes("sapling")
-  )
-    return "tree";
-  if (
-    lower.includes("balloon") ||
-    lower.includes("airship") ||
-    lower.includes("zeppelin")
-  )
-    return "balloon";
-  if (lower.includes("flower") || lower.includes("moss")) return "flower";
-  if (
-    lower.includes("stone") ||
-    lower.includes("rock") ||
-    lower.includes("cairn")
-  )
-    return "stone";
-  if (lower.includes("path") || lower.includes("trail")) return "path";
-  if (lower.includes("shrine") || lower.includes("altar")) return "shrine";
-  if (lower.includes("seed")) return "seed";
-  if (agentId === "sol") return rand(Date.now()) > 0.55 ? "stone" : "shrine";
-  if (agentId === "mira") return rand(Date.now()) > 0.5 ? "animal" : "flower";
-  return "object";
-}
-
-function promptAccent(prompt: string): number {
-  let hash = 0;
-  for (let i = 0; i < prompt.length; i++) {
-    hash = (hash * 31 + prompt.charCodeAt(i)) >>> 0;
-  }
-  const hue = hash % 360;
-  const color = new THREE.Color().setHSL(hue / 360, 0.55, 0.58);
-  return color.getHex();
-}
-
-function kindColor(kind: GeneratedKind, prompt: string): number {
-  if (kind === "tree")
-    return prompt.toLowerCase().includes("apple") ? 0x68a845 : 0x4f8f3a;
-  if (kind === "flower") return 0xe7a0cf;
-  if (kind === "stone") return 0x9b9b90;
-  if (kind === "animal") return 0xb9824b;
-  if (kind === "path") return 0x9a7447;
-  if (kind === "shrine") return 0x7d83b5;
-  if (kind === "balloon") return 0xf0a65f;
-  if (kind === "object") return promptAccent(prompt);
-  return 0xd3c17a;
-}
-
-function createGeneratedMesh(thing: GeneratedThing): THREE.Object3D {
-  const material = new THREE.MeshStandardMaterial({
-    color: thing.color,
-    roughness: 0.85,
-    metalness: 0,
-  });
-  const group = new THREE.Group();
-  group.name = thing.id;
-  group.userData = { tellusId: thing.id, kind: thing.kind };
-
-  if (thing.kind === "tree") {
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.14, 0.22, 1.6, 8),
-      new THREE.MeshStandardMaterial({ color: 0x6d4a2d }),
-    );
-    trunk.position.y = 0.8 * thing.scale;
-    trunk.scale.multiplyScalar(thing.scale);
-    const crown = new THREE.Mesh(
-      new THREE.SphereGeometry(0.85, 14, 10),
-      material,
-    );
-    crown.position.y = 1.95 * thing.scale;
-    crown.scale.setScalar(thing.scale);
-    const fruit = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 8, 6),
-      new THREE.MeshStandardMaterial({ color: 0xb9352d }),
-    );
-    fruit.position.set(
-      0.35 * thing.scale,
-      2.1 * thing.scale,
-      0.32 * thing.scale,
-    );
-    group.add(trunk, crown, fruit);
-  } else if (thing.kind === "flower") {
-    const stem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.025, 0.035, 0.55, 6),
-      new THREE.MeshStandardMaterial({ color: 0x407a35 }),
-    );
-    stem.position.y = 0.28;
-    const bloom = new THREE.Mesh(
-      new THREE.SphereGeometry(0.18 * thing.scale, 10, 8),
-      material,
-    );
-    bloom.position.y = 0.62;
-    group.add(stem, bloom);
-  } else if (thing.kind === "animal") {
-    const body = new THREE.Mesh(
-      new THREE.SphereGeometry(0.42, 12, 8),
-      material,
-    );
-    body.scale.set(1.5, 0.75, 0.8);
-    body.position.y = 0.5;
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.26, 10, 8),
-      material,
-    );
-    head.position.set(0.62, 0.58, 0);
-    group.add(body, head);
-  } else if (thing.kind === "path") {
-    const path = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        1.2 * thing.scale,
-        1.2 * thing.scale,
-        0.05,
-        18,
-      ),
-      material,
-    );
-    path.scale.z = 0.45;
-    path.position.y = 0.03;
-    group.add(path);
-  } else if (thing.kind === "shrine") {
-    const base = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.75, 0.9, 0.35, 6),
-      material,
-    );
-    base.position.y = 0.18;
-    const top = new THREE.Mesh(new THREE.ConeGeometry(0.55, 1.1, 6), material);
-    top.position.y = 0.9;
-    group.add(base, top);
-  } else if (thing.kind === "balloon") {
-    const envelope = new THREE.Mesh(
-      new THREE.SphereGeometry(0.72 * thing.scale, 24, 16),
-      material,
-    );
-    envelope.scale.set(0.9, 1.18, 0.9);
-    envelope.position.y = 2.05 * thing.scale;
-
-    const band = new THREE.Mesh(
-      new THREE.TorusGeometry(0.52 * thing.scale, 0.035 * thing.scale, 8, 24),
-      new THREE.MeshStandardMaterial({ color: 0xffe2a8, roughness: 0.7 }),
-    );
-    band.rotation.x = Math.PI / 2;
-    band.position.y = 2.02 * thing.scale;
-
-    const basket = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        0.48 * thing.scale,
-        0.34 * thing.scale,
-        0.42 * thing.scale,
-      ),
-      new THREE.MeshStandardMaterial({ color: 0x8b5c35, roughness: 0.9 }),
-    );
-    basket.position.y = 0.72 * thing.scale;
-
-    const ropeMaterial = new THREE.MeshStandardMaterial({
-      color: 0x4c3b2a,
-      roughness: 0.8,
-    });
-    const ropeOffsets = [
-      [-0.26, -0.2],
-      [0.26, -0.2],
-      [-0.26, 0.2],
-      [0.26, 0.2],
-    ] as const;
-    for (const [x, z] of ropeOffsets) {
-      const rope = new THREE.Mesh(
-        new THREE.CylinderGeometry(
-          0.012 * thing.scale,
-          0.012 * thing.scale,
-          1.08 * thing.scale,
-          6,
-        ),
-        ropeMaterial,
-      );
-      rope.position.set(x * thing.scale, 1.2 * thing.scale, z * thing.scale);
-      group.add(rope);
-    }
-
-    group.add(envelope, band, basket);
-  } else if (thing.kind === "object") {
-    const hash = Array.from(thing.prompt).reduce(
-      (sum, char) => sum + char.charCodeAt(0),
-      0,
-    );
-    const accentMaterial = new THREE.MeshStandardMaterial({
-      color: promptAccent(`${thing.prompt}:accent`),
-      roughness: 0.72,
-      metalness: 0.03,
-    });
-    const base =
-      hash % 3 === 0
-        ? new THREE.Mesh(
-            new THREE.BoxGeometry(
-              0.78 * thing.scale,
-              0.5 * thing.scale,
-              0.78 * thing.scale,
-            ),
-            material,
-          )
-        : hash % 3 === 1
-          ? new THREE.Mesh(
-              new THREE.IcosahedronGeometry(0.48 * thing.scale, 1),
-              material,
-            )
-          : new THREE.Mesh(
-              new THREE.CylinderGeometry(
-                0.46 * thing.scale,
-                0.58 * thing.scale,
-                0.62 * thing.scale,
-                7,
-              ),
-              material,
-            );
-    base.position.y = 0.36 * thing.scale;
-
-    const crown =
-      hash % 2 === 0
-        ? new THREE.Mesh(
-            new THREE.ConeGeometry(0.4 * thing.scale, 0.8 * thing.scale, 7),
-            accentMaterial,
-          )
-        : new THREE.Mesh(
-            new THREE.SphereGeometry(0.32 * thing.scale, 12, 8),
-            accentMaterial,
-          );
-    crown.position.y = 0.98 * thing.scale;
-
-    const marker = new THREE.Mesh(
-      new THREE.TorusGeometry(0.48 * thing.scale, 0.025 * thing.scale, 8, 28),
-      new THREE.MeshStandardMaterial({
-        color: 0xf7ead1,
-        roughness: 0.55,
-        metalness: 0.02,
-      }),
-    );
-    marker.rotation.x = Math.PI / 2;
-    marker.position.y = 0.18 * thing.scale;
-
-    group.add(base, crown, marker);
-  } else {
-    const seed = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.35 * thing.scale, 1),
-      material,
-    );
-    seed.position.y = 0.32;
-    group.add(seed);
-  }
-
-  if (
-    isFreeMovingVehicle(thing) ||
-    isIntentionallyElevated(thing) ||
-    Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
-  ) {
-    group.position.set(thing.position.x, thing.position.y, thing.position.z);
-  } else {
-    placeObjectAboveGround(group, thing.position, 0.025);
-  }
-  const targetHeight = assetTargetHeight(thing);
-  const bounds = new THREE.Box3().setFromObject(group);
-  const size = bounds.getSize(new THREE.Vector3());
-  if (size.y > 0) {
-    const scale = clamp(targetHeight / size.y, 0.45, 3.6);
-    group.scale.multiplyScalar(scale);
-    if (
-      isFreeMovingVehicle(thing) ||
-      isIntentionallyElevated(thing) ||
-      Math.hypot(thing.position.x, thing.position.z) > WORLD_RADIUS
-    ) {
-      group.position.set(thing.position.x, thing.position.y, thing.position.z);
-    } else {
-      placeObjectAboveGround(group, thing.position, 0.025);
-    }
-  }
-  applyThingRotation(group, thing);
-  return group;
-}
-
-function createGenerationSwirl(thing: GeneratedThing): THREE.Object3D {
-  const group = new THREE.Group();
-  group.name = thing.id;
-  group.userData = { tellusId: thing.id, kind: thing.kind, generatingSwirl: true };
-
-  const primary = new THREE.Color(thing.color);
-  const light = primary.clone().lerp(new THREE.Color(0xffffff), 0.58);
-  const material = new THREE.MeshBasicMaterial({
-    color: light,
-    transparent: true,
-    opacity: 0.78,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-
-  const ringGeometry = new THREE.TorusGeometry(0.52, 0.018, 8, 56);
-  for (let i = 0; i < 3; i++) {
-    const ring = new THREE.Mesh(ringGeometry, material.clone());
-    ring.userData = { swirlRing: i };
-    ring.rotation.x = Math.PI / 2 + i * 0.62;
-    ring.rotation.y = i * 0.48;
-    ring.position.y = 0.55 + i * 0.22;
-    ring.scale.setScalar(0.72 + i * 0.18);
-    group.add(ring);
-  }
-
-  const sparkMaterial = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.86,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  const sparkGeometry = new THREE.SphereGeometry(0.045, 8, 6);
-  for (let i = 0; i < 7; i++) {
-    const spark = new THREE.Mesh(sparkGeometry, sparkMaterial.clone());
-    const angle = (i / 7) * Math.PI * 2;
-    spark.userData = { swirlSpark: i, baseAngle: angle };
-    spark.position.set(Math.cos(angle) * 0.56, 0.72 + i * 0.09, Math.sin(angle) * 0.56);
-    group.add(spark);
-  }
-
-  group.position.set(thing.position.x, thing.position.y + 0.08, thing.position.z);
-  group.userData.baseY = group.position.y;
-  return group;
-}
-
-function shouldShowGenerationSwirl(thing: GeneratedThing): boolean {
-  if (thing.generationStatus === "queued" || thing.generationStatus === "generating") {
-    return true;
-  }
-  if (thing.generationStatus === "failed" && !thing.modelUrl) {
-    return true;
-  }
-  return Boolean(thing.modelUrl && thing.generationStatus === "ready");
-}
-
-function applyThingRotation(object: THREE.Object3D, thing: GeneratedThing): void {
-  object.rotation.set(thing.rotationX ?? 0, thing.rotationY, thing.rotationZ ?? 0);
-}
-
-const johnnyFallbackIdeas = [
-  "a sunlit footbridge made of pale cedar crossing a small stream",
-  "a tiny workshop hut with mossy shingles and brass tools outside",
-  "a gentle stone creature curled beside a patch of blue flowers",
-  "a hot air balloon moored beside a garden path",
-  "a clear pond with lilies, stepping stones, and a little wooden dock",
-  "a spiral lantern tower that glows softly near the mountain",
-  "a weathered sailboat with a folded cream canvas sail",
-  "a copper rain collector shaped like a broad leaf",
-  "a carved stone waygate with glowing moss in its grooves",
-  "a tiny apiary box painted yellow beside wildflowers",
-  "a driftwood fishing pier with rope-wrapped posts",
-  "a round observatory hut with a brass telescope on top",
-  "a blue ceramic fountain shaped like a moon shell",
-  "a small windmill pump with white wooden blades",
-  "a low stone bridge with fern-filled cracks",
-  "a mossy outdoor workbench covered with clay pots",
-  "a floating lantern buoy tethered to a wooden stake",
-  "a red berry tree with a hollow doorway in its trunk",
-  "a tiny clay kiln with stacked firewood beside it",
-  "a curved boardwalk segment made from dark wet planks",
-  "a one-seat glider with leaf-shaped green wings",
-  "a crystal marker obelisk set into a grassy mound",
-  "a striped canvas market awning on two cedar poles",
-  "a little stone well with a wooden crank and bucket",
-];
-
-function normalizeAssetPrompt(prompt: string): string {
-  return prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]+/g, " ")
-    .replace(
-      /\b(a|an|the|with|and|of|made|from|for|near|beside|next|to|little|tiny|small)\b/g,
-      " ",
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function promptAlreadyExists(prompt: string, generated: GeneratedThing[]): boolean {
-  const normalized = normalizeAssetPrompt(prompt);
-  if (!normalized) return false;
-  return generated.some((thing) => normalizeAssetPrompt(thing.prompt) === normalized);
-}
-
-function terrainEditModeFromValue(value: unknown): TerrainEditMode | undefined {
-  if (value === "raise" || value === "lower" || value === "flatten") {
-    return value;
-  }
-  if (typeof value === "string" && isTerrainPaintMode(value as TerrainEditMode)) {
-    return value as TerrainPaintKind;
-  }
-  return undefined;
-}
-
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function agentDecisionAction(value: unknown): AgentDecision["action"] {
-  return value === "moveSelf" ||
-    value === "sculptTerrain" ||
-    value === "moveAsset" ||
-    value === "rotateAsset" ||
-    value === "scaleAsset" ||
-    value === "moveAssetToWater"
-    ? value
-    : "generate";
-}
-
-function chooseAgentPrompt(
-  agent: TellusAgent,
-  generated: GeneratedThing[],
-): string {
-  if (agent.id === "johnny") {
-    const start = generated.length % johnnyFallbackIdeas.length;
-    for (let i = 0; i < johnnyFallbackIdeas.length; i++) {
-      const idea = johnnyFallbackIdeas[(start + i) % johnnyFallbackIdeas.length];
-      if (!promptAlreadyExists(idea, generated)) return idea;
-    }
-    return `a unique carved island relic number ${generated.length + 1} with a distinct silhouette`;
-  }
-  if (agent.id === "mira") {
-    return generated.length % 2 === 0
-      ? "a curious amber fox nosing around the meadow"
-      : "a patch of blue flowers where animals can rest";
-  }
-  return generated.length % 2 === 0
-    ? "a hand-placed stone cairn that points toward the summit"
-    : "a narrow dirt path spiraling gently toward the mountain";
-}
-
-function ensureNovelAgentDecision(
-  decision: AgentDecision,
-  agent: TellusAgent,
-  generated: GeneratedThing[],
-): AgentDecision {
-  if (decision.action && decision.action !== "generate") {
-    return decision;
-  }
-  const prompt = decision.prompt.trim();
-  if (!promptAlreadyExists(prompt, generated)) {
-    return { ...decision, action: decision.action ?? "generate", prompt };
-  }
-  const replacementPrompt = chooseAgentPrompt(agent, generated);
-  return {
-    ...decision,
-    action: "generate",
-    prompt: replacementPrompt,
-    intent:
-      decision.intent ??
-      "study what should live near here next and how this new asset changes the world",
-    speech:
-      decision.speech ??
-      "I will add something different so this place keeps unfolding.",
-  };
-}
-
-function extractJsonObject(text: string): unknown {
-  const trimmed = text.trim();
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start < 0 || end <= start) return null;
-    try {
-      return JSON.parse(trimmed.slice(start, end + 1)) as unknown;
-    } catch {
-      return null;
-    }
-  }
-}
-
-function parseAgentDecision(content: string, fallbackPrompt: string): AgentDecision {
-  const parsed = extractJsonObject(content);
-  if (isRecord(parsed)) {
-    const action = agentDecisionAction(parsed.action);
-    const prompt = parsed.prompt;
-    const intent = parsed.intent;
-    const speech = parsed.speech;
-    return {
-      action,
-      prompt: typeof prompt === "string" && prompt.trim() ? prompt.trim() : fallbackPrompt,
-      intent: typeof intent === "string" && intent.trim() ? intent.trim() : undefined,
-      speech: typeof speech === "string" && speech.trim() ? speech.trim() : undefined,
-      terrainMode: terrainEditModeFromValue(parsed.terrainMode),
-      targetId: typeof parsed.targetId === "string" && parsed.targetId.trim()
-        ? parsed.targetId.trim()
-        : undefined,
-      dx: finiteNumber(parsed.dx),
-      dz: finiteNumber(parsed.dz),
-      rotation: finiteNumber(parsed.rotation),
-      scaleMultiplier: finiteNumber(parsed.scaleMultiplier),
-    };
-  }
-  return { action: "generate", prompt: content.trim() || fallbackPrompt };
-}
-
-function chooseAgentLocation(
-  agent: TellusAgent,
-  prompt: string,
-): GenerateRequest["location"] {
-  const lower = prompt.toLowerCase();
-  if (
-    lower.includes("mountain") ||
-    lower.includes("summit") ||
-    lower.includes("tower") ||
-    lower.includes("shrine") ||
-    lower.includes("cairn")
-  ) {
-    return "near-mountain";
-  }
-  if (
-    lower.includes("pond") ||
-    lower.includes("water") ||
-    lower.includes("stream") ||
-    lower.includes("river") ||
-    lower.includes("dock") ||
-    lower.includes("boat") ||
-    lower.includes("lily") ||
-    lower.includes("fish")
-  ) {
-    return "near-pond";
-  }
-  if (agent.id === "sol") return "near-mountain";
-  if (agent.id === "mira") return "near-pond";
-  return "near-agent";
-}
-
-function compassDirection(from: Vec3, to: Vec3): string {
-  const angle = Math.atan2(to.z - from.z, to.x - from.x);
-  const directions = ["east", "southeast", "south", "southwest", "west", "northwest", "north", "northeast"];
-  const index = Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % directions.length;
-  return directions[index];
-}
-
-function describeAgentPerception(
-  agent: TellusAgent,
-  generated: GeneratedThing[],
-  logs: TellusLog[],
-  visualFeedback: string,
-): string {
-  const groundHeight = terrainHeight(agent.position.x, agent.position.z);
-  const localTerrain = terrainKind(agent.position.x, agent.position.z, groundHeight);
-  const { pond } = runtimeConfig.landShape;
-  const distanceToPond = Math.hypot(
-    agent.position.x - pond.x,
-    agent.position.z - pond.z,
-  );
-  const distanceToSummit = Math.hypot(agent.position.x, agent.position.z);
-  const distanceToShore = Math.max(0, WORLD_RADIUS - Math.hypot(agent.position.x, agent.position.z));
-  const nearby = generated
-    .map((thing) => ({
-      thing,
-      distance: distance2D(agent.position, thing.position),
-    }))
-    .sort((a, b) => a.distance - b.distance)
-    .slice(0, 8)
-    .map(({ thing, distance }) => {
-      const status = thing.generationStatus && thing.generationStatus !== "ready"
-        ? `, ${thing.generationStatus}`
-        : "";
-      return `- id ${thing.id}: ${Math.round(distance)}m ${compassDirection(agent.position, thing.position)}: ${thing.kind} "${thing.prompt}"${status}, ${thing.scale.toFixed(1)}x`;
-    })
-    .join("\n");
-  const lastOwnAsset = [...generated]
-    .reverse()
-    .find((thing) => thing.creatorId === agent.id);
-  const pending = generated
-    .filter(
-      (thing) =>
-        thing.generationStatus === "queued" ||
-        thing.generationStatus === "generating",
-    )
-    .map((thing) => `- ${thing.kind} "${thing.prompt}" by ${thing.creatorId}: ${thing.generationStatus}`)
-    .join("\n");
-  const recentChanges = logs
-    .filter(
-      (log) =>
-        log.tool === "generate" ||
-        log.text.includes("terrain") ||
-        log.text.includes("Loaded") ||
-        log.text.includes("deleted"),
-    )
-    .slice(-6)
-    .map((log) => `- ${log.agentName}: ${log.text}`)
-    .join("\n");
-
-  return [
-    `You are at x ${agent.position.x.toFixed(1)}, z ${agent.position.z.toFixed(1)}, on ${localTerrain} terrain at height ${groundHeight.toFixed(1)}.`,
-    `Landmarks: pond ${Math.round(distanceToPond)}m away, mountain summit ${Math.round(distanceToSummit)}m away, shore ${Math.round(distanceToShore)}m away.`,
-    `Nearby visible assets:\n${nearby || "none nearby"}`,
-    `Your last generated asset: ${lastOwnAsset ? `${lastOwnAsset.kind} "${lastOwnAsset.prompt}" (${lastOwnAsset.generationStatus ?? "local"})` : "none yet"}`,
-    `Pending asset generation:\n${pending || "none"}`,
-    `Recent visible world changes:\n${recentChanges || "none"}`,
-    `Visual world feedback from your stable body camera:\n${visualFeedback || "not captured yet"}`,
-  ].join("\n\n");
-}
-
-function chatContent(completion: ChatCompletionResponse): string {
-  return completion.choices?.[0]?.message?.content?.trim() ?? "";
-}
-
-async function askAgentForDecision(
-  agent: TellusAgent,
-  generated: GeneratedThing[],
-  logs: TellusLog[],
-  visualFeedback: string,
-): Promise<AgentDecision> {
-  const fallbackPrompt = chooseAgentPrompt(agent, generated);
-  const recentObjects = generated
-    .slice(-12)
-    .map((thing) => `${thing.kind}: ${thing.prompt}`)
-    .join("\n");
-  const forbiddenPrompts = generated
-    .slice(-24)
-    .map((thing) => `- ${thing.prompt}`)
-    .join("\n");
-  const recentLogs = logs
-    .slice(-8)
-    .map((log) => `${log.agentName}: ${log.text}`)
-    .join("\n");
-  const perception = describeAgentPerception(agent, generated, logs, visualFeedback);
-  const controllableObjects = generated
-    .slice(-16)
-    .map(
-      (thing) =>
-        `- id ${thing.id}: ${thing.kind} "${thing.prompt}" at x ${thing.position.x.toFixed(1)}, z ${thing.position.z.toFixed(1)}, scale ${thing.scale.toFixed(2)}x`,
-    )
-    .join("\n");
-
-  const response = await fetch(tellusApiUrl("/api/chat"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: runtimeConfig.agentModel,
-      temperature: 0.85,
-      max_tokens: 700,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an enabled autonomous AI inside Tellus, a tiny living WebGPU world. You can perceive a textual view and a visual screenshot from your own stable body camera, not the visitor camera. Choose exactly one world action. Return only JSON. Use action \"moveSelf\" with dx and dz between -8 and 8 to walk your own body to a better viewpoint. Use action \"generate\" with keys prompt, intent, speech to add one single asset. Or use action \"sculptTerrain\" with terrainMode one of raise, lower, flatten, meadow, beach, dirt, rock, snow, flowers. Or use action \"moveAsset\" with targetId plus dx and dz between -4 and 4. Or use action \"rotateAsset\" with targetId plus rotation between -1 and 1 radians. Or use action \"scaleAsset\" with targetId plus scaleMultiplier between 0.65 and 1.5. Or use action \"moveAssetToWater\" with targetId. Do not repeat existing generated objects. The speech should be one short in-character sentence said aloud before you act.",
-        },
-        {
-          role: "user",
-          content: [
-            `Agent: ${agent.name}, ${agent.epithet}`,
-            `Goal: ${agent.goal}`,
-            `Current perception:\n${perception}`,
-            `Current generated count: ${generated.length}`,
-            `Recent objects:\n${recentObjects || "none yet"}`,
-            `Controllable object ids:\n${controllableObjects || "none yet"}`,
-            `Do not generate these again, even as near synonyms:\n${forbiddenPrompts || "none yet"}`,
-            `Recent logs:\n${recentLogs || "none yet"}`,
-            `Fallback idea: ${fallbackPrompt}`,
-          ].join("\n\n"),
-        },
-      ],
-    }),
-  });
-  const completion = await readJsonResponse<ChatCompletionResponse>(response);
-  const content = chatContent(completion);
-  if (!content) return { prompt: fallbackPrompt };
-  return ensureNovelAgentDecision(
-    parseAgentDecision(content, fallbackPrompt),
-    agent,
-    generated,
-  );
-}
-
-async function askAgentForReply(
-  agent: TellusAgent,
-  message: string,
-  generated: GeneratedThing[],
-  logs: TellusLog[],
-  visualFeedback: string,
-): Promise<string> {
-  const perception = describeAgentPerception(agent, generated, logs, visualFeedback);
-  const recentObjects = generated
-    .slice(-10)
-    .map((thing) => `${thing.kind}: ${thing.prompt}`)
-    .join("\n");
-  const recentLogs = logs
-    .slice(-10)
-    .map((log) => `${log.agentName}: ${log.text}`)
-    .join("\n");
-  const response = await fetch(tellusApiUrl("/api/chat"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: runtimeConfig.agentModel,
-      temperature: 0.75,
-      max_tokens: 700,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a living agent inside Tellus. Reply in character in one or two short sentences. Do not return JSON. Be concrete about what you see, want, or will do next.",
-        },
-        {
-          role: "user",
-          content: [
-            `Agent: ${agent.name}, ${agent.epithet}`,
-            `Goal: ${agent.goal}`,
-            `Current perception:\n${perception}`,
-            `Visitor says: ${message}`,
-            `Recent objects:\n${recentObjects || "none yet"}`,
-            `Recent logs:\n${recentLogs || "none yet"}`,
-          ].join("\n\n"),
-        },
-      ],
-    }),
-  });
-  const completion = await readJsonResponse<ChatCompletionResponse>(response);
-  const content = chatContent(completion);
-  return content || `${agent.name} listens, then turns back toward the world with a new idea.`;
 }
 
 function createTellusWorld(
@@ -3849,28 +194,46 @@ function createTellusWorld(
   onSnapshot: (snapshot: TellusSnapshot) => void,
 ): TellusWorldApi {
   let destroyed = false;
-  let paused = false;
   let animationId = 0;
   let lastTime = performance.now();
+  // Debug FPS counter (sampled every 500ms); surfaced via getFps() for the hidden FPS overlay.
+  let fpsValue = 0;
+  let fpsFrames = 0;
+  let fpsSampleStart = lastTime;
   let tick = 0;
   let renderer: THREE.WebGLRenderer | WebGPURenderer | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let renderIssueLogged = false;
 
-  const agents = createAgentSeeds().map((agent) => ({
-    ...agent,
-    position: { ...agent.position },
-    target: { ...agent.target },
-    nextActionAt: performance.now() + AUTONOMOUS_ASSET_INTERVAL_MS,
-    nextReflectionAt: performance.now() + AUTONOMOUS_REFLECTION_OFFSET_MS,
-  }));
   const generated: GeneratedThing[] = [];
   const logs: TellusLog[] = [];
   const generatedMeshes = new Map<string, THREE.Object3D>();
   const generatedAnimationMixers = new Map<string, THREE.AnimationMixer>();
-  const agentMeshes = new Map<AgentId, THREE.Group>();
+  // Placed VRM things (auton/Atlantean store models) animate through a real VRM rig — a VRMA idle clip
+  // looped by default, advanced (mixer + spring bones) each frame here. Parallel to the plain-GLB
+  // mixers above; a thing is in exactly one of the two maps.
+  const generatedVrmRigs = new Map<string, VrmObjectRig>();
+  // GPU-instancing of static duplicated generated models (flag-gated; default OFF). One InstancePool per
+  // modelUrl holds one THREE.InstancedMesh per sub-mesh of the shared GLB; folded ("instanced") things keep
+  // their regular mesh in the scene but `visible = false`, and we copy that hidden mesh's per-sub-mesh
+  // matrixWorld into the matching instance slot. NOTHING here ever throws into the render loop — every op is
+  // wrapped, and any failure disables instancing for the group and reverts its meshes to visible. See
+  // reevaluateInstanceGroup / instancePools below `thingById`.
+  interface InstancePool {
+    modelUrl: string;
+    instanced: THREE.InstancedMesh[]; // one per sub-mesh, in deterministic traversal order
+    subMeshCount: number;
+    capacity: number;
+    freeSlots: number[]; // recycled slot indices (LIFO)
+    nextSlot: number; // next never-used slot index
+    slotToThing: Map<number, string>; // slot -> thing.id (reverse map for picking)
+    thingToSlot: Map<string, number>; // thing.id -> slot
+    disabled: boolean; // a failure here disables the whole group, reverting to regular meshes
+  }
+  const instancePools = new Map<string, InstancePool>();
+  // Model URLs whose instancing hit an error once — never re-attempt for the session (they stay regular).
+  const instancingDisabledUrls = new Set<string>();
   const skyboxTintMaterials = new Set<THREE.MeshBasicMaterial>();
-  const pendingAgentDecisions = new Set<AgentId>();
   const pendingGenerationControllers = new Map<string, AbortController>();
   const pendingManifestReconciliations = new Set<string>();
   const keys = new Set<string>();
@@ -3880,12 +243,6 @@ function createTellusWorld(
   let moonModel: THREE.Object3D | null = null;
   const moonMaterials = new Set<THREE.MeshStandardMaterial>();
   const moonCloudVeil = createMoonCloudVeil();
-  let visualFeedback = "";
-  let nextWorldFeedbackAt =
-    performance.now() + WORLD_FEEDBACK_START_DELAY_MS;
-  let worldFeedbackPending = false;
-  let worldFeedbackIssueLogged = false;
-  let worldFeedbackAvailable = true;
   let directGenerationAvailable = true;
   let worldSocket: WebSocket | null = null;
   let worldSocketReconnectTimer: number | undefined;
@@ -3894,7 +251,190 @@ function createTellusWorld(
   const userId = tellusUserId();
   const remoteVisitorMeshes = new Map<string, THREE.Group>();
   const remoteVisitors = new Map<string, WorldPresence>();
+  // Rigged VRM avatar upgrades, keyed by visitorId (the local player's rig uses its own visitorId
+  // — applyRemotePresence never creates a remote entry for it). Each rig's update(dt) runs in
+  // animate(); rigs are disposed on remote prune and on destroy.
+  const avatarRigs = new Map<string, AvatarRig>();
   let lastPresenceSentAt = 0;
+
+  // ── P2P video mesh (WebRTC, RX-on/TX-off by default) ──────────────────────
+  // The mesh is the sole owner of all RTCPeerConnections; it lives outside the render loop and
+  // contains every async failure (a dead peer just leaves its TV on static). Hyades is the
+  // rendezvous only: signaling rides the /live WS, presence IS the peer roster, ICE comes from
+  // the world snapshot. Constructed lazily once ICE config is known.
+  let p2pMesh: WebRtcMesh | null = null;
+  let p2pIceServers: RTCIceServer[] = [
+    { urls: ["stun:stun.l.google.com:19302"] },
+  ];
+  let latestP2pStats: MeshStats | null = null;
+  let pendingPeerRoster: string[] | null = null;
+  // Streams that arrived before their avatar mesh existed (race on presence vs ontrack).
+  const pendingPeerStreams = new Map<string, MediaStream | null>();
+
+  const p2pSupported =
+    typeof RTCPeerConnection !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia);
+
+  // P2P diagnostics: on by default (low volume) so connection issues are visible in the console;
+  // silence with localStorage 'tellus.p2pDebug' = '0'.
+  const p2pLog = (...args: unknown[]): void => {
+    try {
+      if (window.localStorage.getItem("tellus.p2pDebug") === "0") return;
+    } catch {
+      /* ignore */
+    }
+    console.info("[p2p]", ...args);
+  };
+
+  const sendRtcSignal = (
+    to: string | null,
+    kind: string,
+    payload: string,
+  ): void => {
+    if (!worldSocket || worldSocket.readyState !== WebSocket.OPEN) {
+      p2pLog("send DROPPED (socket not open)", kind, "->", to);
+      return;
+    }
+    try {
+      worldSocket.send(
+        JSON.stringify({
+          type: "signal",
+          visitorId,
+          signal: { to, kind, payload },
+        }),
+      );
+      p2pLog("send", kind, "->", to);
+    } catch {
+      /* socket race — peer will retry via renegotiation */
+    }
+  };
+
+  // P2P audio: remote TV-head <video>s start muted (autoplay-safe); the "Listen" toggle unmutes them all.
+  let remoteAudioOn = false;
+  const applyRemoteAudio = (screen: THREE.Mesh): void => {
+    const vid = (screen.userData.tvScreen as { videoEl?: HTMLVideoElement } | undefined)?.videoEl;
+    if (vid) vid.muted = !remoteAudioOn;
+  };
+
+  // Swap a remote avatar's TV screen to a live stream (or back to static when stream === null).
+  const setPeerVideo = (peerId: string, stream: MediaStream | null): void => {
+    const mesh = remoteVisitorMeshes.get(peerId);
+    if (!mesh) {
+      // Avatar not built yet — remember and apply when applyRemotePresence creates it.
+      pendingPeerStreams.set(peerId, stream);
+      return;
+    }
+    const screen = mesh.userData.tvScreenRef as THREE.Mesh | undefined;
+    if (!screen) return;
+    if (stream) {
+      applyVideoToScreen(screen, stream);
+      applyRemoteAudio(screen); // honor the current Listen state for the new <video>
+    } else {
+      applyStaticToScreen(screen, useWebGPU);
+    }
+  };
+
+  // Unmute/mute every peer's TV-head audio (RX audio). Click is the user gesture browsers require.
+  const setRemoteAudioEnabled = (on: boolean): void => {
+    remoteAudioOn = on;
+    for (const mesh of remoteVisitorMeshes.values()) {
+      const screen = mesh.userData.tvScreenRef as THREE.Mesh | undefined;
+      if (screen) applyRemoteAudio(screen);
+    }
+  };
+
+  // Self-view: the local player's OWN camera renders on their own avatar's TV head when TX is on
+  // (and is also exposed to the P2P panel preview via getSelfStream). `visitor` is created later in
+  // this closure but this runs only after TX-on, by which time it exists.
+  let selfStream: MediaStream | null = null;
+  const setSelfVideo = (stream: MediaStream | null): void => {
+    selfStream = stream;
+    const screen = visitor?.userData.tvScreenRef as THREE.Mesh | undefined;
+    if (!screen) return;
+    if (stream) {
+      applyVideoToScreen(screen, stream);
+    } else {
+      applyStaticToScreen(screen, useWebGPU);
+    }
+  };
+
+  const feedP2pPresence = (peerIds: string[]): void => {
+    if (p2pMesh) {
+      p2pLog("roster", peerIds);
+      p2pMesh.setPresence(peerIds);
+    } else {
+      p2pLog("roster (mesh pending)", peerIds);
+      pendingPeerRoster = peerIds;
+    }
+  };
+
+  let lastP2pStatesLog = "";
+  const ensureP2pMesh = (): void => {
+    if (p2pMesh || !p2pSupported) {
+      if (!p2pSupported) p2pLog("UNSUPPORTED (no RTCPeerConnection/getUserMedia)");
+      return;
+    }
+    p2pLog("mesh ready, self=", visitorId, "ice=", p2pIceServers);
+    p2pMesh = new WebRtcMesh({
+      selfId: visitorId,
+      iceServers: p2pIceServers,
+      sendSignal: (to, kind, payload) => sendRtcSignal(to, kind, payload),
+      onPeerStream: (peerId, stream) => {
+        p2pLog("peer stream", peerId, stream ? "ON" : "off");
+        setPeerVideo(peerId, stream);
+      },
+      onLocalStream: (stream) => setSelfVideo(stream),
+      onStats: (stats) => {
+        latestP2pStats = stats;
+        // Log connection-state transitions (not every tick).
+        const sig = stats.peers.map((p) => `${p.id.slice(0, 6)}:${p.state}`).join(",");
+        if (sig !== lastP2pStatesLog) {
+          lastP2pStatesLog = sig;
+          p2pLog("states", sig || "(no peers)");
+        }
+      },
+      onError: (peerId, err) => {
+        p2pLog("ERROR", peerId, err);
+      },
+      maxPeers: 16,
+    });
+    if (pendingPeerRoster) {
+      p2pLog("roster (drained)", pendingPeerRoster);
+      p2pMesh.setPresence(pendingPeerRoster);
+      pendingPeerRoster = null;
+    }
+  };
+
+  // Fetch cluster ICE config (STUN-only default), then stand up the mesh. Best-effort: on any
+  // failure we keep the bundled public STUN and still build the mesh.
+  const initP2p = async (): Promise<void> => {
+    if (!p2pSupported || !runtimeConfig.worldApiBase) return;
+    try {
+      const res = await fetch(`${runtimeConfig.worldApiBase}/api/tellus/ice`, {
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const body = (await res.json()) as {
+          iceServers?: {
+            urls?: string[] | string;
+            username?: string;
+            credential?: string;
+          }[];
+        };
+        if (Array.isArray(body.iceServers) && body.iceServers.length > 0) {
+          p2pIceServers = body.iceServers.map((s) => ({
+            urls: s.urls ?? [],
+            username: s.username,
+            credential: s.credential,
+          }));
+        }
+      }
+    } catch {
+      /* keep bundled STUN */
+    }
+    ensureP2pMesh();
+  };
 
   const hasPendingGeneratedAsset = (creatorId?: AgentId | "visitor"): boolean =>
     generated.some(
@@ -3906,19 +446,92 @@ function createTellusWorld(
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xa7c3ef);
-  scene.fog = new THREE.Fog(0xa7c3ef, 72, 230);
+  scene.fog = new THREE.Fog(0xa7c3ef, 72 * WORLD_SCALE, 230 * WORLD_SCALE);
+  // Ambient reflections for PBR assets (GLBs look muddy without an environment); intensity follows
+  // the day/night cycle below.
+  scene.environment = createEnvironmentTexture();
+  scene.environmentIntensity = 0.5;
 
-  const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720);
-  const agentVisionCamera = new THREE.PerspectiveCamera(58, 1, 0.1, 260);
-  const fallbackSky = createSkyDome();
+  const camera = new THREE.PerspectiveCamera(54, 1, 0.1, 720 * WORLD_SCALE);
+  // Agent POV picture-in-picture: when set to a remote avatar's visitorId we render a small second view of
+  // the scene from that avatar's head, looking forward along its facing. Reusable camera + scratch vectors.
+  let agentViewportVisitorId: string | null = null;
+  const povCamera = new THREE.PerspectiveCamera(62, 220 / 140, 0.1, 720 * WORLD_SCALE);
+  const povEye = new THREE.Vector3();
+  const povForward = new THREE.Vector3();
+  const povLookAt = new THREE.Vector3();
+  const POV_LOOK_DROP = new THREE.Vector3(0, -1.4, 0);
+  // Scratch: the player-camera → POV-camera offset, used to re-center the camera-following celestials
+  // (skybox dome, moon) on the POV camera for the PiP render so they don't stay locked to the player.
+  const povSkyDelta = new THREE.Vector3();
+  const fallbackSky = createSkyDome(320 * WORLD_SCALE);
   if (fallbackSky.material instanceof THREE.MeshBasicMaterial) {
     skyboxTintMaterials.add(fallbackSky.material);
   }
   const useWebGPU = "gpu" in navigator;
+  // Visual terrain density (decoupled from the synced 97² sculpt grid). FIXED vertex budget no
+  // matter the world scale — bigger worlds stretch the same ~50K-vertex mesh instead of multiplying
+  // it (operator: range over thickness; worlds get larger for less).
+  const terrainRenderSegments = useWebGPU ? 224 : 144;
   const ocean = createOceanSurface(useWebGPU);
   const archipelago = createDistantArchipelago();
+  // Ambient procedural vegetation (wind-swayed grass/flowers streamed around the player + island-wide
+  // trees/rocks) and the lightweight physics world (thrown things, player jump/obstacles). Both are
+  // deterministic from the synced terrain state — no protocol changes.
+  //
+  // Vegetation is OFF by default (per-frame streaming/stamping cost); the localStorage
+  // "tellus.grass"="1" escape hatch re-enables the full system. When off, a no-op stub stands in so
+  // every call site (per-frame update, terrain-change notify, tree colliders, stats, dispose) stays
+  // branch-free — zero per-frame cost.
+  const grassEnabled = (() => {
+    try {
+      return window.localStorage.getItem("tellus.grass") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  const vegetation = grassEnabled
+    ? createVegetation({
+        scene,
+        useWebGPU,
+        sampleHeight: terrainHeight,
+        samplePaint: centralTerrainPaintAt,
+        isExcluded: (x, z, h) => {
+          const pdx = x - POND_CENTER.x;
+          const pdz = z - POND_CENTER.z;
+          return (
+            pdx * pdx + pdz * pdz < (POND_RADIUS + 0.6) * (POND_RADIUS + 0.6) &&
+            h < pondWaterLevel() + 0.35
+          );
+        },
+        pondRing: {
+          x: POND_CENTER.x,
+          z: POND_CENTER.z,
+          radius: POND_RADIUS,
+          level: pondWaterLevel(),
+        },
+      })
+    : {
+        update: () => undefined,
+        notifyTerrainChanged: () => undefined,
+        getTreeColliders: () => [],
+        stats: () => ({ tier: 0, chunks: 0, grassIndices: 0, trees: 0, sectors: 0 }),
+        dispose: () => undefined,
+      };
+  const ambientPhysics = createAmbientPhysics({
+    groundHeightAt: (x, z) => groundHeightAt(x, z) ?? SEA_LEVEL - 2.6,
+    waterLevelAt: (x, z) => {
+      const pdx = x - POND_CENTER.x;
+      const pdz = z - POND_CENTER.z;
+      if (pdx * pdx + pdz * pdz < (POND_RADIUS + 0.4) * (POND_RADIUS + 0.4)) {
+        return pondWaterLevel();
+      }
+      return SEA_LEVEL;
+    },
+    worldRadius: OCEAN_RADIUS - 6,
+  });
   const terrain = new THREE.Mesh(
-    createTerrainGeometry(),
+    createTerrainGeometry(terrainRenderSegments),
     new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.88,
@@ -3956,19 +569,196 @@ function createTellusWorld(
   const hemisphere = new THREE.HemisphereLight(0xb6ccff, 0x3d5332, 2.25);
   scene.add(sun, moon, hemisphere);
 
-  for (const agent of agents) {
-    const mesh = createAgentMesh(agent);
-    agentMeshes.set(agent.id, mesh);
-    scene.add(mesh);
-  }
-
-  const visitor = createVisitorMesh();
+  const visitor = createVisitorMesh(useWebGPU);
   let visitorPosition = normalizedDiscPosition(-20, 20);
   scene.add(visitor);
+  // ── Avatar selection (the toolbelt picker) ────────────────────────────────
+  // localAvatarId = YOUR explicit catalog pick ("" = none → deterministic per-visitor robot); it
+  // persists in localStorage and rides every presence.update so others render the same pick.
+  // applyAvatarTo is the ONLY mount/swap path (local AND remote): it tears down the previous rig,
+  // restores the procedural TV-head in place, then mounts the requested rig async — the per-owner
+  // token guards overlapping loads, and the mesh-identity check guards a prune mid-load.
+  let localAvatarId = storedAvatarId();
+  // localAvatarScale = YOUR avatar-size multiplier (the picker "Size" slider; 1 = default). It is
+  // VISUAL-ONLY — physics/collision/movement never see it — persists in localStorage
+  // "tellus.avatarScale" and rides every presence.update (server clamps to [0.1, 8]) so others
+  // render you at the same size. Remote scales arrive on presence and ease in via tickAvatarScale.
+  let localAvatarScale = storedAvatarScale();
+  const appliedAvatarIds = new Map<string, string>();
+  const avatarApplyTokens = new Map<string, number>();
+  const applyAvatarTo = (group: THREE.Group, ownerId: string, requestedId: string): void => {
+    const token = (avatarApplyTokens.get(ownerId) ?? 0) + 1;
+    avatarApplyTokens.set(ownerId, token);
+    appliedAvatarIds.set(ownerId, requestedId);
+    avatarRigs.get(ownerId)?.dispose();
+    avatarRigs.delete(ownerId);
+    restoreProceduralAvatar(group);
+    const stillCurrent = () =>
+      !destroyed &&
+      avatarApplyTokens.get(ownerId) === token &&
+      (ownerId === visitorId || remoteVisitorMeshes.get(ownerId) === group);
+    // "classic" (and any load failure) resolves null — the restored procedural robot stays.
+    void attachAvatarRig(group, ownerId, requestedId, useWebGPU, stillCurrent).then((rig) => {
+      if (!rig) return;
+      if (!stillCurrent()) {
+        rig.dispose();
+        return;
+      }
+      avatarRigs.set(ownerId, rig);
+    });
+  };
+  applyAvatarTo(visitor, visitorId, localAvatarId);
+  setAvatarUserScale(visitor, localAvatarScale, true); // persisted size from the very first frame
+  // Local locomotion state is derived per-frame from the position delta in animate().
+  const lastLocalAvatarPos = { x: visitorPosition.x, z: visitorPosition.z };
+  // Diagnostics hooks (smoke tests / console) — mirror the other __tellus* hooks. The referenced
+  // closures are defined later in this function; the arrow bodies only resolve them at call time.
+  window.__tellusViewDebug = {
+    setAgentViewport: (id) => setAgentViewport(id),
+    hasVisitorAvatar: (id) => hasVisitorAvatar(id),
+    setCameraMode: (mode) => setCameraMode(mode),
+    getCameraMode: () => cameraMode,
+    injectRemotePresence: (id: string, x: number, z: number, avatarScale?: number) => {
+      const now = new Date().toISOString();
+      applyRemotePresence([
+        ...Array.from(remoteVisitors.values()),
+        { visitorId: id, position: { x, y: 0, z }, avatarScale, connectedAt: now, lastSeenAt: now },
+      ]);
+    },
+  };
+  // Mirror diagnostics (smoke tests / console): how many placed mirrors render live (have a
+  // Reflector) vs as static tinted glass, plus the live-cap.
+  window.__tellusMirrorDebug = () => {
+    let live = 0;
+    let glass = 0;
+    for (const mesh of generatedMeshes.values()) {
+      if (mesh.userData.mirrorReflector) live++;
+      else if (mesh.userData.mirrorGlass) glass++;
+    }
+    return { live, glass, liveCap: MAX_LIVE_MIRRORS, trackedLive: liveMirrorCount() };
+  };
+  const countSkinnedMeshes = (root: THREE.Object3D | undefined): number => {
+    if (!root) return 0;
+    let n = 0;
+    root.traverse((obj) => {
+      if ((obj as THREE.SkinnedMesh).isSkinnedMesh) n++;
+    });
+    return n;
+  };
+  // Per-thing render diagnostics (smoke tests / console). Cheap: only walks state when called.
+  window.__tellusThingsDebug = () =>
+    generated.map((thing) => {
+      const mesh = generatedMeshes.get(thing.id);
+      let inScene = false;
+      for (let node: THREE.Object3D | null = mesh ?? null; node; node = node.parent) {
+        if (node === scene) {
+          inScene = true;
+          break;
+        }
+      }
+      let instanced = false;
+      for (const pool of instancePools.values()) {
+        if (pool.thingToSlot.has(thing.id)) {
+          instanced = true;
+          break;
+        }
+      }
+      return {
+        id: thing.id,
+        kind: thing.kind,
+        prompt: thing.prompt.slice(0, 48),
+        status: thing.generationStatus ?? "unknown",
+        hasMesh: Boolean(mesh),
+        meshVisible: mesh?.visible ?? false,
+        inScene,
+        loaded: Boolean(thing.modelUrl) && mesh?.userData.loadedModelUrl === thing.modelUrl,
+        swirl: Boolean(mesh?.userData.generatingSwirl),
+        instanced,
+        worldPos: mesh
+          ? (({ x, y, z }) => ({ x, y, z }))(mesh.getWorldPosition(new THREE.Vector3()))
+          : undefined,
+        worldScale: mesh ? mesh.getWorldScale(new THREE.Vector3()).y : undefined,
+        // Embedded clip count of the loaded file. VRM autons are clip-less (0) but animate via a
+        // retargeted VRMA action — `vrm` flags that, `playing` is true, and `vrmaClips` lists the
+        // VRMA catalog clips the rig retargeted.
+        clipCount: generatedModelClips(mesh).length,
+        vrm: Boolean(mesh?.userData.vrmObjectRig),
+        vrmaClips: mesh?.userData.vrmObjectRig
+          ? (mesh.userData.vrmObjectRig as VrmObjectRig).clipNames()
+          : [],
+        skinnedMeshCount: countSkinnedMeshes(mesh),
+        playing:
+          generatedAnimationMixers.has(thing.id) || generatedVrmRigs.has(thing.id),
+      };
+    });
+  window.__tellusAvatarDebug = () => {
+    let skinned = 0;
+    visitor.traverse((obj) => {
+      if ((obj as THREE.SkinnedMesh).isSkinnedMesh) skinned++;
+    });
+    const bodyParts =
+      (visitor.userData.robotBodyParts as THREE.Object3D[] | undefined) ?? [];
+    // World-space Y scale of the local avatar's visible silhouette (mounted rigged model, else the
+    // classic torso) — lets smoke tests assert the actual applied node scale, not just the knob.
+    const scaleProbe =
+      (visitor.userData.avatarMountedModel as THREE.Object3D | undefined) ?? bodyParts[0];
+    const probeWorldScale = scaleProbe
+      ? scaleProbe.getWorldScale(new THREE.Vector3()).y
+      : 1;
+    const remoteScales: Record<string, number> = {};
+    for (const [remoteId, mesh] of remoteVisitorMeshes) {
+      remoteScales[remoteId] = getAvatarUserScale(mesh);
+    }
+    return {
+      localVisitorId: visitorId,
+      localAvatarId: appliedAvatarIds.get(visitorId) ?? "",
+      rigIds: Array.from(avatarRigs.keys()),
+      localSkinnedMeshes: skinned,
+      localBodyHidden:
+        bodyParts.length > 0 && bodyParts.every((part) => !part.visible),
+      localScale: getAvatarUserScale(visitor),
+      localModelWorldScaleY: probeWorldScale,
+      remoteScales,
+    };
+  };
 
   let yaw = 0.72;
   let pitch = -0.28;
   let zoom = 33;
+  // ── Camera mode: presentation-only (physics/movement untouched). "first" parks the main camera
+  // at the LOCAL avatar's head (same eye math as the agent POV) and hides your own avatar+TV
+  // locally — other players still see you (they render their own mesh from presence). Persists in
+  // localStorage "tellus.cameraMode"; the toolbelt Eye button and the V key flip it. ──
+  type CameraMode = "first" | "third";
+  const CAMERA_MODE_STORAGE_KEY = "tellus.cameraMode";
+  let cameraMode: CameraMode = (() => {
+    try {
+      return window.localStorage.getItem(CAMERA_MODE_STORAGE_KEY) === "first" ? "first" : "third";
+    } catch {
+      return "third";
+    }
+  })();
+  const FIRST_PERSON_EYE_HEIGHT = 2.4; // matches poseAgentPovCamera's avatar head height (× scale)
+  // The eye rides the avatar's CURRENT (lerped) user scale — a giant sees from a giant's head.
+  const firstPersonEyeHeight = () => FIRST_PERSON_EYE_HEIGHT * getAvatarUserScale(visitor);
+  const applyCameraModeVisibility = () => {
+    // Whole-group toggle: body + TV + marker. Remote meshes are per-client, so this is local-only.
+    visitor.visible = cameraMode !== "first";
+  };
+  const setCameraMode = (mode: CameraMode) => {
+    if (mode === cameraMode) return;
+    cameraMode = mode;
+    try {
+      window.localStorage.setItem(CAMERA_MODE_STORAGE_KEY, mode);
+    } catch {
+      /* private mode — the selection just won't persist */
+    }
+    applyCameraModeVisibility();
+    updateCamera();
+    // Let the React HUD (the toolbelt Eye button) track mode flips that originate here (V key).
+    window.dispatchEvent(new CustomEvent("tellus:camera-mode", { detail: mode }));
+  };
+  applyCameraModeVisibility(); // honor a persisted "first" from the very first frame
   let isDragging = false;
   let pointerX = 0;
   let pointerY = 0;
@@ -3977,17 +767,11 @@ function createTellusWorld(
   const raycaster = new THREE.Raycaster();
 
   const snapshot = (): TellusSnapshot => ({
-    agents: agents.map((agent) => ({
-      ...agent,
-      position: { ...agent.position },
-      target: { ...agent.target },
-    })),
     generated: generated.map((thing) => ({
       ...thing,
       position: { ...thing.position },
     })),
     logs: logs.slice(-80),
-    paused,
     generationProvider: runtimeConfig.generationProvider,
     playerGenerationProvider: runtimeConfig.playerGenerationProvider,
     agentGenerationProvider: runtimeConfig.agentGenerationProvider,
@@ -4002,7 +786,18 @@ function createTellusWorld(
     sailingThingId,
   });
 
-  const publish = () => onSnapshot(snapshot());
+  // Coalesce HUD publishes to at most one per animation frame. publish() can be called many times per frame
+  // (every WS patch, every transform-drag frame); each onSnapshot is a deep-cloned snapshot + a React
+  // re-render, so collapsing them to a single flush in animate() removes the per-frame clone/render storm.
+  let publishPending = false;
+  const publish = () => {
+    publishPending = true;
+  };
+  const flushPublish = () => {
+    if (!publishPending) return;
+    publishPending = false;
+    onSnapshot(snapshot());
+  };
 
   const addLog = (entry: Omit<TellusLog, "id" | "tick">): TellusLog => {
     const log: TellusLog = {
@@ -4067,22 +862,23 @@ function createTellusWorld(
     }
   };
 
-  const refreshTerrainGeometry = () => {
+  const rebuildCentralTerrain = () => {
     const positions = terrain.geometry.getAttribute(
       "position",
     ) as THREE.BufferAttribute;
     const colors = terrain.geometry.getAttribute("color") as THREE.BufferAttribute;
-    for (let zIndex = 0; zIndex <= TERRAIN_SEGMENTS; zIndex++) {
-      const vz = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
-      for (let xIndex = 0; xIndex <= TERRAIN_SEGMENTS; xIndex++) {
-        const vx = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
+    const renderRow = terrainRenderSegments + 1;
+    for (let zIndex = 0; zIndex <= terrainRenderSegments; zIndex++) {
+      const vz = (zIndex / terrainRenderSegments - 0.5) * WORLD_RADIUS * 2;
+      for (let xIndex = 0; xIndex <= terrainRenderSegments; xIndex++) {
+        const vx = (xIndex / terrainRenderSegments - 0.5) * WORLD_RADIUS * 2;
         const radius = Math.hypot(vx, vz);
         const inside = radius <= WORLD_RADIUS;
         const edgeScale = inside ? 1 : WORLD_RADIUS / radius;
         const px = vx * edgeScale;
         const pz = vz * edgeScale;
         const py = inside ? terrainHeight(px, pz) : -4.5;
-        const index = terrainGridIndex(xIndex, zIndex);
+        const index = zIndex * renderRow + xIndex;
         positions.setXYZ(index, px, py, pz);
         const color = terrainVertexColor(
           inside ? terrainKind(px, pz, py) : "rock",
@@ -4098,6 +894,22 @@ function createTellusWorld(
     terrain.geometry.computeVertexNormals();
     refreshFlowerPatches();
   };
+  // Coalesce the full 9409-vertex rebuild (positions + colors + computeVertexNormals + flower patches) to one
+  // flush per frame — rapid sculpt steps and remote terrain patches no longer recompute the whole grid N
+  // times per frame. Terrain height queries use the math (terrainHeight), not the mesh, so a 1-frame defer is
+  // invisible.
+  let centralTerrainDirty = false;
+  const refreshTerrainGeometry = () => {
+    centralTerrainDirty = true;
+  };
+  const flushTerrain = () => {
+    if (!centralTerrainDirty) return;
+    centralTerrainDirty = false;
+    rebuildCentralTerrain();
+    // Re-grow the procedural vegetation lazily wherever the terrain changed (local sculpt or remote
+    // patch both funnel through here).
+    vegetation.notifyTerrainChanged();
+  };
   refreshFlowerPatches();
 
   const refreshDistantIslandGeometry = (spec: DistantIslandSpec) => {
@@ -4108,11 +920,29 @@ function createTellusWorld(
     mesh.geometry = createDistantIslandTerrainGeometry(spec);
   };
 
+  // Cheap per-island fingerprint so a remote terrain patch (which carries the FULL state every time) only
+  // disposes+recreates a distant-island geometry that actually changed. Central sculpts never touch the
+  // distant islands, so this skips the entire rebuild loop on the common case.
+  const distantIslandSig = new Map<number, number>();
+  const distantIslandSignature = (spec: DistantIslandSpec): number => {
+    let h = 0;
+    for (let i = 0; i < spec.sculptOffsets.length; i++) {
+      h = (Math.imul(h, 31) + Math.round(spec.sculptOffsets[i] * 100)) | 0;
+    }
+    for (let i = 0; i < spec.paint.length; i++) {
+      h = (Math.imul(h, 31) + spec.paint[i]) | 0;
+    }
+    return h;
+  };
+
   const applyRemoteTerrainState = (terrainState: TellusTerrainState) => {
     if (!applyTellusTerrainState(terrainState)) return;
-    terrainStateDirty = false;
+    setTerrainStateDirty(false);
     refreshTerrainGeometry();
     for (const spec of distantIslandSpecs) {
+      const sig = distantIslandSignature(spec);
+      if (distantIslandSig.get(spec.seed) === sig) continue;
+      distantIslandSig.set(spec.seed, sig);
       refreshDistantIslandGeometry(spec);
     }
     updatePondSurfacePosition();
@@ -4131,15 +961,44 @@ function createTellusWorld(
     for (const remote of presence) {
       if (remote.visitorId === visitorId || !remote.position) continue;
       activeRemoteIds.add(remote.visitorId);
+      // avatarScale wire convention (mirrors avatarId/animation): present = explicit value,
+      // ABSENT = a mid-rollout server stripped the field — keep the last-known value (a brand-new
+      // visitor with no known value defaults to 1).
+      const remoteScale =
+        typeof remote.avatarScale === "number" && Number.isFinite(remote.avatarScale)
+          ? clampAvatarScale(remote.avatarScale)
+          : undefined;
       remoteVisitors.set(remote.visitorId, {
         ...remote,
         position: { ...remote.position },
+        avatarScale: remoteScale ?? remoteVisitors.get(remote.visitorId)?.avatarScale,
       });
       let mesh = remoteVisitorMeshes.get(remote.visitorId);
+      const remoteAvatarId = typeof remote.avatarId === "string" ? remote.avatarId : "";
       if (!mesh) {
-        mesh = createRemoteVisitorMesh();
+        mesh = createRemoteVisitorMesh(useWebGPU);
         remoteVisitorMeshes.set(remote.visitorId, mesh);
         scene.add(mesh);
+        // Async rigged upgrade per the visitor's broadcast avatar pick (agents — "agent:*"
+        // visitorIds — ride this same path with the deterministic default). applyAvatarTo guards
+        // against the visitor being pruned (or the world torn down) before the load resolved.
+        applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
+        // First sight of this visitor: snap straight to their size (no grow-in flicker).
+        setAvatarUserScale(mesh, remoteScale ?? 1, true);
+        // Drain any peer stream that surfaced before this avatar existed.
+        if (pendingPeerStreams.has(remote.visitorId)) {
+          const pending = pendingPeerStreams.get(remote.visitorId) ?? null;
+          pendingPeerStreams.delete(remote.visitorId);
+          setPeerVideo(remote.visitorId, pending);
+        }
+      } else {
+        if (appliedAvatarIds.get(remote.visitorId) !== remoteAvatarId) {
+          // The visitor changed avatars mid-session — rebuild their rig in place.
+          applyAvatarTo(mesh, remote.visitorId, remoteAvatarId);
+        }
+        // Live size change: ease toward the new value (tickAvatarScale in animate()); absent
+        // (mid-rollout strip) leaves the current target untouched.
+        if (remoteScale !== undefined) setAvatarUserScale(mesh, remoteScale);
       }
       const position = groundedPosition(
         remote.position.x,
@@ -4148,13 +1007,26 @@ function createTellusWorld(
       );
       mesh.position.set(position.x, position.y, position.z);
       mesh.userData.lastSeenAt = remote.lastSeenAt;
+      // Walk/idle/airborne for remotes is inferred from successive presence targets.
+      avatarRigs
+        .get(remote.visitorId)
+        ?.notePresenceUpdate(position.x, position.y, position.z, performance.now());
     }
     for (const [remoteId, mesh] of remoteVisitorMeshes) {
       if (activeRemoteIds.has(remoteId)) continue;
+      // Detach + dispose the TV video (texture/<video>) BEFORE removing the avatar.
+      setPeerVideo(remoteId, null);
+      pendingPeerStreams.delete(remoteId);
+      avatarRigs.get(remoteId)?.dispose();
+      avatarRigs.delete(remoteId);
+      appliedAvatarIds.delete(remoteId);
+      avatarApplyTokens.delete(remoteId); // also invalidates any in-flight avatar load for them
       scene.remove(mesh);
       remoteVisitorMeshes.delete(remoteId);
       remoteVisitors.delete(remoteId);
     }
+    // Feed the live roster to the mesh (drives connect/disconnect of PCs).
+    feedP2pPresence(Array.from(activeRemoteIds));
     publish();
   };
 
@@ -4167,6 +1039,13 @@ function createTellusWorld(
       type: "presence.update",
       visitorId,
       position: visitorPosition,
+      // Tiny + cheap: ride the avatar pick on EVERY presence update so late joiners and the
+      // mid-rollout server (which may not persist it per-connection yet) always converge. "" = no
+      // explicit pick (others use the deterministic per-visitor robot).
+      avatarId: localAvatarId,
+      // Avatar size rides the same way (server clamps to [0.1, 8]). Always the TARGET value, not
+      // the lerped current — receivers ease toward it themselves.
+      avatarScale: localAvatarScale,
     }));
   };
 
@@ -4203,6 +1082,12 @@ function createTellusWorld(
       if (remoteThings) {
         applyRemoteGeneratedThings(remoteThings);
       }
+      // Emote frames: play that clip ONCE over the avatar's locomotion, then resume. Rigless
+      // avatars (classic TV-heads, not-yet-loaded rigs) and unknown clips are simply ignored.
+      const emote = emoteFromWorldPatch(parsed);
+      if (emote) {
+        avatarRigs.get(emote.visitorId)?.playEmote(emote.animation);
+      }
       if (
         parsed &&
         typeof parsed === "object" &&
@@ -4211,6 +1096,35 @@ function createTellusWorld(
         typeof (parsed as { id?: unknown }).id === "string"
       ) {
         applyRemoteGeneratedDelete((parsed as { id: string }).id);
+      }
+      // WebRTC signaling relay (ephemeral, Seq=0). The grain stamps `from`; the gateway already
+      // filtered to us. Hand to the mesh, which owns all PC/negotiation state.
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        (parsed as { type?: unknown }).type === "signal"
+      ) {
+        const sig = (parsed as { signal?: unknown }).signal;
+        if (sig && typeof sig === "object") {
+          const s = sig as {
+            from?: unknown;
+            kind?: unknown;
+            payload?: unknown;
+          };
+          if (
+            typeof s.from === "string" &&
+            s.from !== visitorId &&
+            typeof s.kind === "string"
+          ) {
+            p2pLog("recv", s.kind, "from", s.from, p2pMesh ? "" : "(mesh null!)");
+            p2pMesh?.handleSignal(
+              s.from,
+              s.kind,
+              typeof s.payload === "string" ? s.payload : "",
+            );
+          }
+        }
       }
     });
 
@@ -4282,15 +1196,18 @@ function createTellusWorld(
       refreshDistantIslandGeometry(distantIsland);
     } else {
       const targetHeight = terrainHeight(center.x, center.z);
+      // The central brush radius scales with the world so it covers the same grid cells as the
+      // classic brush — keeps the math identical to the server's classic-space sculpt port.
+      const brushRadius = TERRAIN_SCULPT_RADIUS * WORLD_SCALE;
       for (let zIndex = 0; zIndex <= TERRAIN_SEGMENTS; zIndex++) {
         const z = (zIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
         for (let xIndex = 0; xIndex <= TERRAIN_SEGMENTS; xIndex++) {
           const x = (xIndex / TERRAIN_SEGMENTS - 0.5) * WORLD_RADIUS * 2;
           if (Math.hypot(x, z) > WORLD_RADIUS) continue;
           const distance = Math.hypot(x - center.x, z - center.z);
-          if (distance > TERRAIN_SCULPT_RADIUS) continue;
+          if (distance > brushRadius) continue;
           const falloff =
-            (1 + Math.cos((distance / TERRAIN_SCULPT_RADIUS) * Math.PI)) * 0.5;
+            (1 + Math.cos((distance / brushRadius) * Math.PI)) * 0.5;
           const index = terrainGridIndex(xIndex, zIndex);
           if (paintCode) {
             if (falloff > 0.18) terrainPaint[index] = paintCode;
@@ -4334,8 +1251,8 @@ function createTellusWorld(
     sculptTerrainAt(mode, visitorPosition, "visitor", "Visitor");
   };
 
-  const generationPausedForThing = (thing: GeneratedThing) =>
-    paused && thing.creatorId !== "visitor";
+  // The browser-NPC "pause AI" gate is gone; visitor-driven generation is never paused.
+  const generationPausedForThing = (_thing: GeneratedThing) => false;
 
   const abortPendingGeneration = (
     shouldAbort: (thing: GeneratedThing) => boolean = () => true,
@@ -4352,24 +1269,425 @@ function createTellusWorld(
   const thingById = (id: string): GeneratedThing | undefined =>
     generated.find((thing) => thing.id === id);
 
+  // ── Static-duplicate GPU instancing ──────────────────────────────────────────────────────────────────
+  // All of this is a no-op unless runtimeConfig.instanceStaticDuplicates is on. Correctness rule (per design):
+  // we NEVER hand-derive instance matrices — we reuse the regular mesh's already-correct matrixWorld and copy
+  // sub-mesh worldMatrices into instance slots, then hide the regular mesh.
+  const INSTANCE_ZERO_MATRIX = new THREE.Matrix4().makeScale(0, 0, 0);
+  const instancingEnabled = () => runtimeConfig.instanceStaticDuplicates;
+
+  // A thing is animated (→ never instanced) if it has a live mixer, or its mounted mesh carries a non-empty
+  // userData.animations array.
+  const isThingAnimated = (thing: GeneratedThing): boolean => {
+    if (generatedAnimationMixers.has(thing.id) || generatedVrmRigs.has(thing.id)) return true;
+    const mesh = generatedMeshes.get(thing.id);
+    if (mesh?.userData.vrmObjectRig) return true; // VRM thing → never instanced (skinned + per-frame)
+    const anims = mesh?.userData.animations;
+    return Array.isArray(anims) && anims.length > 0;
+  };
+
+  // A thing is a *candidate* for folding if its loaded static GLB is mounted (sharedGltf + matching
+  // loadedModelUrl) and it isn't animated. Selection/duplicate-count gating is applied separately.
+  const isInstanceCandidate = (thing: GeneratedThing): boolean => {
+    if (!thing.modelUrl || thing.generationStatus !== "ready") return false;
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return false;
+    if (mesh.userData.loadedModelUrl !== thing.modelUrl) return false;
+    if (!mesh.userData.sharedGltf) return false;
+    if (mesh.userData.generatingSwirl) return false;
+    if (isThingAnimated(thing)) return false;
+    return true;
+  };
+
+  // Enumerate the sub-meshes of a mounted mesh in deterministic traversal order.
+  const collectSubMeshes = (root: THREE.Object3D): THREE.Mesh[] => {
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((child) => {
+      if (child instanceof THREE.Mesh && !(child instanceof THREE.InstancedMesh)) {
+        meshes.push(child);
+      }
+    });
+    return meshes;
+  };
+
+  // Revert a whole group to plain regular meshes and forget the pool (used on any error or teardown).
+  const disableInstancePool = (modelUrl: string, reason?: unknown) => {
+    const pool = instancePools.get(modelUrl);
+    if (!pool) return;
+    pool.disabled = true;
+    try {
+      for (const inst of pool.instanced) {
+        scene.remove(inst);
+        inst.dispose();
+      }
+    } catch {
+      // best-effort dispose; nothing else to do
+    }
+    for (const thingId of pool.thingToSlot.keys()) {
+      const mesh = generatedMeshes.get(thingId);
+      if (mesh) mesh.visible = true;
+    }
+    instancePools.delete(modelUrl);
+    if (reason !== undefined) {
+      // An actual error (not a benign drop-below-2 teardown) → never re-attempt this URL for the session.
+      instancingDisabledUrls.add(modelUrl);
+      console.warn(`[instancing] disabled for modelUrl=${modelUrl}`, reason);
+    }
+  };
+
+  // Create the per-sub-mesh InstancedMeshes for a group, sized to `capacity`, from a template mounted mesh.
+  const buildInstancePool = (
+    modelUrl: string,
+    templateMesh: THREE.Object3D,
+    capacity: number,
+  ): InstancePool | null => {
+    // Build into a local array first; only attach to the scene once the full set constructs without throwing,
+    // so a mid-build failure leaves nothing orphaned in the scene.
+    const instanced: THREE.InstancedMesh[] = [];
+    try {
+      const subMeshes = collectSubMeshes(templateMesh);
+      if (subMeshes.length === 0) return null;
+      for (const sub of subMeshes) {
+        const inst = new THREE.InstancedMesh(sub.geometry, sub.material, capacity);
+        inst.frustumCulled = false;
+        inst.castShadow = true;
+        inst.receiveShadow = true;
+        inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        inst.userData.tellusInstancePool = modelUrl;
+        // Hide all slots until they're filled (avoids stray identity-matrix copies at the origin).
+        for (let i = 0; i < capacity; i += 1) {
+          inst.setMatrixAt(i, INSTANCE_ZERO_MATRIX);
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.count = capacity;
+        instanced.push(inst);
+      }
+      for (const inst of instanced) scene.add(inst);
+      const pool: InstancePool = {
+        modelUrl,
+        instanced,
+        subMeshCount: instanced.length,
+        capacity,
+        freeSlots: [],
+        nextSlot: 0,
+        slotToThing: new Map(),
+        thingToSlot: new Map(),
+        disabled: false,
+      };
+      instancePools.set(modelUrl, pool);
+      return pool;
+    } catch (error) {
+      for (const inst of instanced) {
+        scene.remove(inst);
+        inst.dispose();
+      }
+      console.warn(`[instancing] failed to build pool for ${modelUrl}`, error);
+      return null;
+    }
+  };
+
+  // Grow a pool to ×2 capacity, recreating the InstancedMeshes and re-copying existing matrices.
+  const growInstancePool = (pool: InstancePool): boolean => {
+    const newInstanced: THREE.InstancedMesh[] = [];
+    try {
+      const newCapacity = Math.max(pool.capacity * 2, pool.capacity + 1);
+      const oldInstanced = pool.instanced;
+      const tmp = new THREE.Matrix4();
+      for (const old of oldInstanced) {
+        const inst = new THREE.InstancedMesh(old.geometry, old.material, newCapacity);
+        inst.frustumCulled = false;
+        inst.castShadow = true;
+        inst.receiveShadow = true;
+        inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        inst.userData.tellusInstancePool = pool.modelUrl;
+        for (let i = 0; i < newCapacity; i += 1) {
+          if (i < pool.capacity) {
+            old.getMatrixAt(i, tmp);
+            inst.setMatrixAt(i, tmp);
+          } else {
+            inst.setMatrixAt(i, INSTANCE_ZERO_MATRIX);
+          }
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.count = newCapacity;
+        newInstanced.push(inst);
+      }
+      for (const inst of newInstanced) scene.add(inst);
+      for (const old of oldInstanced) {
+        scene.remove(old);
+        old.dispose();
+      }
+      pool.instanced = newInstanced;
+      pool.capacity = newCapacity;
+      return true;
+    } catch (error) {
+      for (const inst of newInstanced) {
+        scene.remove(inst);
+        inst.dispose();
+      }
+      disableInstancePool(pool.modelUrl, error);
+      return false;
+    }
+  };
+
+  // Allocate a free slot, growing if needed.
+  const allocateSlot = (pool: InstancePool): number | null => {
+    const recycled = pool.freeSlots.pop();
+    if (recycled !== undefined) return recycled;
+    if (pool.nextSlot < pool.capacity) {
+      const slot = pool.nextSlot;
+      pool.nextSlot += 1;
+      return slot;
+    }
+    if (!growInstancePool(pool)) return null;
+    const slot = pool.nextSlot;
+    pool.nextSlot += 1;
+    return slot;
+  };
+
+  // Fold one thing into its group's pool at a free slot. Returns true on success.
+  const instanceThing = (pool: InstancePool, thing: GeneratedThing): boolean => {
+    if (pool.disabled) return false;
+    if (pool.thingToSlot.has(thing.id)) return true; // already instanced
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return false;
+    try {
+      mesh.updateWorldMatrix(true, true);
+      const subMeshes = collectSubMeshes(mesh);
+      // Sub-mesh count/order must line up with the pool template (shared GLB → should always hold). If not,
+      // bail this thing back to a regular visible mesh — do NOT corrupt the pool.
+      if (subMeshes.length !== pool.subMeshCount) {
+        console.warn(
+          `[instancing] sub-mesh mismatch for thing ${thing.id} (${subMeshes.length} vs ${pool.subMeshCount}); keeping regular mesh`,
+        );
+        mesh.visible = true;
+        return false;
+      }
+      const slot = allocateSlot(pool);
+      if (slot === null) return false;
+      for (let j = 0; j < pool.subMeshCount; j += 1) {
+        pool.instanced[j].setMatrixAt(slot, subMeshes[j].matrixWorld);
+        pool.instanced[j].instanceMatrix.needsUpdate = true;
+      }
+      pool.slotToThing.set(slot, thing.id);
+      pool.thingToSlot.set(thing.id, slot);
+      mesh.visible = false;
+      return true;
+    } catch (error) {
+      disableInstancePool(pool.modelUrl, error);
+      return false;
+    }
+  };
+
+  // Pop one thing OUT of instancing: zero its slot for every sub-mesh, free the slot, show the regular mesh.
+  const uninstanceThing = (thingId: string) => {
+    const mesh = generatedMeshes.get(thingId);
+    for (const pool of instancePools.values()) {
+      const slot = pool.thingToSlot.get(thingId);
+      if (slot === undefined) continue;
+      try {
+        for (let j = 0; j < pool.subMeshCount; j += 1) {
+          pool.instanced[j].setMatrixAt(slot, INSTANCE_ZERO_MATRIX);
+          pool.instanced[j].instanceMatrix.needsUpdate = true;
+        }
+        pool.thingToSlot.delete(thingId);
+        pool.slotToThing.delete(slot);
+        pool.freeSlots.push(slot);
+      } catch (error) {
+        disableInstancePool(pool.modelUrl, error);
+      }
+    }
+    if (mesh) mesh.visible = true;
+  };
+
+  // Resolve an InstancedMesh raycast hit (pool + instanceId) back to a thing id.
+  const resolveInstancedHit = (
+    instanced: THREE.InstancedMesh,
+    instanceId: number,
+  ): string | undefined => {
+    const modelUrl = instanced.userData.tellusInstancePool;
+    if (typeof modelUrl !== "string") return undefined;
+    const pool = instancePools.get(modelUrl);
+    return pool?.slotToThing.get(instanceId);
+  };
+
+  // Re-decide folding for every ready static placement that shares `modelUrl`. Folds in when ≥2 qualify and
+  // the thing isn't selected; pops out the selected one and (when <2 qualify) the lone remaining one.
+  const reevaluateInstanceGroup = (modelUrl: string | undefined) => {
+    if (!modelUrl) return;
+    if (instancingDisabledUrls.has(modelUrl)) return; // errored earlier this session → stay regular
+    if (!instancingEnabled()) {
+      // Flag off: ensure nothing stays folded (covers a runtime flip to off).
+      const pool = instancePools.get(modelUrl);
+      if (pool) disableInstancePool(modelUrl);
+      return;
+    }
+    try {
+      const existingPool = instancePools.get(modelUrl);
+      if (existingPool?.disabled) return;
+      // Candidates: ready, static, mounted GLB, sharing this modelUrl.
+      const candidates = generated.filter(
+        (t) => t.modelUrl === modelUrl && isInstanceCandidate(t),
+      );
+      // Foldable = candidate AND not currently selected.
+      const foldable = candidates.filter((t) => t.id !== selectedThingId);
+
+      if (foldable.length < 2) {
+        // Below threshold → pop everyone in this group back out (regular meshes), drop the pool.
+        const pool = instancePools.get(modelUrl);
+        if (pool) {
+          for (const thingId of [...pool.thingToSlot.keys()]) {
+            uninstanceThing(thingId);
+          }
+          disableInstancePool(modelUrl);
+        }
+        return;
+      }
+
+      // ≥2 foldable → ensure a pool exists, then sync membership.
+      let pool = instancePools.get(modelUrl);
+      if (!pool) {
+        const template = generatedMeshes.get(foldable[0].id);
+        if (!template) return;
+        const created = buildInstancePool(
+          modelUrl,
+          template,
+          Math.max(4, foldable.length * 2),
+        );
+        if (!created) {
+          // Build failed → make sure all regular meshes are visible.
+          for (const t of candidates) {
+            const m = generatedMeshes.get(t.id);
+            if (m) m.visible = true;
+          }
+          return;
+        }
+        pool = created;
+      }
+
+      const foldableIds = new Set(foldable.map((t) => t.id));
+      // Pop out anything currently instanced that's no longer foldable (e.g. just selected).
+      for (const thingId of [...pool.thingToSlot.keys()]) {
+        if (!foldableIds.has(thingId)) uninstanceThing(thingId);
+      }
+      // Fold in anything foldable that isn't yet instanced.
+      for (const t of foldable) {
+        if (!pool.thingToSlot.has(t.id)) instanceThing(pool, t);
+      }
+    } catch (error) {
+      disableInstancePool(modelUrl, error);
+    }
+  };
+
+  // Re-fold the previously-selected thing's group and the newly-selected thing's group around a selection
+  // change (the selected thing must always be a regular mesh so TransformControls can attach + move it).
+  const reevaluateInstancingForSelection = (
+    previousSelectedId: string | undefined,
+    nextSelectedId: string | undefined,
+  ) => {
+    if (!instancingEnabled()) return;
+    const urls = new Set<string>();
+    const prev = previousSelectedId ? thingById(previousSelectedId) : undefined;
+    const next = nextSelectedId ? thingById(nextSelectedId) : undefined;
+    if (prev?.modelUrl) urls.add(prev.modelUrl);
+    if (next?.modelUrl) urls.add(next.modelUrl);
+    // A selected thing is never instanced; pop it out first so its regular mesh is live before any re-fold.
+    if (nextSelectedId) uninstanceThing(nextSelectedId);
+    for (const url of urls) reevaluateInstanceGroup(url);
+  };
+
   const stopGeneratedAnimation = (id: string) => {
+    const rig = generatedVrmRigs.get(id);
+    if (rig) {
+      // VRM rigs own their mixer + VRM scene disposal; do that via disposeObject when the mesh is
+      // removed. Here we only forget the rig so it stops advancing.
+      generatedVrmRigs.delete(id);
+    }
     const mixer = generatedAnimationMixers.get(id);
     if (!mixer) return;
     mixer.stopAllAction();
     generatedAnimationMixers.delete(id);
   };
 
+  const generatedModelClips = (model: THREE.Object3D | undefined): THREE.AnimationClip[] => {
+    const animations = model?.userData.animations;
+    if (!Array.isArray(animations)) return [];
+    return animations.filter(
+      (clip): clip is THREE.AnimationClip => clip instanceof THREE.AnimationClip,
+    );
+  };
+
+  // The clip names the Animation HUD lists for a thing: a VRM thing exposes the VRMA catalog clips;
+  // a plain GLB thing exposes its embedded clip names.
+  const generatedClipNamesForThing = (id: string): string[] => {
+    const mesh = generatedMeshes.get(id);
+    if (mesh?.userData.vrmObjectRig) {
+      return (mesh.userData.vrmObjectRig as VrmObjectRig).clipNames();
+    }
+    return generatedModelClips(mesh).map((clip) => clip.name);
+  };
+
   const startGeneratedAnimation = (id: string, model: THREE.Object3D) => {
     stopGeneratedAnimation(id);
-    const animations = model.userData.animations;
-    if (!Array.isArray(animations) || animations.length === 0) return;
-    const mixer = new THREE.AnimationMixer(model);
-    for (const clip of animations) {
-      if (clip instanceof THREE.AnimationClip) {
-        mixer.clipAction(clip).play();
-      }
+    // VRM things animate through their VRM rig (retargeted VRMA clips), not an embedded-clip mixer.
+    const vrmRig = model.userData.vrmObjectRig as VrmObjectRig | undefined;
+    if (vrmRig) {
+      if (!vrmRig.hasClips()) return;
+      vrmRig.play(thingById(id)?.animation?.trim() || undefined, 0);
+      generatedVrmRigs.set(id, vrmRig);
+      return;
     }
+    const clips = generatedModelClips(model);
+    if (clips.length === 0) return;
+    // Play ONE clip. Multi-clip rigs (store animals ship Bark/Bite/Death/Idle/Jump/…) used to play
+    // EVERYTHING at once — every clip fighting over the same bones each frame, which rendered as
+    // glitchy "blinking". An explicit per-thing pick (`thing.animation`, synced over
+    // generated.upsert) wins; otherwise prefer an idle/walk loop; avoid one-shot/pose clips.
+    const wanted = thingById(id)?.animation?.trim();
+    const wantedClip = wanted
+      ? clips.find((c) => c.name === wanted) ??
+        clips.find((c) => c.name?.toLowerCase() === wanted.toLowerCase())
+      : undefined;
+    const find = (frag: string) => clips.find((c) => c.name?.toLowerCase().includes(frag));
+    const bad = (c: THREE.AnimationClip) => {
+      const n = (c.name ?? "").toLowerCase();
+      return (
+        n.includes("rest") || n.includes("t-pose") || n.includes("tpose") ||
+        n.includes("death") || n.includes("die") || n.includes("attack") || n.includes("bite")
+      );
+    };
+    // Missing/renamed picks fall back to the heuristic rather than freezing the model.
+    const clip =
+      wantedClip ?? find("idle") ?? find("walk") ?? clips.find((c) => !bad(c)) ?? clips[0];
+    const mixer = new THREE.AnimationMixer(model);
+    mixer.clipAction(clip).play();
     generatedAnimationMixers.set(id, mixer);
+  };
+
+  // If a thing is currently folded into a pool (a non-selected instanced thing moved — rare), re-copy its
+  // mesh's sub-mesh worldMatrices into its instance slot so the GPU copy tracks the new transform.
+  const refreshInstancedThingMatrix = (thing: GeneratedThing) => {
+    for (const pool of instancePools.values()) {
+      const slot = pool.thingToSlot.get(thing.id);
+      if (slot === undefined) continue;
+      const mesh = generatedMeshes.get(thing.id);
+      if (!mesh) return;
+      try {
+        mesh.updateWorldMatrix(true, true);
+        const subMeshes = collectSubMeshes(mesh);
+        if (subMeshes.length !== pool.subMeshCount) {
+          uninstanceThing(thing.id); // shape changed under us → bail to a regular visible mesh
+          return;
+        }
+        for (let j = 0; j < pool.subMeshCount; j += 1) {
+          pool.instanced[j].setMatrixAt(slot, subMeshes[j].matrixWorld);
+          pool.instanced[j].instanceMatrix.needsUpdate = true;
+        }
+      } catch (error) {
+        disableInstancePool(pool.modelUrl, error);
+      }
+      return;
+    }
   };
 
   const updateThingMeshPosition = (thing: GeneratedThing) => {
@@ -4386,10 +1704,12 @@ function createTellusWorld(
       if (mesh.userData.generatingSwirl) {
         mesh.userData.baseY = mesh.position.y;
       }
+      refreshInstancedThingMatrix(thing);
       updateSelectionIndicator();
       return;
     }
     placeObjectAboveGround(mesh, thing.position, 0.04);
+    refreshInstancedThingMatrix(thing);
     updateSelectionIndicator();
   };
 
@@ -4443,14 +1763,19 @@ function createTellusWorld(
     modelUrl: thing.modelUrl,
     pipelineId: thing.modelUrl ? undefined : thing.pipelineId,
     generationStatus: thing.modelUrl ? "ready" : thing.generationStatus,
+    // "" = explicit "default" (mirrors presence.avatarId): a mid-rollout server that doesn't know
+    // the field yet echoes it back ABSENT, and absent must mean "keep what you have", not "clear".
+    animation: thing.animation ?? "",
     updatedAt: new Date().toISOString(),
   });
 
   const normalizeGeneratedThing = (thing: WorldGeneratedThing): WorldGeneratedThing => {
+    // procedural:// URLs are scheme-addressed local builds — absolutizing them (meant for legacy
+    // relative GLB paths) would mangle them into "/procedural://…" and break rendering.
     const modelUrl = thing.generationStatus === "failed"
       ? undefined
       : thing.modelUrl
-        ? absoluteTellusApiUrl(thing.modelUrl)
+        ? (sanitizeProceduralModelUrl(thing.modelUrl) ?? absoluteTellusApiUrl(thing.modelUrl))
         : undefined;
     const stalePending = isStalePendingGeneratedThing(thing);
     return {
@@ -4560,7 +1885,7 @@ function createTellusWorld(
     if (currentMesh?.userData.loadedModelUrl === thing.modelUrl) {
       return;
     }
-    void loadGeneratedModel(thing.modelUrl, thing)
+    void loadGeneratedModel(thing.modelUrl, thing, useWebGPU)
       .then((model) => {
         if (destroyed || !thingById(thing.id)) {
           disposeObject(model);
@@ -4568,6 +1893,7 @@ function createTellusWorld(
         }
         const oldMesh = generatedMeshes.get(thing.id);
         if (oldMesh) {
+          uninstanceThing(thing.id); // free any instance slot the old mesh held before we swap it out
           stopGeneratedAnimation(thing.id);
           scene.remove(oldMesh);
           disposeObject(oldMesh);
@@ -4577,6 +1903,7 @@ function createTellusWorld(
         startGeneratedAnimation(thing.id, model);
         scene.add(model);
         syncTransformControls();
+        reevaluateInstanceGroup(thing.modelUrl);
         publish();
       })
       .catch((error) => {
@@ -4595,10 +1922,24 @@ function createTellusWorld(
   const ensureGeneratedVisual = (thing: GeneratedThing) => {
     const wantsSwirl = shouldShowGenerationSwirl(thing);
     const currentMesh = generatedMeshes.get(thing.id);
-    if (currentMesh && Boolean(currentMesh.userData.generatingSwirl) === wantsSwirl) {
+    // If the correct GLB is already mounted, never tear it down. Without this, every move/scale/rotate/mount
+    // echoed back as a `generated.updated` patch would dispose the loaded model and re-download it: a ready
+    // asset reports wantsSwirl=true (it has a modelUrl), but the loaded mesh carries no `generatingSwirl`
+    // flag, so the state-compare below mismatched → dispose + re-fetch the GLB on every transform.
+    const alreadyLoaded =
+      Boolean(thing.modelUrl) && currentMesh?.userData.loadedModelUrl === thing.modelUrl;
+    if (
+      currentMesh &&
+      (alreadyLoaded || Boolean(currentMesh.userData.generatingSwirl) === wantsSwirl)
+    ) {
       return;
     }
+    const previousModelUrl =
+      typeof currentMesh?.userData.loadedModelUrl === "string"
+        ? (currentMesh.userData.loadedModelUrl as string)
+        : undefined;
     if (currentMesh) {
+      uninstanceThing(thing.id); // a torn-down mesh must release its instance slot first
       stopGeneratedAnimation(thing.id);
       scene.remove(currentMesh);
       disposeObject(currentMesh);
@@ -4608,6 +1949,8 @@ function createTellusWorld(
     scene.add(nextMesh);
     syncTransformControls();
     updateThingMeshPosition(thing);
+    // The old GLB (if any) just lost a member; re-evaluate that group so the survivors fold correctly.
+    if (previousModelUrl) reevaluateInstanceGroup(previousModelUrl);
   };
 
   const reconcileRemoteGeneratedManifest = (thing: GeneratedThing) => {
@@ -4659,9 +2002,26 @@ function createTellusWorld(
       existing.rotationZ = normalized.rotationZ ?? 0;
       existing.scale = normalized.scale;
       existing.color = normalized.color;
+      // animation wire convention (mirrors presence.avatarId): "" = explicit default, a non-empty
+      // string = explicit clip, ABSENT = a mid-rollout server stripped the field — keep ours
+      // (otherwise our own upsert's echo would wipe a just-picked clip).
+      const nextAnimation =
+        normalized.animation === undefined
+          ? existing.animation
+          : normalized.animation || undefined;
+      const animationChanged = (existing.animation ?? "") !== (nextAnimation ?? "");
+      existing.animation = nextAnimation;
       applyGenerationState(existing, normalized);
       ensureGeneratedVisual(existing);
       updateThingMeshPosition(existing);
+      // A remote animation pick on an already-loaded model restarts the loop in place (a model
+      // still loading picks it up via startGeneratedAnimation after the load).
+      if (animationChanged) {
+        const mesh = generatedMeshes.get(existing.id);
+        if (mesh && mesh.userData.loadedModelUrl === existing.modelUrl) {
+          startGeneratedAnimation(existing.id, mesh);
+        }
+      }
       loadRemoteGeneratedModel(existing);
       reconcileRemoteGeneratedManifest(existing);
       if (healedPending) {
@@ -4684,6 +2044,7 @@ function createTellusWorld(
       modelUrl: normalized.modelUrl,
       pipelineId: normalized.pipelineId,
       generationStatus: normalized.generationStatus,
+      animation: normalized.animation || undefined, // "" (explicit default) → unset internally
     };
     generated.push(thing);
     const mesh = shouldShowGenerationSwirl(thing)
@@ -4787,9 +2148,11 @@ function createTellusWorld(
   const applyRemoteGeneratedDelete = (id: string) => {
     const index = generated.findIndex((thing) => thing.id === id);
     if (index === -1) return;
-    generated.splice(index, 1);
+    const [removed] = generated.splice(index, 1);
+    const removedModelUrl = removed?.modelUrl;
     const mesh = generatedMeshes.get(id);
     if (mesh) {
+      uninstanceThing(id); // free the instance slot before the mesh goes away
       stopGeneratedAnimation(id);
       scene.remove(mesh);
       disposeObject(mesh);
@@ -4798,22 +2161,28 @@ function createTellusWorld(
     if (selectedThingId === id) selectedThingId = undefined;
     syncTransformControls();
     if (sailingThingId === id) sailingThingId = undefined;
+    reevaluateInstanceGroup(removedModelUrl); // group may now drop below 2 → pop the survivor out
     saveGeneratedPlacementSnapshot();
     publish();
   };
 
   if (tellusWorldBackendAvailable && initialWorldGeneratedThings.length > 0) {
     applyRemoteGeneratedThings(initialWorldGeneratedThings);
-    initialWorldGeneratedThings = [];
+    setInitialWorldGeneratedThings([]);
   }
 
   connectTellusWorldRealtime();
+  void initP2p();
   if (!tellusWorldBackendAvailable && !recoverGeneratedFromPlacementSnapshot()) {
     recoverGeneratedFromManifest();
   }
 
   const selectGenerated = (id?: string) => {
+    const previousSelectedId = selectedThingId;
     selectedThingId = id && thingById(id) ? id : undefined;
+    // Pop the newly-selected thing OUT (regular mesh visible) BEFORE attaching TransformControls, and re-fold
+    // the previously-selected thing's group. No-op unless instancing is on.
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     updateSelectionIndicator();
     syncTransformControls();
     publish();
@@ -4822,7 +2191,9 @@ function createTellusWorld(
   const goToGenerated = (id: string) => {
     const thing = thingById(id);
     if (!thing) return;
+    const previousSelectedId = selectedThingId;
     selectedThingId = id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     const distance = Math.hypot(thing.position.x, thing.position.z);
     const offset =
       distance > 0.001
@@ -4862,6 +2233,45 @@ function createTellusWorld(
     updateThingMeshPosition(thing);
     publishGeneratedThing(thing);
     publish();
+  };
+
+  // Duplicate the selected object, preserving its model + scale + rotation, offset a little so it doesn't sit
+  // exactly on the original. The GLB loads from the in-memory parse cache, so a clone is instant (no
+  // re-download/re-parse), and it's persisted to the world like any other placement.
+  const cloneGenerated = (id: string) => {
+    const source = thingById(id);
+    if (!source) return;
+    const offset = 1.4 + source.scale * 0.8;
+    const clone: GeneratedThing = {
+      id: browserUuid(),
+      kind: source.kind,
+      prompt: source.prompt,
+      creatorId: "visitor",
+      ownerUserId: userId,
+      position: groundedPosition(
+        source.position.x + offset,
+        source.position.z + offset,
+        source.position,
+      ),
+      rotationX: source.rotationX,
+      rotationY: source.rotationY,
+      rotationZ: source.rotationZ,
+      scale: source.scale,
+      color: source.color,
+      modelUrl: source.modelUrl,
+      pipelineId: source.pipelineId,
+      generationStatus: source.generationStatus,
+    };
+    generated.push(clone);
+    const mesh = shouldShowGenerationSwirl(clone)
+      ? createGenerationSwirl(clone)
+      : createGeneratedMesh(clone);
+    generatedMeshes.set(clone.id, mesh);
+    scene.add(mesh);
+    updateThingMeshPosition(clone);
+    loadRemoteGeneratedModel(clone);
+    publishGeneratedThing(clone);
+    selectGenerated(clone.id);
   };
 
   const rotateGenerated = (id: string, radians: number, axis: "x" | "y" | "z" = "y") => {
@@ -4941,11 +2351,14 @@ function createTellusWorld(
   const deleteGenerated = (id: string) => {
     const index = generated.findIndex((thing) => thing.id === id);
     if (index < 0) return;
+    const previousSelectedId = selectedThingId;
     const [thing] = generated.splice(index, 1);
+    const deletedModelUrl = thing?.modelUrl;
     pendingGenerationControllers.get(id)?.abort();
     pendingGenerationControllers.delete(id);
     const mesh = generatedMeshes.get(id);
     if (mesh) {
+      uninstanceThing(id); // free the instance slot before the mesh goes away
       stopGeneratedAnimation(id);
       scene.remove(mesh);
       disposeObject(mesh);
@@ -4962,6 +2375,9 @@ function createTellusWorld(
     }
     selectedThingId =
       generated[Math.min(index, generated.length - 1)]?.id ?? undefined;
+    // Deleting may drop the group below 2 (pop survivor out) and changes the selection (pop the new one out).
+    reevaluateInstanceGroup(deletedModelUrl);
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     addLog({
       agentId: "visitor",
       agentName: "Visitor",
@@ -5006,8 +2422,10 @@ function createTellusWorld(
     const thing = thingById(id);
     const mode = thing ? vehicleMode(thing) : null;
     if (!thing || !mode) return;
+    const previousSelectedId = selectedThingId;
     sailingThingId = id;
     selectedThingId = id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     if (mode === "water" && waterBlockedByLand(thing.position)) {
       moveGeneratedToWater(id);
     } else if (mode === "air") {
@@ -5090,8 +2508,7 @@ function createTellusWorld(
         15 + rand(tick) * 8,
         -15 + rand(tick + 1) * 7,
       );
-    const agent = agents.find((item) => item.id === request.creatorId);
-    const origin = agent?.position ?? visitorPosition;
+    const origin = visitorPosition;
     const angle = rand(tick + generated.length * 17) * Math.PI * 2;
     const radius = 3 + rand(tick + 33) * 7;
     return normalizedDiscPosition(
@@ -5128,12 +2545,11 @@ function createTellusWorld(
     scene.add(mesh);
     syncTransformControls();
 
-    const actor = agents.find((agent) => agent.id === request.creatorId);
     addLog({
       agentId: request.creatorId,
-      agentName: actor?.name ?? "Visitor",
+      agentName: "Visitor",
       tool: "generate",
-      text: `${actor?.name ?? "Visitor"} generated ${thing.kind}: ${request.prompt}`,
+      text: `Visitor generated ${thing.kind}: ${request.prompt}`,
     });
     publishGeneratedThing(thing);
 
@@ -5186,7 +2602,7 @@ function createTellusWorld(
             tool: "generate",
             text: `Pixel3D returned a model URL for ${thing.kind}; loading it into Tellus.`,
           });
-          const model = await loadGeneratedModel(modelUrl, thing);
+          const model = await loadGeneratedModel(modelUrl, thing, useWebGPU);
           if (destroyed || generationPausedForThing(thing) || !thingById(thing.id)) {
             disposeObject(model);
             return;
@@ -5299,7 +2715,7 @@ function createTellusWorld(
             tool: "generate",
             text: `${providerName} used ${result.textImageProvider ?? "image"} source ${result.sourceImageUrl ? absoluteTellusApiUrl(result.sourceImageUrl) : "image"} and saved ${thing.kind} GLB to ${result.storedModelUrl ? absoluteTellusApiUrl(result.storedModelUrl) : thing.modelUrl}; loading it into Tellus.`,
           });
-          const model = await loadGeneratedModel(thing.modelUrl, thing);
+          const model = await loadGeneratedModel(thing.modelUrl, thing, useWebGPU);
           if (destroyed || generationPausedForThing(thing) || !thingById(thing.id)) {
             disposeObject(model);
             return;
@@ -5369,9 +2785,13 @@ function createTellusWorld(
   const addLibraryAsset = (model: AssetLibraryModel): GeneratedThing => {
     const prompt = model.description?.trim() || model.name;
     const kind = inferGeneratedKind(prompt, "visitor");
+    // Prefer the game-optimized (meshopt-compressed) variant — typically ~80% smaller, same visual
+    // quality. The store's game-optimized endpoint safely serves the original GLB when no optimized
+    // build exists, so there's no 404 risk and no client-side fallback needed. (MeshoptDecoder is
+    // already wired into the GLTF loader.)
     const modelUrl =
       model.modelUrl ??
-      tellusAssetLibraryUrl(`/api/assets/download/${encodeURIComponent(model.id)}`);
+      tellusAssetLibraryUrl(`/api/assets/model/${encodeURIComponent(model.id)}/game-optimized`);
     const position = chooseLocation({
       prompt,
       creatorId: "visitor",
@@ -5398,7 +2818,9 @@ function createTellusWorld(
     const mesh = createGenerationSwirl(thing);
     generatedMeshes.set(thing.id, mesh);
     scene.add(mesh);
+    const previousSelectedId = selectedThingId;
     selectedThingId = thing.id;
+    reevaluateInstancingForSelection(previousSelectedId, selectedThingId);
     syncTransformControls();
     addLog({
       agentId: "visitor",
@@ -5408,15 +2830,18 @@ function createTellusWorld(
     });
     publishGeneratedThing(thing);
     publish();
-    void loadGeneratedModel(modelUrl, thing)
+    void loadGeneratedModel(modelUrl, thing, useWebGPU)
       .then((modelObject) => {
         if (destroyed) return;
         const oldMesh = generatedMeshes.get(thing.id);
         if (oldMesh) {
+          stopGeneratedAnimation(thing.id);
           scene.remove(oldMesh);
           disposeObject(oldMesh);
         }
+        modelObject.userData.loadedModelUrl = modelUrl;
         generatedMeshes.set(thing.id, modelObject);
+        startGeneratedAnimation(thing.id, modelObject); // VRM idle / embedded clip starts looping
         scene.add(modelObject);
         syncTransformControls();
         publish();
@@ -5437,59 +2862,13 @@ function createTellusWorld(
   };
 
   const interact = (request: InteractRequest): TellusLog => {
-    const actor = agents.find((agent) => agent.id === request.actorId);
     const target = generated.find((thing) => thing.id === request.targetId);
     return addLog({
       agentId: request.actorId,
-      agentName: actor?.name ?? "Visitor",
-      tool: "interact",
-      text: `${actor?.name ?? "Visitor"} interacts with ${target?.kind ?? "the world"}: ${request.intent}`,
-    });
-  };
-
-  const talkToAgent = (agentId: AgentId, message: string) => {
-    const trimmed = message.trim();
-    const agent = agents.find((candidate) => candidate.id === agentId);
-    if (!trimmed || !agent) return;
-    if (paused) {
-      addLog({
-        agentId: "world",
-        agentName: "Tellus",
-        tool: "interact",
-        text: "Paused: agent chatter is stopped.",
-      });
-      return;
-    }
-
-    addLog({
-      agentId: "visitor",
       agentName: "Visitor",
       tool: "interact",
-      text: `asks ${agent.name}: ${trimmed}`,
+      text: `Visitor interacts with ${target?.kind ?? "the world"}: ${request.intent}`,
     });
-
-    void askAgentForReply(agent, trimmed, generated, logs, visualFeedback)
-      .then((reply) => {
-        if (destroyed || paused) return;
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} says: ${reply}`,
-        });
-        speakTellusText(reply);
-      })
-      .catch((error) => {
-        if (destroyed || paused) return;
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} tries to answer, but the voice link is quiet (${
-            error instanceof Error ? error.message : "unknown error"
-          })`,
-        });
-      });
   };
 
   const submitVisitorPrompt = (prompt: string) => {
@@ -5575,235 +2954,74 @@ function createTellusWorld(
     publish();
   };
 
-  const updateAgentGoal = (agentId: AgentId, goal: string) => {
-    const agent = agents.find((candidate) => candidate.id === agentId);
-    if (!agent) return;
-    agent.goal = goal;
-    publish();
-  };
-
-  const setPaused = (nextPaused: boolean) => {
-    if (paused === nextPaused) return;
-    paused = nextPaused;
-    if (paused) {
-      abortPendingGeneration((thing) => thing.creatorId !== "visitor");
-      for (const thing of generated) {
-        if (
-          thing.creatorId !== "visitor" &&
-          (thing.generationStatus === "queued" ||
-            thing.generationStatus === "generating")
-        ) {
-          cancelDirectGeneration(thing.pipelineId);
-          thing.generationStatus = "local";
-          thing.pipelineId = undefined;
-        }
-      }
-    }
-    if (!paused) {
-      const now = performance.now();
-      nextWorldFeedbackAt = now + 4_000;
-      for (const agent of agents) {
-        agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-        agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
-      }
-    }
-    addLog({
-      agentId: "world",
-      agentName: "Tellus",
-      tool: "interact",
-      text: paused
-        ? "Paused: agent chatter and generation are stopped."
-        : "Resumed: agents may talk and generate again.",
-    });
-    publish();
-  };
-
-  const agentActionTarget = (
-    agent: TellusAgent,
-    decision: AgentDecision,
-  ): GeneratedThing | undefined => {
-    if (decision.targetId) {
-      const explicit = thingById(decision.targetId);
-      if (explicit) return explicit;
-    }
-    return (
-      [...generated].reverse().find((thing) => thing.creatorId === agent.id) ??
-      generated[generated.length - 1]
-    );
-  };
-
-  const runAgentWorldAction = (
-    agent: TellusAgent,
-    decision: AgentDecision,
-  ): boolean => {
-    const action = decision.action ?? "generate";
-    if (action === "generate") return false;
-
-    if (action === "moveSelf") {
-      const dx = clamp(decision.dx ?? 0, -8, 8);
-      const dz = clamp(decision.dz ?? 4, -8, 8);
-      agent.target = groundedPosition(
-        agent.position.x + dx,
-        agent.position.z + dz,
-        agent.position,
-      );
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} walks toward x ${agent.target.x.toFixed(1)}, z ${agent.target.z.toFixed(1)} for a steadier look`,
-      });
-      return true;
-    }
-
-    if (action === "sculptTerrain") {
-      const mode = decision.terrainMode ?? "flatten";
-      sculptTerrainAt(mode, agent.position, agent.id, agent.name);
-      return true;
-    }
-
-    const target = agentActionTarget(agent, decision);
-    if (!target) return false;
-    selectedThingId = target.id;
-
-    if (action === "moveAsset") {
-      const dx = clamp(decision.dx ?? 0, -4, 4);
-      const dz = clamp(decision.dz ?? -2, -4, 4);
-      moveGenerated(target.id, dx, dz);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} moved ${target.kind} "${target.prompt}" by x ${dx.toFixed(1)}, z ${dz.toFixed(1)}`,
-      });
-      return true;
-    }
-
-    if (action === "rotateAsset") {
-      const radians = clamp(decision.rotation ?? Math.PI / 8, -1, 1);
-      rotateGenerated(target.id, radians);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} rotated ${target.kind} "${target.prompt}" ${radians.toFixed(2)} radians`,
-      });
-      return true;
-    }
-
-    if (action === "scaleAsset") {
-      const multiplier = clamp(decision.scaleMultiplier ?? 1.15, 0.65, 1.5);
-      scaleGenerated(target.id, multiplier);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} scaled ${target.kind} "${target.prompt}" to ${target.scale.toFixed(2)}x`,
-      });
-      return true;
-    }
-
-    if (action === "moveAssetToWater") {
-      moveGeneratedToWater(target.id);
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} repositioned ${target.kind} "${target.prompt}" toward the water or island edge`,
-      });
-      return true;
-    }
-
-    return false;
-  };
-
-  const runAgentTurn = async (agent: TellusAgent): Promise<void> => {
-    if (paused) return;
-    if (pendingAgentDecisions.has(agent.id)) return;
-    pendingAgentDecisions.add(agent.id);
-    try {
-      if (paused) return;
-      const decision = await askAgentForDecision(
-        agent,
-        generated,
-        logs,
-        visualFeedback,
-      );
-      if (destroyed || paused) return;
-      if (decision.speech) {
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} says: ${decision.speech}`,
-        });
-      }
-      if (runAgentWorldAction(agent, decision)) return;
-      if (AUTONOMOUS_AGENT_GENERATION_ENABLED) {
-        const thing = generate({
-          prompt: decision.prompt,
-          location: chooseAgentLocation(agent, decision.prompt),
-          creatorId: agent.id,
-        });
-        if (decision.intent) {
-          if (paused) return;
-          interact({
-            targetId: thing.id,
-            actorId: agent.id,
-            intent: decision.intent,
-          });
-        }
-        return;
-      }
-      addLog({
-        agentId: agent.id,
-        agentName: agent.name,
-        tool: "interact",
-        text: `${agent.name} wanted to generate "${decision.prompt}", but autonomous asset generation is disabled.`,
-      });
-    } catch (error) {
-      if (destroyed || paused) return;
-      addLog({
-        agentId: "world",
-        agentName: "Hyades",
-        tool: "interact",
-        text: `Agent model unavailable; autonomous fallback asset generation is disabled (${
-          error instanceof Error ? error.message : "unknown error"
-        })`,
-      });
-    } finally {
-      pendingAgentDecisions.delete(agent.id);
-    }
-  };
-
-  const runAgentReflection = (agent: TellusAgent): void => {
-    if (paused || generated.length === 0) return;
-    const target =
-      generated[
-        Math.floor(rand(performance.now() + agent.position.x) * generated.length)
-      ];
-    interact({
-      targetId: target.id,
-      actorId: agent.id,
-      intent:
-        agent.id === "johnny"
-          ? "study what should live near here next and how this asset changes the world"
-          : agent.id === "mira"
-            ? "study what should live near here next and how this asset changes the local habitat"
-            : "study what should live near here next and whether it belongs in the mountain pattern",
-    });
-  };
-
   const resize = () => {
     const rect = container.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
     const height = Math.max(1, Math.floor(rect.height));
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    agentVisionCamera.aspect = width / height;
-    agentVisionCamera.updateProjectionMatrix();
     renderer?.setSize(width, height, false);
   };
+
+  // ── Player physics: jump, fall, and obstacle pushout (trees + large placed things) ──
+  let playerVy = 0;
+  let playerAirborne = false;
+  let obstacleCache: ObstacleCircle[] = [];
+  let obstacleCacheAt = 0;
+  const footprintCache = new Map<string, { radius: number; height: number }>();
+  const thingFootprint = (thing: GeneratedThing): { radius: number; height: number } | null => {
+    const mesh = generatedMeshes.get(thing.id);
+    if (!mesh) return null;
+    const key = `${thing.id}:${thing.scale.toFixed(2)}`;
+    const cached = footprintCache.get(key);
+    if (cached) return cached;
+    const box = measureModelBounds(mesh); // skinning-aware: bind-pose boxes of animated models are bogus
+    if (box.isEmpty()) return null;
+    const size = box.getSize(new THREE.Vector3());
+    const fp = { radius: Math.max(size.x, size.z) / 2, height: size.y };
+    footprintCache.set(key, fp);
+    if (footprintCache.size > 600) footprintCache.clear();
+    return fp;
+  };
+  const currentObstacles = (): ObstacleCircle[] => {
+    const nowMs = performance.now();
+    if (nowMs - obstacleCacheAt > 500) {
+      obstacleCacheAt = nowMs;
+      const list: ObstacleCircle[] = [...vegetation.getTreeColliders()];
+      for (const thing of generated) {
+        if (thing.id === sailingThingId || ambientPhysics.has(thing.id)) continue;
+        const fp = thingFootprint(thing);
+        if (!fp || fp.height < 1.4 || fp.radius < 0.55) continue;
+        // only solid when the player can actually run into it (not lifted into the sky)
+        if (thing.position.y > visitorPosition.y + 2.2) continue;
+        list.push({
+          x: thing.position.x,
+          z: thing.position.z,
+          r: Math.min(fp.radius * 0.7, 2.6),
+        });
+      }
+      obstacleCache = list;
+    }
+    return obstacleCache;
+  };
+
+  // Bounded auto-retry for models whose textures failed during a load burst (KTX2 contention):
+  // the loader left them uncached + marked, so a re-load fully refetches. Max 2 attempts per url.
+  const textureRetryCounts = new Map<string, number>();
+  const textureRetryTimer = window.setInterval(() => {
+    if (destroyed || textureFailedModelUrls.size === 0) return;
+    for (const thing of generated) {
+      if (!thing.modelUrl || !textureFailedModelUrls.has(thing.modelUrl)) continue;
+      const tries = textureRetryCounts.get(thing.modelUrl) ?? 0;
+      if (tries >= 2) continue;
+      textureRetryCounts.set(thing.modelUrl, tries + 1);
+      textureFailedModelUrls.delete(thing.modelUrl);
+      const mesh = generatedMeshes.get(thing.id);
+      if (mesh) mesh.userData.loadedModelUrl = undefined; // force the reload path
+      loadRemoteGeneratedModel(thing);
+      break; // one per sweep — keep retries gentle
+    }
+  }, 12_000);
 
   const moveVisitor = (delta: number) => {
     const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
@@ -5813,9 +3031,17 @@ function createTellusWorld(
     if (keys.has("s") || keys.has("arrowdown")) movement.sub(forward);
     if (keys.has("a") || keys.has("arrowright")) movement.add(right);
     if (keys.has("d") || keys.has("arrowleft")) movement.sub(right);
-    if (movement.lengthSq() === 0) return;
-    movement.normalize().multiplyScalar(PLAYER_SPEED * delta);
+    const hasInput = movement.lengthSq() > 0;
+    if (!sailingThingId && keys.has(" ") && !playerAirborne) {
+      playerVy = 8.6;
+      playerAirborne = true;
+    }
+    if (!hasInput && !playerAirborne) return;
+    if (hasInput) movement.normalize().multiplyScalar(scaledPlayerSpeed() * delta);
     if (sailingThingId) {
+      playerAirborne = false;
+      playerVy = 0;
+      if (!hasInput) return;
       const boat = thingById(sailingThingId);
       if (!boat) {
         sailingThingId = undefined;
@@ -5841,58 +3067,103 @@ function createTellusWorld(
       publish();
       return;
     }
-    visitorPosition = groundedPosition(
+    // obstacle pushout, then ground/air vertical dynamics
+    const pushed = resolveObstacles(
       visitorPosition.x + movement.x,
       visitorPosition.z + movement.z,
-      visitorPosition,
+      0.5,
+      currentObstacles(),
     );
+    const grounded = groundedPosition(pushed.x, pushed.z, visitorPosition);
+    if (playerAirborne) {
+      playerVy -= 24 * delta;
+      const ny = visitorPosition.y + playerVy * delta;
+      if (ny <= grounded.y) {
+        visitorPosition = grounded;
+        playerAirborne = false;
+        playerVy = 0;
+      } else {
+        visitorPosition = { x: grounded.x, y: ny, z: grounded.z };
+      }
+    } else if (grounded.y < visitorPosition.y - 1.6) {
+      // walked off a ledge — fall instead of snapping down
+      playerAirborne = true;
+      playerVy = 0;
+      visitorPosition = { x: grounded.x, y: visitorPosition.y, z: grounded.z };
+    } else {
+      visitorPosition = grounded;
+    }
     sendPresenceUpdate();
   };
 
-  const moveAgents = (now: number, delta: number) => {
-    for (const agent of agents) {
-      if (distance2D(agent.position, agent.target) < 1.2) {
-        if (agent.id === "johnny") {
-          agent.target = { ...agent.position };
-        } else {
-          const angle = rand(now * 0.001 + agent.position.x) * Math.PI * 2;
-          const radius = 7 + rand(now * 0.002 + agent.position.z) * 22;
-          agent.target = normalizedDiscPosition(
-            Math.cos(angle) * radius,
-            Math.sin(angle) * radius,
-          );
+  // ── Throw the selected thing: a real ballistic launch that tumbles, bounces off the terrain (or
+  // splashes and floats), then settles — the rest pose publishes through the normal upsert path so
+  // every client converges. The flight itself streams at ~7 Hz for remote spectators.
+  const throwEuler = new THREE.Euler();
+  const throwGenerated = (id: string) => {
+    const thing = thingById(id);
+    if (!thing || thing.id === sailingThingId) return;
+    const mesh = generatedMeshes.get(id);
+    if (!mesh) return;
+    const fp = thingFootprint(thing);
+    const radius = THREE.MathUtils.clamp(fp?.radius ?? 0.5, 0.3, 2.4);
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    dir.y = Math.max(dir.y, -0.15);
+    dir.normalize();
+    const heft = THREE.MathUtils.clamp(15 / (1 + radius * radius), 5, 14);
+    const isBalloon = thing.kind === "balloon";
+    const velocity = dir
+      .multiplyScalar(isBalloon ? heft * 0.7 : heft)
+      .add(new THREE.Vector3(0, 3.4, 0));
+    const groundHere = groundHeightAt(thing.position.x, thing.position.z) ?? SEA_LEVEL;
+    const start = new THREE.Vector3(
+      thing.position.x,
+      Math.max(thing.position.y, groundHere) + radius + 0.25,
+      thing.position.z,
+    );
+    const angular = new THREE.Vector3(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
+      .normalize()
+      .multiplyScalar(2 + Math.random() * 4);
+    const startQuat = new THREE.Quaternion().setFromEuler(
+      throwEuler.set(thing.rotationX ?? 0, thing.rotationY, thing.rotationZ ?? 0),
+    );
+    let lastFlightPublish = 0;
+    const applyPose = (p: THREE.Vector3, q: THREE.Quaternion) => {
+      thing.position = { x: p.x, y: p.y, z: p.z };
+      throwEuler.setFromQuaternion(q);
+      thing.rotationX = throwEuler.x;
+      thing.rotationY = throwEuler.y;
+      thing.rotationZ = throwEuler.z;
+      mesh.position.set(p.x, p.y, p.z);
+      mesh.quaternion.copy(q);
+      refreshInstancedThingMatrix(thing);
+    };
+    ambientPhysics.launch({
+      id,
+      radius,
+      position: start,
+      quaternion: startQuat,
+      velocity,
+      angularVelocity: angular,
+      gravityScale: isBalloon ? 0.16 : 1,
+      restitution: isBalloon ? 0.55 : 0.42,
+      onFrame: (p, q) => {
+        applyPose(p, q);
+        const nowMs = performance.now();
+        if (nowMs - lastFlightPublish > 150) {
+          lastFlightPublish = nowMs;
+          publishGeneratedThing(thing);
         }
-      }
-      const direction = new THREE.Vector3(
-        agent.target.x - agent.position.x,
-        0,
-        agent.target.z - agent.position.z,
-      );
-      if (direction.lengthSq() > 0.001) {
-        direction.normalize().multiplyScalar(AGENT_SPEED * delta);
-        agent.position = normalizedDiscPosition(
-          agent.position.x + direction.x,
-          agent.position.z + direction.z,
-        );
-      }
-
-      if (!paused && now >= agent.nextActionAt) {
-        if (hasPendingGeneratedAsset(agent.id)) {
-          agent.nextActionAt = now + 15_000;
-          if (now >= agent.nextReflectionAt) {
-            runAgentReflection(agent);
-            agent.nextReflectionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-          }
-          continue;
-        }
-        void runAgentTurn(agent);
-        agent.nextActionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-        agent.nextReflectionAt = now + AUTONOMOUS_REFLECTION_OFFSET_MS;
-      } else if (!paused && now >= agent.nextReflectionAt) {
-        runAgentReflection(agent);
-        agent.nextReflectionAt = now + AUTONOMOUS_ASSET_INTERVAL_MS;
-      }
-    }
+        publish();
+      },
+      onSettle: (p, q) => {
+        applyPose(p, q);
+        publishGeneratedThing(thing);
+        updateSelectionIndicator();
+        publish();
+      },
+    });
   };
 
   const syncMeshes = (now: number) => {
@@ -5906,24 +3177,15 @@ function createTellusWorld(
 
     const ripples = pondWater.getObjectByName("tellus-pond-ripples");
     if (ripples) {
-      const { pond } = runtimeConfig.landShape;
       ripples.children.forEach((child, index) => {
         const phase = (now * 0.00028 + index * 0.23) % 1;
-        const scale = pond.radius * (0.22 + phase * 0.72);
+        const scale = POND_RADIUS * (0.22 + phase * 0.72);
         child.scale.setScalar(scale);
         const material = (child as THREE.Mesh).material;
         if (material instanceof THREE.MeshBasicMaterial) {
           material.opacity = Math.max(0, 0.32 * (1 - phase));
         }
       });
-    }
-
-    for (const agent of agents) {
-      const mesh = agentMeshes.get(agent.id);
-      if (!mesh) continue;
-      mesh.position.set(agent.position.x, agent.position.y, agent.position.z);
-      mesh.lookAt(agent.target.x, agent.position.y, agent.target.z);
-      mesh.position.y += Math.sin(now * 0.004 + agent.color) * 0.08;
     }
 
     let index = 0;
@@ -6050,8 +3312,12 @@ function createTellusWorld(
     }
     if (scene.fog instanceof THREE.Fog) {
       scene.fog.color.copy(backgroundColor);
-      scene.fog.near = 54 + daylight * 18;
-      scene.fog.far = 176 + daylight * 54;
+      scene.fog.near = (54 + daylight * 18) * WORLD_SCALE;
+      scene.fog.far = (176 + daylight * 54) * WORLD_SCALE;
+    }
+    {
+      // Environment (ambient PBR reflections) brightens with the day and warms at the golden hours.
+      scene.environmentIntensity = 0.16 + daylight * 0.5 + twilight * 0.18;
     }
 
     skyboxTint
@@ -6149,65 +3415,26 @@ function createTellusWorld(
     }
   };
 
-  const agentVisionLookTarget = (agent: TellusAgent): Vec3 => {
-    if (distance2D(agent.position, agent.target) > 1.2) {
-      return agent.target;
-    }
-    const nearest = generated
-      .map((thing) => ({
-        thing,
-        distance: distance2D(agent.position, thing.position),
-      }))
-      .sort((a, b) => a.distance - b.distance)[0]?.thing;
-    if (nearest) return nearest.position;
-    if (agent.id === "johnny") {
-      const { pond } = runtimeConfig.landShape;
-      return { x: pond.x, y: pondWaterLevel(), z: pond.z };
-    }
-    return normalizedDiscPosition(agent.position.x + 1, agent.position.z + 1);
-  };
-
-  const updateAgentVisionCamera = (agent: TellusAgent) => {
-    const lookTarget = agentVisionLookTarget(agent);
-    const lookDirection = new THREE.Vector3(
-      lookTarget.x - agent.position.x,
-      0,
-      lookTarget.z - agent.position.z,
-    );
-    if (lookDirection.lengthSq() < 0.001) {
-      lookDirection.set(0, 0, 1);
-    }
-    lookDirection.normalize();
-    const eyeHeight = terrainHeight(agent.position.x, agent.position.z) + 2.2;
-    const targetHeight = terrainHeight(lookTarget.x, lookTarget.z) + 1.4;
-    agentVisionCamera.position.set(
-      agent.position.x + lookDirection.x * 0.35,
-      eyeHeight,
-      agent.position.z + lookDirection.z * 0.35,
-    );
-    agentVisionCamera.lookAt(lookTarget.x, targetHeight, lookTarget.z);
-  };
-
-  const captureAgentVisionScreenshot = (agent: TellusAgent): string => {
-    if (!renderer) throw new Error("Renderer is not ready");
-    updateAgentVisionCamera(agent);
-    const agentMesh = agentMeshes.get(agent.id);
-    const wasVisible = agentMesh?.visible;
-    if (agentMesh) agentMesh.visible = false;
-    try {
-      syncExternalSkyboxToCamera(agentVisionCamera.position);
-      renderer.render(scene, agentVisionCamera);
-      return captureCanvasDataUrl(renderer.domElement);
-    } finally {
-      if (agentMesh && wasVisible !== undefined) {
-        agentMesh.visible = wasVisible;
-      }
-      syncExternalSkyboxToCamera(camera.position);
-      renderer.render(scene, camera);
-    }
-  };
-
   const updateCamera = () => {
+    if (cameraMode === "first") {
+      // First person: eye at the local avatar's head (the same POV math the agent viewport uses,
+      // but driven by the EXISTING look controls — drag steers yaw/pitch, WASD walks, physics
+      // untouched). lookAt direction = yaw around Y with the full pitch range.
+      const cosPitch = Math.cos(pitch);
+      const eyeHeight = firstPersonEyeHeight();
+      camera.position.set(
+        visitorPosition.x,
+        visitorPosition.y + eyeHeight,
+        visitorPosition.z,
+      );
+      camera.lookAt(
+        visitorPosition.x + Math.sin(yaw) * cosPitch,
+        visitorPosition.y + eyeHeight + Math.sin(pitch),
+        visitorPosition.z + Math.cos(yaw) * cosPitch,
+      );
+      syncExternalSkyboxToCamera(camera.position);
+      return;
+    }
     const pilotedThing = sailingThingId ? thingById(sailingThingId) : undefined;
     const pilotedMode = pilotedThing ? vehicleMode(pilotedThing) : null;
     const targetY =
@@ -6237,96 +3464,248 @@ function createTellusWorld(
     syncExternalSkyboxToCamera(camera.position);
   };
 
-  const refreshWorldFeedback = (now: number) => {
-    if (
-      paused ||
-      !worldFeedbackAvailable ||
-      worldFeedbackPending ||
-      now < nextWorldFeedbackAt ||
-      !renderer
-    ) {
-      return;
-    }
-    nextWorldFeedbackAt = now + WORLD_FEEDBACK_INTERVAL_MS;
-    worldFeedbackPending = true;
-    const feedbackAgent =
-      agents.find((agent) => agent.id === "johnny") ?? agents[0];
-    if (!feedbackAgent) {
-      worldFeedbackPending = false;
-      return;
-    }
-    let screenshotUrl = "";
+  const setAgentViewport = (id: string | null) => {
+    agentViewportVisitorId = id && id.trim() ? id.trim() : null;
+  };
+
+  // Is that remote-presence avatar actually in the scene right now? (false => the React layer shows
+  // the server-held snapshot in the PiP instead of a locally rendered POV).
+  const hasVisitorAvatar = (visitorId: string): boolean =>
+    remoteVisitorMeshes.has(visitorId.trim());
+
+  // Position povCamera at a remote avatar's head looking along its facing. Shared by the on-screen
+  // PiP and the agent-vision capture. Returns false when the avatar isn't present.
+  const poseAgentPovCamera = (visitorId: string): boolean => {
+    const avatar = remoteVisitorMeshes.get(visitorId);
+    if (!avatar) return false;
+    avatar.getWorldPosition(povEye);
+    // Eye height follows the visitor's avatar scale (presence-fed, lerped on the mesh) so a
+    // giant agent's POV sits at its head, not its knees.
+    povEye.y += 2.4 * getAvatarUserScale(avatar);
+    const facing = avatar.rotation.y;
+    povForward.set(Math.sin(facing), 0, Math.cos(facing)).normalize();
+    povLookAt.copy(povEye).addScaledVector(povForward, 8).add(POV_LOOK_DROP);
+    povCamera.position.copy(povEye);
+    povCamera.lookAt(povLookAt);
+    povCamera.updateMatrixWorld();
+    return true;
+  };
+
+  // ── Agent vision capture: render the agent's POV into a small offscreen target and return a JPEG
+  // data URL. The owner's client ships this to Hyades so the agent's LLM turn can SEE — no headless
+  // browser anywhere. Works on both backends (async readback on WebGPU, sync on WebGL). ──
+  const AGENT_VIEW_W = 256;
+  const AGENT_VIEW_H = 144;
+  let agentViewTarget: THREE.WebGLRenderTarget | null = null;
+  let agentViewCanvas: HTMLCanvasElement | null = null;
+  let agentViewBusy = false;
+  const captureAgentView = async (visitorId: string): Promise<string | null> => {
+    if (!renderer || agentViewBusy || destroyed) return null;
+    if (!poseAgentPovCamera(visitorId)) return null;
+    agentViewBusy = true;
     try {
-      screenshotUrl = captureAgentVisionScreenshot(feedbackAgent);
-    } catch (error) {
-      worldFeedbackPending = false;
-      if (!worldFeedbackIssueLogged) {
-        worldFeedbackIssueLogged = true;
-        addLog({
-          agentId: "world",
-          agentName: "Z.ai Vision",
-          tool: "interact",
-          text: `${feedbackAgent.name} vision capture unavailable: ${
-            error instanceof Error ? error.message : "unknown capture error"
-          }`,
-        });
+      agentViewTarget ??= new THREE.WebGLRenderTarget(AGENT_VIEW_W, AGENT_VIEW_H);
+      const prevTarget = renderer.getRenderTarget() as THREE.WebGLRenderTarget | null;
+      // celestials follow the player camera — recenter them on the POV for this off-screen draw
+      povSkyDelta.copy(povCamera.position).sub(camera.position);
+      syncExternalSkyboxToCamera(povCamera.position);
+      if (moonModel) moonModel.position.add(povSkyDelta);
+      moonCloudVeil.group.position.add(povSkyDelta);
+      try {
+        renderer.setRenderTarget(agentViewTarget);
+        renderer.render(scene, povCamera);
+      } finally {
+        renderer.setRenderTarget(prevTarget);
+        if (moonModel) moonModel.position.sub(povSkyDelta);
+        moonCloudVeil.group.position.sub(povSkyDelta);
+        syncExternalSkyboxToCamera(camera.position);
       }
-      return;
+      const gpuRenderer = renderer as unknown as {
+        readRenderTargetPixelsAsync?: (
+          rt: THREE.WebGLRenderTarget,
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+        ) => Promise<Uint8Array | Uint8ClampedArray>;
+        readRenderTargetPixels?: (
+          rt: THREE.WebGLRenderTarget,
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          buffer: Uint8Array,
+        ) => void;
+      };
+      let pixels: Uint8Array | Uint8ClampedArray;
+      if (typeof gpuRenderer.readRenderTargetPixelsAsync === "function") {
+        pixels = await gpuRenderer.readRenderTargetPixelsAsync(agentViewTarget, 0, 0, AGENT_VIEW_W, AGENT_VIEW_H);
+      } else if (typeof gpuRenderer.readRenderTargetPixels === "function") {
+        const buf = new Uint8Array(AGENT_VIEW_W * AGENT_VIEW_H * 4);
+        gpuRenderer.readRenderTargetPixels(agentViewTarget, 0, 0, AGENT_VIEW_W, AGENT_VIEW_H, buf);
+        pixels = buf;
+      } else {
+        return null;
+      }
+      agentViewCanvas ??= document.createElement("canvas");
+      agentViewCanvas.width = AGENT_VIEW_W;
+      agentViewCanvas.height = AGENT_VIEW_H;
+      const ctx2d = agentViewCanvas.getContext("2d");
+      if (!ctx2d) return null;
+      const img = ctx2d.createImageData(AGENT_VIEW_W, AGENT_VIEW_H);
+      // flip Y (GPU readback is bottom-up)
+      for (let y = 0; y < AGENT_VIEW_H; y++) {
+        const src = (AGENT_VIEW_H - 1 - y) * AGENT_VIEW_W * 4;
+        img.data.set(pixels.subarray(src, src + AGENT_VIEW_W * 4), y * AGENT_VIEW_W * 4);
+      }
+      ctx2d.putImageData(img, 0, 0);
+      return agentViewCanvas.toDataURL("image/jpeg", 0.55);
+    } catch {
+      return null;
+    } finally {
+      agentViewBusy = false;
     }
-    void requestWorldFeedback(screenshotUrl)
-      .then((summary) => {
-        if (destroyed || paused) return;
-        visualFeedback = summary;
-        worldFeedbackIssueLogged = false;
-        addLog({
-          agentId: "world",
-          agentName: "Z.ai Vision",
-          tool: "interact",
-          text: `${feedbackAgent.name} vision updated: ${sanitizeLogText(summary).slice(0, 180)}`,
-          screenshotUrl,
-        });
-      })
-      .catch((error) => {
-        if (destroyed || paused || worldFeedbackIssueLogged) return;
-        if (isMissingApiRouteError(error)) {
-          worldFeedbackAvailable = false;
-          return;
+  };
+
+  // Render the agent POV picture-in-picture: a small second view of the scene from the target avatar's head,
+  // looking forward along its facing. Runs AFTER the main render; any failure is swallowed so a bad PiP frame
+  // never breaks the main loop. Works for both WebGL and WebGPU renderers (both expose scissor/viewport/render).
+  //
+  // Viewport/scissor units: three.js setViewport/setScissor take LOGICAL (CSS) pixels and multiply
+  // by the renderer pixelRatio internally — on BOTH backends (WebGLRenderer multiplies _viewport by
+  // _pixelRatio in state.viewport(); the WebGPU common Renderer does the same in _getFrameBufferTarget /
+  // renderContext.viewportValue). A previous version multiplied by dpr manually AND restored with
+  // renderer.domElement.width/height (PHYSICAL pixels), so on hiDPI screens the "small PiP" was dpr²×
+  // too big and the restored main viewport was dpr× too big — the agent POV painted over the whole
+  // screen (looked like being switched to 1st person). Save/restore the real state instead.
+  const pipSavedViewport = new THREE.Vector4();
+  const pipSavedScissor = new THREE.Vector4();
+  const pipCanvasSize = new THREE.Vector2();
+  const renderAgentViewport = () => {
+    if (!renderer || !agentViewportVisitorId) return;
+    if (!poseAgentPovCamera(agentViewportVisitorId)) return;
+    let skyShifted = false;
+    let viewportSaved = false;
+    let savedScissorTest = false;
+    try {
+
+      // The skybox dome + moon + cloud veil are repositioned every frame to follow the PLAYER camera
+      // (updateCamera / updateDayNightCycle). Without this they stay centered on the player, so the PiP
+      // shows the player's sky/moon, not the agent's. Shift them by (POV - player) for this render, then
+      // undo it in the finally so the next main-loop frame starts from a clean player-centered state.
+      povSkyDelta.copy(povCamera.position).sub(camera.position);
+      syncExternalSkyboxToCamera(povCamera.position);
+      if (moonModel) moonModel.position.add(povSkyDelta);
+      moonCloudVeil.group.position.add(povSkyDelta);
+      skyShifted = true;
+
+      // Save the current viewport/scissor state (logical pixels) before clobbering it.
+      renderer.getViewport(pipSavedViewport);
+      renderer.getScissor(pipSavedScissor);
+      savedScissorTest = renderer.getScissorTest();
+      viewportSaved = true;
+
+      // Logical PiP rect: 220x140, sat clear in the bottom-LEFT corner (the sparse-HUD toolbelt is
+      // centered, so this corner is free). NO manual dpr scaling — see the units note above.
+      // The y ORIGIN differs by renderer family: classic WebGLRenderer measures viewport/scissor y
+      // from the BOTTOM (GL convention); the WebGPU-class renderer measures from the TOP (WebGPU
+      // convention — its WebGL2 fallback flips internally via `renderContext.height - height - y`),
+      // verified in three 0.183 WebGLBackend.updateViewport/updateScissor.
+      const pipW = 220;
+      const pipH = 140;
+      const marginX = 16;
+      const marginY = 96; // from the canvas BOTTOM
+      renderer.getSize(pipCanvasSize); // logical CSS pixels on both backends
+      const y = useWebGPU ? pipCanvasSize.y - marginY - pipH : marginY;
+
+      renderer.setScissorTest(true);
+      renderer.setScissor(marginX, y, pipW, pipH);
+      renderer.setViewport(marginX, y, pipW, pipH);
+      renderer.render(scene, povCamera);
+    } catch {
+      /* a bad PiP frame must never break the main loop */
+    } finally {
+      try {
+        // Restore the celestials to the player camera (next frame's updateCamera re-syncs the skybox too,
+        // but undo the moon shift here so a mid-frame read never sees the POV-shifted position).
+        if (skyShifted) {
+          if (moonModel) moonModel.position.sub(povSkyDelta);
+          moonCloudVeil.group.position.sub(povSkyDelta);
+          syncExternalSkyboxToCamera(camera.position);
         }
-        worldFeedbackIssueLogged = true;
-        addLog({
-          agentId: "world",
-          agentName: "Z.ai Vision",
-          tool: "interact",
-          text: `${feedbackAgent.name} vision unavailable: ${
-            error instanceof Error ? error.message : "unknown vision error"
-          }`,
-          screenshotUrl,
-        });
-      })
-      .finally(() => {
-        worldFeedbackPending = false;
-      });
+        if (viewportSaved) {
+          renderer.setScissorTest(savedScissorTest);
+          renderer.setScissor(
+            pipSavedScissor.x,
+            pipSavedScissor.y,
+            pipSavedScissor.z,
+            pipSavedScissor.w,
+          );
+          renderer.setViewport(
+            pipSavedViewport.x,
+            pipSavedViewport.y,
+            pipSavedViewport.z,
+            pipSavedViewport.w,
+          );
+        }
+      } catch {
+        /* ignore restore failures */
+      }
+    }
   };
 
   const animate = async () => {
     if (destroyed || !renderer) return;
     const now = performance.now();
+    fpsFrames++;
+    if (now - fpsSampleStart >= 500) {
+      fpsValue = Math.round((fpsFrames * 1000) / (now - fpsSampleStart));
+      fpsFrames = 0;
+      fpsSampleStart = now;
+    }
     const delta = clamp((now - lastTime) / 1000, 0, 0.05);
     lastTime = now;
     tick++;
     moveVisitor(delta);
-    moveAgents(now, delta);
     for (const mixer of generatedAnimationMixers.values()) {
       mixer.update(delta);
     }
+    // Placed VRM things: advance the mixer + VRM spring bones (a static idle still needs spring-bone
+    // settle; a looping VRMA clip plays here).
+    for (const rig of generatedVrmRigs.values()) {
+      rig.update(delta);
+    }
+    // Avatar rigs: local walk/idle/jump from the player position delta + airborne flag; remotes
+    // self-derive inside the rig from presence updates. update(dt) advances mixer + VRM.
+    const localRig = avatarRigs.get(visitorId);
+    if (localRig && delta > 0) {
+      const ldx = visitorPosition.x - lastLocalAvatarPos.x;
+      const ldz = visitorPosition.z - lastLocalAvatarPos.z;
+      localRig.setMoving(Math.hypot(ldx, ldz) / delta);
+      localRig.setAirborne(playerAirborne);
+    }
+    lastLocalAvatarPos.x = visitorPosition.x;
+    lastLocalAvatarPos.z = visitorPosition.z;
+    for (const rig of avatarRigs.values()) {
+      rig.update(delta);
+    }
+    // Avatar user-scale easing (local slider + remote presence changes); settled groups no-op.
+    tickAvatarScale(visitor, delta);
+    for (const mesh of remoteVisitorMeshes.values()) {
+      tickAvatarScale(mesh, delta);
+    }
     syncMeshes(now);
+    tickSharedStatic(now);
     updateSelectionIndicator(now);
     syncTransformControls();
     updateCamera();
     updateDayNightCycle(Date.now(), now);
+    flushTerrain();
+    flushPublish();
+    vegetation.update(visitorPosition.x, visitorPosition.z, visitorPosition.y, fpsValue, now);
+    ambientPhysics.step(delta);
     try {
       renderer.render(scene, camera);
-      refreshWorldFeedback(now);
     } catch (error) {
       if (!renderIssueLogged) {
         renderIssueLogged = true;
@@ -6338,6 +3717,7 @@ function createTellusWorld(
         });
       }
     }
+    renderAgentViewport();
     if (!destroyed) {
       animationId = requestAnimationFrame(() => void animate());
     }
@@ -6380,6 +3760,20 @@ function createTellusWorld(
       event.preventDefault();
       if (nudgeSelectedWithArrowKey(event.key)) return;
     }
+    if (event.key === " ") event.preventDefault(); // jump — don't scroll the page
+    if (event.key.toLowerCase() === "g" && selectedThingId) {
+      throwGenerated(selectedThingId);
+      return;
+    }
+    if (
+      event.key.toLowerCase() === "v" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      setCameraMode(cameraMode === "first" ? "third" : "first");
+      return;
+    }
     keys.add(event.key.toLowerCase());
   };
   const handleKeyUp = (event: KeyboardEvent) =>
@@ -6395,12 +3789,60 @@ function createTellusWorld(
   };
   const handlePointerDown = (event: PointerEvent) => {
     if (transformDragging) return;
+    // Move mode: every press repositions the target — no picking, no modifier.
+    if (moveModeThingId) {
+      const thing = thingById(moveModeThingId);
+      if (thing && sailingThingId !== moveModeThingId && !ambientPhysics.has(moveModeThingId)) {
+        draggingThingId = moveModeThingId;
+        dragMoved = false;
+        const target = dragGroundTarget(event);
+        if (target) {
+          moveGenerated(moveModeThingId, target.x - thing.position.x, target.z - thing.position.z);
+          dragMoved = true;
+        }
+        return;
+      }
+      setMoveMode(null); // target vanished — drop the mode
+    }
+    // Object grab: Ctrl/Cmd + drag on a mouse picks up ANY object (auto-selecting it); plain drag is
+    // ALWAYS camera orbit so the two never fight. Touch (no modifier keys) keeps the old rule: press
+    // the already-selected object to drag it.
+    const wantsGrab =
+      event.pointerType === "touch"
+        ? Boolean(selectedThingId)
+        : event.ctrlKey || event.metaKey;
+    if (wantsGrab) {
+      const hit = pickThingIdAtPointer(event);
+      const targetId =
+        event.pointerType === "touch" ? (hit === selectedThingId ? hit : null) : hit;
+      if (targetId && sailingThingId !== targetId && !ambientPhysics.has(targetId)) {
+        if (selectedThingId !== targetId) selectGenerated(targetId);
+        draggingThingId = targetId;
+        dragMoved = false;
+        container.style.cursor = "grabbing";
+        return; // grabbing an object — not a camera orbit
+      }
+    }
     isDragging = true;
     pointerTravel = 0;
     pointerX = event.clientX;
     pointerY = event.clientY;
   };
   const handlePointerMove = (event: PointerEvent) => {
+    if (draggingThingId) {
+      const nowMs = performance.now();
+      if (nowMs - lastDragMoveAt < 70) return; // throttle move+publish cadence
+      const target = dragGroundTarget(event);
+      const thing = thingById(draggingThingId);
+      if (!target || !thing) return;
+      lastDragMoveAt = nowMs;
+      const dx = target.x - thing.position.x;
+      const dz = target.z - thing.position.z;
+      if (Math.hypot(dx, dz) < 0.05) return;
+      moveGenerated(draggingThingId, dx, dz);
+      dragMoved = true;
+      return;
+    }
     if (transformDragging || !isDragging) return;
     const dx = event.clientX - pointerX;
     const dy = event.clientY - pointerY;
@@ -6410,31 +3852,122 @@ function createTellusWorld(
     yaw -= dx * 0.006;
     pitch = clamp(pitch - dy * 0.003, -1.05, 1.05);
   };
-  const selectGeneratedAtPointer = (event: PointerEvent) => {
+  const setPointerNdcFromEvent = (event: PointerEvent) => {
     const rect = container.getBoundingClientRect();
     pointerNdc.set(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
     );
+  };
+
+  const pickThingIdAtPointer = (event: PointerEvent): string | null => {
+    setPointerNdcFromEvent(event);
     raycaster.setFromCamera(pointerNdc, camera);
-    const intersections = raycaster.intersectObjects(
-      [...generatedMeshes.values()],
-      true,
-    );
+    // Raycast both the regular meshes (the visible, non-instanced ones) AND the pool InstancedMeshes. Hidden
+    // (instanced) regular meshes are skipped automatically by THREE since they're `visible = false`, so a
+    // folded thing is only ever hit through its InstancedMesh — no double-selection.
+    const targets: THREE.Object3D[] = [...generatedMeshes.values()];
+    for (const pool of instancePools.values()) {
+      for (const inst of pool.instanced) targets.push(inst);
+    }
+    const intersections = raycaster.intersectObjects(targets, true);
     for (const intersection of intersections) {
+      // Instanced hit: resolve (pool, instanceId) → thing id.
+      if (
+        intersection.object instanceof THREE.InstancedMesh &&
+        typeof intersection.instanceId === "number"
+      ) {
+        const instancedThingId = resolveInstancedHit(
+          intersection.object,
+          intersection.instanceId,
+        );
+        if (instancedThingId) return instancedThingId;
+        continue;
+      }
       let object: THREE.Object3D | null = intersection.object;
       while (object) {
         const tellusId = object.userData.tellusId;
-        if (typeof tellusId === "string") {
-          selectGenerated(tellusId);
-          return;
-        }
+        if (typeof tellusId === "string") return tellusId;
         object = object.parent;
       }
     }
-    selectGenerated(undefined);
+    return null;
+  };
+
+  const selectGeneratedAtPointer = (event: PointerEvent) => {
+    selectGenerated(pickThingIdAtPointer(event) ?? undefined);
+  };
+
+  // ── Drag-to-move: press on the ALREADY-SELECTED object and drag — it follows the pointer across
+  // the terrain (grounded, vehicles keep their water/air rules), publishing as it goes. Dragging
+  // anywhere else still orbits the camera, so select first, then grab. ──
+  let draggingThingId: string | null = null;
+  let dragMoved = false;
+  let lastDragMoveAt = 0;
+  const dragGroundTarget = (event: PointerEvent): { x: number; z: number } | null => {
+    // Analytic ray-march against terrainHeight() — the math, not the (now ~90K-vertex) mesh, so a
+    // pointer-move never pays a dense-mesh raycast. Coarse 2u steps then 14 bisection rounds.
+    setPointerNdcFromEvent(event);
+    raycaster.setFromCamera(pointerNdc, camera);
+    const ray = raycaster.ray;
+    const maxT = 260 * WORLD_SCALE;
+    let prevT = 0;
+    let prevAbove = ray.origin.y - terrainHeight(ray.origin.x, ray.origin.z) > 0;
+    for (let t = 2; t <= maxT; t += 2) {
+      const x = ray.origin.x + ray.direction.x * t;
+      const z = ray.origin.z + ray.direction.z * t;
+      const y = ray.origin.y + ray.direction.y * t;
+      const ground = Math.hypot(x, z) <= CENTRAL_WALK_RADIUS ? terrainHeight(x, z) : SEA_LEVEL;
+      const above = y - ground > 0;
+      if (prevAbove && !above) {
+        let lo = prevT;
+        let hi = t;
+        for (let i = 0; i < 14; i++) {
+          const mid = (lo + hi) / 2;
+          const mx = ray.origin.x + ray.direction.x * mid;
+          const mz = ray.origin.z + ray.direction.z * mid;
+          const my = ray.origin.y + ray.direction.y * mid;
+          const mg = Math.hypot(mx, mz) <= CENTRAL_WALK_RADIUS ? terrainHeight(mx, mz) : SEA_LEVEL;
+          if (my - mg > 0) lo = mid;
+          else hi = mid;
+        }
+        const ft = (lo + hi) / 2;
+        return { x: ray.origin.x + ray.direction.x * ft, z: ray.origin.z + ray.direction.z * ft };
+      }
+      prevAbove = above;
+      prevT = t;
+    }
+    return null;
+  };
+
+  // ── Explicit Move mode: a UI toggle (no modifier needed — works on every platform incl. touch).
+  // While active for the selected object, ANY press/drag on the world repositions it (click =
+  // teleport there, drag = carry); camera orbit is suspended until the mode is toggled off. ──
+  let moveModeThingId: string | null = null;
+  const setMoveMode = (id: string | null) => {
+    moveModeThingId = id && thingById(id) ? id : null;
+    container.style.cursor = moveModeThingId ? "move" : "";
   };
   const handlePointerUp = (event: PointerEvent) => {
+    if (draggingThingId) {
+      const id = draggingThingId;
+      draggingThingId = null;
+      container.style.cursor = moveModeThingId ? "move" : "";
+      if (dragMoved) {
+        const thing = thingById(id);
+        if (thing) {
+          // final settle: one authoritative grounded publish at the release point
+          moveGenerated(id, 0, 0);
+          addLog({
+            agentId: "visitor",
+            agentName: "Visitor",
+            tool: "interact",
+            text: `moved ${thing.prompt || thing.kind}`,
+          });
+        }
+      }
+      return;
+    }
     if (transformDragging) {
       isDragging = false;
       return;
@@ -6474,6 +4007,8 @@ function createTellusWorld(
       }
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.shadowMap.enabled = true;
+      // Teach the KTX2 loader this GPU's transcode targets (textured game-optimized GLBs need it).
+      configureKtx2Support(renderer);
       container.appendChild(renderer.domElement);
       transformControls = new TransformControls(camera, renderer.domElement);
       transformControlsHelper = transformControls.getHelper();
@@ -6505,35 +4040,6 @@ function createTellusWorld(
       resize();
       requestAnimationFrame(resize);
       publish();
-      for (const agent of agents) {
-        void loadAgentAvatar(agent)
-          .then((avatar) => {
-            if (!avatar || destroyed) return;
-            const agentRoot = agentMeshes.get(agent.id);
-            if (!agentRoot) return;
-            for (const child of [...agentRoot.children]) {
-              agentRoot.remove(child);
-              disposeObject(child);
-            }
-            agentRoot.add(avatar);
-            addLog({
-              agentId: "world",
-              agentName: "Tellus",
-              tool: "interact",
-              text: `Loaded avatar for ${agent.name}`,
-            });
-          })
-          .catch((error) => {
-            addLog({
-              agentId: "world",
-              agentName: "Tellus",
-              tool: "interact",
-              text: `Avatar load failed for ${agent.name}: ${
-                error instanceof Error ? error.message : "unknown avatar error"
-              }`,
-            });
-          });
-      }
       void loadSkyboxModel()
         .then((skyboxResult) => {
           if (!skyboxResult || destroyed) return;
@@ -6597,14 +4103,6 @@ function createTellusWorld(
             }`,
           });
         });
-      for (const agent of agents) {
-        addLog({
-          agentId: agent.id,
-          agentName: agent.name,
-          tool: "interact",
-          text: `${agent.name} arrives: ${agent.goal}`,
-        });
-      }
       void animate();
     } catch (error) {
       addLog({
@@ -6622,6 +4120,12 @@ function createTellusWorld(
   // sidecar — reads world state and takes actions AS THIS PAGE'S VISITOR through the exact same in-world
   // dispatch functions the built-in autonomous agents use, so an embodied external agent and the native
   // agents share one action path. Verbs mirror the built-in agent decision vocabulary.
+  const compassDirection = (from: Vec3, to: Vec3): string => {
+    const angle = Math.atan2(to.z - from.z, to.x - from.x);
+    const directions = ["east", "southeast", "south", "southwest", "west", "northwest", "north", "northeast"];
+    const index = Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % directions.length;
+    return directions[index];
+  };
   const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
   const nearToLocation = (near: unknown): GenerateRequest["location"] =>
     near === "mountain" ? "near-mountain" : near === "pond" ? "near-pond" : near === "agent" ? "near-agent" : { ...visitorPosition };
@@ -6648,10 +4152,7 @@ function createTellusWorld(
         position: { ...visitorPosition },
         terrainType: terrainKind(visitorPosition.x, visitorPosition.z, groundHeight),
         terrainHeight: groundHeight,
-        distanceToPond: Math.hypot(
-          visitorPosition.x - runtimeConfig.landShape.pond.x,
-          visitorPosition.z - runtimeConfig.landShape.pond.z,
-        ),
+        distanceToPond: Math.hypot(visitorPosition.x - POND_CENTER.x, visitorPosition.z - POND_CENTER.z),
         distanceToSummit: Math.hypot(visitorPosition.x, visitorPosition.z),
         distanceToShore: Math.max(0, WORLD_RADIUS - Math.hypot(visitorPosition.x, visitorPosition.z)),
         nearby: tellusAgent.getNearby(radius),
@@ -6727,22 +4228,97 @@ function createTellusWorld(
     liftGenerated,
     groundGenerated,
     deleteGenerated,
+    cloneGenerated,
     moveGeneratedToWater,
     boardGenerated,
     disembark,
     sculptTerrain,
-    talkToAgent,
-    updateAgentGoal,
     importGeneratedThings,
     setGenerationProvider,
     setPlayerGenerationProvider,
     setAgentGenerationProvider,
     setInstantMeshTarget,
-    setPaused,
     submitVisitorPrompt,
     snapshot,
+    getFps: () => fpsValue,
+    setRxEnabled: (on: boolean) => {
+      ensureP2pMesh();
+      p2pMesh?.setRx(on);
+    },
+    setTxEnabled: async (on: boolean) => {
+      ensureP2pMesh();
+      if (!p2pMesh) return false;
+      await p2pMesh.setTx(on);
+      return p2pMesh.isTx();
+    },
+    setP2pDevices: async (audioDeviceId?: string, videoDeviceId?: string) => {
+      ensureP2pMesh();
+      await p2pMesh?.setDevices(audioDeviceId, videoDeviceId);
+    },
+    setRemoteAudioEnabled,
+    setMicEnabled: (on: boolean) => {
+      ensureP2pMesh();
+      p2pMesh?.setMicEnabled(on);
+    },
+    getP2pStats: () => latestP2pStats,
+    getSelfStream: () => selfStream,
+    setAvatarSelection: (avatarId: string) => {
+      if (avatarId === localAvatarId) return;
+      localAvatarId = avatarId;
+      setStoredAvatarId(avatarId);
+      applyAvatarTo(visitor, visitorId, avatarId); // local rig rebuilds immediately
+      sendPresenceUpdate(true); // broadcast the new pick right away (not on the 300ms cadence)
+    },
+    getAvatarSelection: () => localAvatarId,
+    setAvatarScale: (scale: number) => {
+      const next = clampAvatarScale(scale);
+      if (next === localAvatarScale) return;
+      localAvatarScale = next;
+      setStoredAvatarScale(next);
+      // VISUAL-ONLY: re-applies the silhouette layout live (no rig rebuild); physics/collision
+      // never see the scale. The first-person eye height tracks the lerped current value.
+      setAvatarUserScale(visitor, next);
+      sendPresenceUpdate(true); // broadcast the new size right away (not on the 300ms cadence)
+    },
+    getAvatarScale: () => localAvatarScale,
+    setCameraMode,
+    getCameraMode: () => cameraMode,
+    getGeneratedClipNames: (id: string) => generatedClipNamesForThing(id),
+    setGeneratedAnimation: (id: string, animation: string) => {
+      const thing = thingById(id);
+      if (!thing) return;
+      const next = animation.trim();
+      if ((thing.animation ?? "") === next) return;
+      thing.animation = next || undefined;
+      const mesh = generatedMeshes.get(id);
+      if (mesh && mesh.userData.loadedModelUrl === thing.modelUrl) {
+        startGeneratedAnimation(id, mesh); // restart with the explicit pick (or the heuristic)
+      }
+      publishGeneratedThing(thing); // full-thing generated.upsert — every client converges
+      publish();
+    },
+    setAgentViewport,
+    hasVisitorAvatar,
+    captureAgentView,
+    throwGenerated,
+    setMoveMode,
+    getAmbientStats: () => ({
+      vegetation: vegetation.stats(),
+      physicsBodies: ambientPhysics.activeCount(),
+    }),
     destroy: () => {
       destroyed = true;
+      window.clearInterval(textureRetryTimer);
+      agentViewTarget?.dispose();
+      vegetation.dispose();
+      ambientPhysics.dispose();
+      // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
+      sendRtcSignal(null, "bye", "{}");
+      for (const remoteId of remoteVisitorMeshes.keys()) {
+        setPeerVideo(remoteId, null);
+      }
+      p2pMesh?.destroy();
+      p2pMesh = null;
       abortPendingGeneration();
       for (const thing of generated) {
         if (
@@ -6754,6 +4330,17 @@ function createTellusWorld(
       }
       for (const id of generatedAnimationMixers.keys()) {
         stopGeneratedAnimation(id);
+      }
+      // Dispose placed VRM rigs (own mixer + skinned scene buffers) and clear the live-mirror slots.
+      for (const rig of generatedVrmRigs.values()) {
+        rig.dispose();
+      }
+      generatedVrmRigs.clear();
+      resetLiveMirrors();
+      // Dispose the static-duplicate instancing pools (InstancedMeshes own their own instanceMatrix buffers;
+      // geometry/materials are shared with the GLB cache, so InstancedMesh.dispose() leaves those alone).
+      for (const modelUrl of [...instancePools.keys()]) {
+        disableInstancePool(modelUrl);
       }
       cancelAnimationFrame(animationId);
       window.removeEventListener("resize", resize);
@@ -6770,6 +4357,14 @@ function createTellusWorld(
         window.clearTimeout(worldSocketReconnectTimer);
       }
       worldSocket?.close();
+      delete window.__tellusAvatarDebug;
+      delete window.__tellusViewDebug;
+      delete window.__tellusThingsDebug;
+      delete window.__tellusMirrorDebug;
+      for (const rig of avatarRigs.values()) {
+        rig.dispose();
+      }
+      avatarRigs.clear();
       for (const mesh of remoteVisitorMeshes.values()) {
         scene.remove(mesh);
       }
@@ -6832,14 +4427,117 @@ function useSpeechInput(onText: (text: string) => void): {
   return { listening, supported, start };
 }
 
+// ── Avatar "Size" slider mapping ────────────────────────────────────────────────────────────────
+// The slider is LOGARITHMIC across [0.1×, 8×] so 0.5× and 2× sit symmetrically around 1× and the
+// whole range stays usable; values land snapped to a tidy 2-significant-digit step, with a small
+// snap window around exactly 1× (the default must be reachable by drag).
+const AVATAR_SCALE_SLIDER_STEPS = 200;
+const avatarScaleToSlider = (scale: number): number =>
+  Math.round(
+    (Math.log(clampAvatarScale(scale) / AVATAR_SCALE_MIN) /
+      Math.log(AVATAR_SCALE_MAX / AVATAR_SCALE_MIN)) *
+      AVATAR_SCALE_SLIDER_STEPS,
+  );
+const avatarSliderToScale = (step: number): number => {
+  const raw =
+    AVATAR_SCALE_MIN *
+    Math.pow(AVATAR_SCALE_MAX / AVATAR_SCALE_MIN, step / AVATAR_SCALE_SLIDER_STEPS);
+  if (Math.abs(raw - 1) < 0.05) return 1;
+  // 2 significant digits keeps the live label stable while dragging (0.25, 1.3, 4.2, …).
+  return clampAvatarScale(Number(raw.toPrecision(2)));
+};
+const avatarScaleLabel = (scale: number): string =>
+  `${scale >= 1 ? scale.toFixed(1) : scale.toFixed(2)}×`;
+
+// One avatar-picker grid tile: store thumbnail when it loads, else a colored-initial fallback
+// ("classic" has no store thumbnail and always renders the initial tile). Click = select.
+function AvatarTile({
+  entry,
+  selected,
+  onSelect,
+}: {
+  entry: AvatarCatalogEntry;
+  selected: boolean;
+  onSelect: (entry: AvatarCatalogEntry) => void;
+}): React.ReactElement {
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const thumbUrl = avatarThumbnailUrl(entry);
+  // Deterministic tile hue per label so the initials fallback stays distinctive.
+  let hue = 0;
+  for (let i = 0; i < entry.label.length; i++) hue = (hue * 31 + entry.label.charCodeAt(i)) % 360;
+  return (
+    <button
+      type="button"
+      title={entry.label}
+      aria-pressed={selected}
+      onClick={() => onSelect(entry)}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        gap: 4,
+        padding: 4,
+        borderRadius: 8,
+        border: selected ? "1px solid #6fae46" : "1px solid rgba(255,255,255,0.14)",
+        background: selected ? "rgba(111,174,70,0.22)" : "rgba(255,255,255,0.05)",
+        color: "#dfe7d8",
+        cursor: "pointer",
+      }}
+    >
+      {thumbUrl && !thumbFailed ? (
+        <img
+          src={thumbUrl}
+          alt={entry.label}
+          onError={() => setThumbFailed(true)}
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            objectFit: "cover",
+            borderRadius: 6,
+            background: "rgba(0,0,0,0.35)",
+          }}
+        />
+      ) : (
+        <span
+          aria-hidden
+          style={{
+            width: "100%",
+            aspectRatio: "1 / 1",
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 22,
+            fontWeight: 700,
+            color: "#0c1016",
+            background: `hsl(${hue} 45% 62%)`,
+          }}
+        >
+          {entry.label.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 10,
+          lineHeight: 1.2,
+          textAlign: "center",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {entry.label}
+      </span>
+    </button>
+  );
+}
+
 function App(): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<TellusWorldApi | null>(null);
   const [snapshot, setSnapshot] = useState<TellusSnapshot>({
-    agents: createAgentSeeds(),
     generated: [],
     logs: [],
-    paused: false,
     generationProvider: runtimeConfig.generationProvider,
     playerGenerationProvider: runtimeConfig.playerGenerationProvider,
     agentGenerationProvider: runtimeConfig.agentGenerationProvider,
@@ -6848,28 +4546,768 @@ function App(): React.ReactElement {
     remoteVisitors: [],
   });
   const [prompt, setPrompt] = useState("");
-  const [chatPrompt, setChatPrompt] = useState("");
-  const [characterBodyPrompt, setCharacterBodyPrompt] = useState("");
-  const [characterPersonalityPrompt, setCharacterPersonalityPrompt] = useState("");
+  // Hidden FPS overlay: triple-click the "Tellus World Weaver" brand box to toggle.
+  const [showFps, setShowFps] = useState(false);
+  const [fps, setFps] = useState(0);
+  const brandClicksRef = useRef<number[]>([]);
+  const handleBrandTripleClick = () => {
+    const now = performance.now();
+    const recent = brandClicksRef.current.filter((t) => now - t < 600);
+    recent.push(now);
+    brandClicksRef.current = recent;
+    if (recent.length >= 3) {
+      brandClicksRef.current = [];
+      setShowFps((v) => !v);
+    }
+  };
+  // ── P2P video panel state (RX inbound default ON, TX local camera default OFF) ──
+  const [p2pPanelOpen, setP2pPanelOpen] = useState(false);
+  const [rxEnabled, setRxEnabled] = useState(true);
+  const [txEnabled, setTxEnabled] = useState(false);
+  const [audioListen, setAudioListen] = useState(false); // hear peers (RX audio) — off by default (autoplay)
+  const [micOn, setMicOn] = useState(true); // your mic (TX audio) active while TX is on
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMic, setSelectedMic] = useState<string>("");
+  const [selectedCam, setSelectedCam] = useState<string>("");
+  const [p2pError, setP2pError] = useState<string | null>(null);
+  const [p2pStats, setP2pStats] = useState<MeshStats | null>(null);
+  const [ambientStats, setAmbientStats] = useState<ReturnType<
+    TellusWorldApi["getAmbientStats"]
+  > | null>(null);
+  // ── Camera mode (1st/3rd person; the world layer owns the actual camera + persistence) ──
+  const [cameraMode, setCameraModeState] = useState<"first" | "third">(() => {
+    try {
+      return window.localStorage.getItem("tellus.cameraMode") === "first" ? "first" : "third";
+    } catch {
+      return "third";
+    }
+  });
+  // Track flips that originate inside the world layer (the V shortcut).
+  useEffect(() => {
+    const onMode = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (detail === "first" || detail === "third") setCameraModeState(detail);
+    };
+    window.addEventListener("tellus:camera-mode", onMode);
+    return () => window.removeEventListener("tellus:camera-mode", onMode);
+  }, []);
+  const toggleCameraMode = () => {
+    const next = cameraMode === "first" ? "third" : "first";
+    setCameraModeState(next);
+    worldRef.current?.setCameraMode(next);
+  };
+  // ── Avatar picker state (catalog selection; "" = deterministic default robot) ──
+  const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
+  const [avatarSelection, setAvatarSelection] = useState<string>(() => storedAvatarId());
+  const onAvatarPick = (entry: AvatarCatalogEntry) => {
+    setAvatarSelection(entry.id);
+    worldRef.current?.setAvatarSelection(entry.id); // persists + swaps the rig + broadcasts
+  };
+  // Avatar size (the "Size" slider): visual-only multiplier, persisted + broadcast like the pick.
+  const [avatarScale, setAvatarScaleState] = useState<number>(() => storedAvatarScale());
+  const onAvatarScale = (scale: number) => {
+    const next = clampAvatarScale(scale);
+    setAvatarScaleState(next);
+    worldRef.current?.setAvatarScale(next); // persists + rescales live + broadcasts
+  };
+  // ── "Your Agent" panel state (per-user embodied agent on Hyades; self-contained, pure fetch) ──
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
+  const [agentPersonaDraft, setAgentPersonaDraft] = useState("");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  // Agent chat thread: the server-side agent's dialog (assistant=dialog, tool=dimmed) merged with the lines
+  // YOU send it. Your lines append locally on send; the agent's replies arrive via the transcript poll and
+  // are merged (content-deduped) so the thread reads as a conversation. POV viewport toggle alongside.
+  const [agentChat, setAgentChat] = useState<AgentChatLine[]>([]);
+  const [agentChatInput, setAgentChatInput] = useState("");
+  const [agentViewportOn, setAgentViewportOn] = useState(false);
+  // Reset-thread escape hatch: two-step inline confirm + which collapsed chip groups are expanded.
+  const [agentResetConfirm, setAgentResetConfirm] = useState(false);
+  const [expandedChipGroups, setExpandedChipGroups] = useState<Set<string>>(() => new Set());
+  // Memories block: collapsed live view vs edit (the persona textarea) vs the edit-history list.
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const [memoriesEditing, setMemoriesEditing] = useState(false);
+  const [memoriesHistoryOpen, setMemoriesHistoryOpen] = useState(false);
+  const [memoriesLog, setMemoriesLog] = useState<AgentMemoryEntry[] | null>(null);
+  // PiP fallback: when the agent's avatar mesh isn't in the local scene (asleep/remote), the POV
+  // viewport shows the latest server-held snapshot instead of a locally rendered view.
+  const [agentAvatarPresent, setAgentAvatarPresent] = useState(true);
+  const [agentRemoteViewSrc, setAgentRemoteViewSrc] = useState<string | null>(null);
+  const [agentRemoteViewFailed, setAgentRemoteViewFailed] = useState(false);
+  const agentTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const agentChatSeqRef = useRef(0);
+  const agentMergedKeysRef = useRef<Set<string>>(new Set());
+  const p2pSupported =
+    typeof RTCPeerConnection !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia);
+
+  const p2pSelectStyle: React.CSSProperties = {
+    background: "rgba(0,0,0,0.4)",
+    color: "#dfe7d8",
+    border: "1px solid rgba(255,255,255,0.16)",
+    borderRadius: 6,
+    padding: "4px 6px",
+    fontSize: 12,
+  };
+  const p2pBtnStyle = (active: boolean): React.CSSProperties => ({
+    flex: 1,
+    padding: "5px 0",
+    borderRadius: 6,
+    border: active
+      ? "1px solid #6fae46"
+      : "1px solid rgba(255,255,255,0.18)",
+    background: active ? "rgba(111,174,70,0.25)" : "rgba(255,255,255,0.06)",
+    color: "#dfe7d8",
+    fontSize: 12,
+    cursor: "pointer",
+  });
+
+  const refreshP2pDevices = async () => {
+    try {
+      const { audioIn, videoIn } = await enumerateMediaDevices();
+      setAudioInputs(audioIn);
+      setVideoInputs(videoIn);
+    } catch {
+      /* enumerate can throw before any permission grant — ignore */
+    }
+  };
+
+  const toggleRx = () => {
+    const next = !rxEnabled;
+    setRxEnabled(next);
+    worldRef.current?.setRxEnabled(next);
+  };
+
+  const toggleAudioListen = () => {
+    const next = !audioListen;
+    setAudioListen(next);
+    worldRef.current?.setRemoteAudioEnabled(next); // user gesture → browsers allow unmute
+  };
+
+  const toggleMic = () => {
+    const next = !micOn;
+    setMicOn(next);
+    worldRef.current?.setMicEnabled(next);
+  };
+
+  const selfVideoRef = useRef<HTMLVideoElement | null>(null);
+  const attachSelfPreview = () => {
+    const el = selfVideoRef.current;
+    if (!el) return;
+    const stream = worldRef.current?.getSelfStream() ?? null;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    if (stream) void el.play().catch(() => undefined);
+  };
+
+  const toggleTx = async () => {
+    const next = !txEnabled;
+    setP2pError(null);
+    // Optimistic flip; revert on denial. TX-on is the only permission prompt.
+    const ok = (await worldRef.current?.setTxEnabled(next)) ?? false;
+    if (next && !ok) {
+      setTxEnabled(false);
+      setP2pError("Camera/mic access denied or unavailable.");
+      return;
+    }
+    setTxEnabled(next && ok);
+    attachSelfPreview(); // show (or clear) the local self-view
+    if (next && ok) void refreshP2pDevices(); // labels populate after the grant
+  };
+
+  const onMicChange = (id: string) => {
+    setSelectedMic(id);
+    void worldRef.current?.setP2pDevices(id || undefined, selectedCam || undefined).then(attachSelfPreview);
+  };
+  const onCamChange = (id: string) => {
+    setSelectedCam(id);
+    void worldRef.current?.setP2pDevices(selectedMic || undefined, id || undefined).then(attachSelfPreview);
+  };
+
+  // Re-attach the self-preview when the panel mounts the <video> (panel open + TX already on).
+  useEffect(() => {
+    if (p2pPanelOpen && txEnabled) attachSelfPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p2pPanelOpen, txEnabled]);
+
+  // Sample mesh stats while the P2P panel OR the debug overlay is open (≈1Hz).
+  useEffect(() => {
+    if (!p2pPanelOpen && !showFps) return;
+    const id = window.setInterval(() => {
+      setP2pStats(worldRef.current?.getP2pStats() ?? null);
+      setAmbientStats(worldRef.current?.getAmbientStats() ?? null);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [p2pPanelOpen, showFps]);
+
+  // ── "Your Agent" panel handlers (self-contained; pure fetch against the Hyades world agent API) ──
+  const fetchAgentStatus = useCallback(async (signal?: AbortSignal): Promise<AgentStatus | null> => {
+    const res = await fetch(tellusAgentUrl("status"), { signal });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    return (await res.json()) as AgentStatus;
+  }, []);
+
+  const fetchAgentTranscript = useCallback(
+    async (signal?: AbortSignal): Promise<AgentTranscriptMessage[]> => {
+      const res = await fetch(tellusAgentUrl("transcript"), { signal });
+      if (!res.ok) throw new Error(`transcript ${res.status}`);
+      const body = (await res.json()) as AgentTranscriptResponse;
+      return Array.isArray(body.messages) ? body.messages : [];
+    },
+    [],
+  );
+
+  const runAgentAction = useCallback(
+    async (action: "start" | "stop" | "persona", body?: unknown) => {
+      setAgentBusy(true);
+      setAgentError(null);
+      try {
+        const res = await fetch(tellusAgentUrl(action), {
+          method: "POST",
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) throw new Error(`${action} failed (${res.status})`);
+        const status = (await res.json()) as AgentStatus;
+        setAgentStatus(status);
+        setAgentPersonaDraft(status.selfSection ?? "");
+        return status;
+      } catch (err) {
+        setAgentError(err instanceof Error ? err.message : `Failed to ${action} agent.`);
+        return null;
+      } finally {
+        setAgentBusy(false);
+      }
+    },
+    [],
+  );
+
+  const onAgentStartStop = useCallback(() => {
+    void runAgentAction(agentStatus?.optedIn ? "stop" : "start");
+  }, [runAgentAction, agentStatus?.optedIn]);
+
+  // Escape hatch for a wedged agent (bad tool loops, polluted context): POST /agent/reset-thread starts a
+  // fresh conversation thread server-side — persona/memories survive, the inbox backlog is dropped. On
+  // success the LOCAL thread resets too (dedupe keys included, so the empty new transcript merges cleanly)
+  // and a one-line system note marks the cut.
+  const onAgentResetThread = useCallback(async () => {
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      const res = await fetch(tellusAgentUrl("reset-thread"), { method: "POST" });
+      if (res.status === 404 || res.status === 501) {
+        // Mid-rollout: the route lands with hyades 0.5.201 — older silos answer 404/501.
+        setAgentError("Thread reset isn't on the server yet — try again in a minute.");
+        return;
+      }
+      if (!res.ok) throw new Error(`reset failed (${res.status})`);
+      agentMergedKeysRef.current = new Set();
+      setExpandedChipGroups(new Set());
+      setAgentChat([{ id: ++agentChatSeqRef.current, who: "system", text: "— thread reset —" }]);
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : "Thread reset failed.");
+    } finally {
+      setAgentBusy(false);
+      setAgentResetConfirm(false);
+    }
+  }, []);
+
+  const onAgentSavePersona = useCallback(async () => {
+    const status = await runAgentAction("persona", { text: agentPersonaDraft, replace: true });
+    if (status) setMemoriesEditing(false); // saved — drop back to the live read-only view
+  }, [runAgentAction, agentPersonaDraft]);
+
+  // Persona portability: each world has its OWN agent grain; the default persona is what a brand-new
+  // world's agent seeds from (server: POST /api/tellus/user/default-persona; the per-world copy is
+  // independent afterwards). Saves the per-world persona too so "Set as default" never loses the edit.
+  const onAgentSaveDefaultPersona = useCallback(async () => {
+    setAgentBusy(true);
+    setAgentError(null);
+    try {
+      await runAgentAction("persona", { text: agentPersonaDraft, replace: true });
+      const base = runtimeConfig.worldApiBase || runtimeConfig.apiBase || "";
+      const res = await fetch(`${base}/api/tellus/user/default-persona?userId=${encodeURIComponent(tellusUserId())}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: agentPersonaDraft }),
+      });
+      if (!res.ok) throw new Error(`default persona save failed (${res.status})`);
+      setMemoriesEditing(false);
+    } catch (error) {
+      setAgentError(error instanceof Error ? error.message : "default persona save failed");
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [runAgentAction, agentPersonaDraft]);
+
+  // Edit history of the agent's self-section (its own `remember` writes + your persona saves).
+  const loadMemoriesLog = useCallback(async () => {
+    setMemoriesLog(null);
+    try {
+      const res = await fetch(tellusAgentUrl("memories"));
+      if (!res.ok) throw new Error(`memories ${res.status}`);
+      const body = (await res.json()) as AgentMemoriesResponse;
+      setMemoriesLog(Array.isArray(body.log) ? body.log : Array.isArray(body.entries) ? body.entries : []);
+    } catch {
+      setMemoriesLog([]); // history is a bonus view — show "no edits" rather than an error
+    }
+  }, []);
+
+  // Merge the agent's polled transcript into the chat thread. Content-deduped (role|text) so each agent line
+  // is appended once; your "you" lines (added on send) stay interleaved in real send/reply order.
+  const mergeAgentTranscript = useCallback((messages: AgentTranscriptMessage[]) => {
+    const seen = agentMergedKeysRef.current;
+    const additions: AgentChatLine[] = [];
+    for (const m of messages) {
+      const key = `${m.role}|${m.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      additions.push({
+        id: ++agentChatSeqRef.current,
+        who: m.role === "tool" ? "tool" : "agent",
+        text: m.text,
+      });
+    }
+    if (additions.length) setAgentChat((prev) => [...prev, ...additions]);
+  }, []);
+
+  const onAgentSend = useCallback(async () => {
+    const text = agentChatInput.trim();
+    if (!text) return;
+    if (!agentStatus?.optedIn) {
+      setAgentError("Start your agent before talking to it.");
+      return;
+    }
+    setAgentChat((prev) => [...prev, { id: ++agentChatSeqRef.current, who: "you", text }]);
+    setAgentChatInput("");
+    setAgentError(null);
+    try {
+      const res = await fetch(tellusAgentUrl("say"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+      if (!res.ok) {
+        setAgentError(
+          res.status === 409
+            ? "Start your agent before talking to it."
+            : `Send failed (${res.status})`,
+        );
+      }
+    } catch (err) {
+      setAgentError(err instanceof Error ? err.message : "Send failed.");
+    }
+  }, [agentChatInput, agentStatus?.optedIn]);
+
+  // Poll the agent status every ~3s while the panel is open OR the POV viewport is up (the viewport
+  // outlives the panel, and the thinking/sleep state should stay fresh); prime the persona draft on
+  // first load.
+  useEffect(() => {
+    if (!agentPanelOpen && !agentViewportOn) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const status = await fetchAgentStatus(controller.signal);
+        if (cancelled) return;
+        // Seed the textarea from selfSection ONLY on the first load (prev === null), so the 3s poll
+        // never clobbers the user's edits — including a deliberately-cleared field.
+        setAgentStatus((prev) => {
+          if (prev === null) setAgentPersonaDraft(status?.selfSection ?? "");
+          return status;
+        });
+        setAgentError(null);
+      } catch (err) {
+        if (cancelled || controller.signal.aborted) return;
+        setAgentError(err instanceof Error ? err.message : "Failed to load agent status.");
+      }
+      // Dialog feed: poll on the same cadence. A transcript failure is non-fatal — keep the last good feed
+      // and don't surface an error (status drives the panel's error line).
+      try {
+        const messages = await fetchAgentTranscript(controller.signal);
+        if (cancelled) return;
+        // Merge new agent lines into the chat thread (content-deduped — identical polls add nothing, so the
+        // feed neither re-renders nor re-scrolls while the agent is idle).
+        mergeAgentTranscript(messages);
+      } catch {
+        /* keep the last thread; status owns the error surface */
+      }
+    };
+    void load();
+    const id = window.setInterval(() => void load(), 3000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, [agentPanelOpen, agentViewportOn, fetchAgentStatus, fetchAgentTranscript, mergeAgentTranscript]);
+
+  // Render-time projection of the thread: prose + tool chips, with long chip runs collapsed.
+  const agentFeed = useMemo(() => buildAgentFeed(agentChat), [agentChat]);
+  const toggleChipGroup = useCallback((key: string) => {
+    setExpandedChipGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Auto-scroll the chat thread to the newest line when it grows — but only if the user is already near the
+  // bottom, so we don't snatch the view away from someone scrolled up reading older lines.
+  useEffect(() => {
+    const el = agentTranscriptScrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [agentChat]);
+
+  // Drive the in-world POV viewport: ON + panel open + a known agent visitorId => show that avatar's view;
+  // otherwise hide it. Re-applies when the agent's visitorId changes.
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!world) return;
+    const visitorId = agentStatus?.visitorId;
+    // The viewport intentionally SURVIVES closing the panel — the agent keeps running and its POV
+    // stays on screen until you toggle it off.
+    if (agentViewportOn && visitorId) {
+      world.setAgentViewport(visitorId);
+    } else {
+      world.setAgentViewport(null);
+    }
+  }, [agentViewportOn, agentStatus?.visitorId]);
+
+  // Agent vision uplink: while the agent runs, periodically render its POV client-side and ship a
+  // small JPEG to Hyades (the LLM turn attaches it — the agent SEES without any headless browser).
+  useEffect(() => {
+    const visitorId = agentStatus?.visitorId;
+    const running = Boolean(agentStatus?.optedIn && agentStatus?.enabled && visitorId);
+    if (!running || !visitorId) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const image = await worldRef.current?.captureAgentView(visitorId);
+        if (cancelled || !image) return;
+        await fetch(tellusAgentUrl("view"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image }),
+        });
+      } catch {
+        /* best effort — vision is a bonus sense */
+      }
+    };
+    const id = window.setInterval(() => void tick(), 12_000);
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [agentStatus?.optedIn, agentStatus?.enabled, agentStatus?.visitorId]);
+
+  // Track whether the agent's avatar mesh is actually in the local scene while the viewport is up
+  // (it can be missing when the agent runs offline-persistent or its presence hasn't synced yet).
+  useEffect(() => {
+    const visitorId = agentStatus?.visitorId;
+    if (!agentViewportOn || !visitorId) {
+      setAgentAvatarPresent(true);
+      return;
+    }
+    const check = () =>
+      setAgentAvatarPresent(worldRef.current?.hasVisitorAvatar(visitorId) ?? false);
+    check();
+    const id = window.setInterval(check, 1000);
+    return () => window.clearInterval(id);
+  }, [agentViewportOn, agentStatus?.visitorId]);
+
+  // PiP fallback active: viewport on + agent opted in, but no local avatar to render a POV from.
+  const agentRemoteViewActive =
+    agentViewportOn && (agentStatus?.optedIn ?? false) && !agentAvatarPresent;
+  // The server only holds a view while the agent is actually awake: enabled (ticking) or its owner
+  // present (arrival self-heals enabled). Fully asleep — e.g. parked in another world — means
+  // GET .../agent/view 404s forever, so polling it every 5s is pure noise; gate the poll off and
+  // let the PiP show the "asleep" hint instead.
+  const agentRemoteViewPolling =
+    agentRemoteViewActive &&
+    ((agentStatus?.enabled ?? false) || (agentStatus?.ownerPresent ?? false));
+
+  // Poll the server-held snapshot (GET .../agent/view) every 5s while the fallback shows; fetch (not a
+  // bare <img> src) so the session header rides along, then hand the bytes to the <img> as a blob URL.
+  useEffect(() => {
+    if (!agentRemoteViewPolling) {
+      setAgentRemoteViewSrc(null);
+      setAgentRemoteViewFailed(false);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    // A single failed poll must not blank the view (the headless camera occasionally pays a
+    // recreate+warmup cycle) — keep the LAST frame and only declare failure after 3 misses in a row.
+    let misses = 0;
+    const tick = async () => {
+      if (cancelled || document.visibilityState === "hidden") return; // pause while the tab is hidden
+      try {
+        const res = await fetch(`${tellusAgentUrl("view")}&t=${Date.now()}`, { cache: "no-store" });
+        if (cancelled) return;
+        if (!res.ok) {
+          misses += 1;
+          if (misses >= 3) setAgentRemoteViewFailed(true);
+          return;
+        }
+        const blob = await res.blob();
+        if (cancelled) return;
+        const next = URL.createObjectURL(blob);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = next;
+        misses = 0;
+        setAgentRemoteViewSrc(next);
+        setAgentRemoteViewFailed(false);
+      } catch {
+        if (!cancelled) {
+          misses += 1;
+          if (misses >= 3) setAgentRemoteViewFailed(true);
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setAgentRemoteViewSrc(null);
+    };
+  }, [agentRemoteViewPolling]);
+
+  // The chat thread and viewport persist across panel open/close — the agent keeps running either
+  // way, so closing the tab is just hiding the controls.
+
+  // Re-enumerate when devices change (hot-plug, permission grant).
+  useEffect(() => {
+    if (!p2pSupported) return;
+    const handler = () => void refreshP2pDevices();
+    navigator.mediaDevices.addEventListener("devicechange", handler);
+    return () =>
+      navigator.mediaDevices.removeEventListener("devicechange", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p2pSupported]);
+
+  // World switching: each worldId is its own Hyades grain (created on first use). The list endpoint only
+  // returns SEEDED worlds, so we union it with locally-remembered ids + the current one.
+  const [activeWorldId, setActiveWorldId] = useState<string | null>(null);
+  const [worlds, setWorlds] = useState<string[]>([]);
+  const KNOWN_WORLDS_KEY = "tellus.knownWorlds";
+  const ACTIVE_WORLD_KEY = "tellus.activeWorldId";
+  const loadKnownWorlds = (): string[] => {
+    try {
+      const raw = window.localStorage.getItem(KNOWN_WORLDS_KEY);
+      const arr = raw ? (JSON.parse(raw) as unknown) : [];
+      return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const rememberWorld = (id: string) => {
+    try {
+      const next = [...new Set([...loadKnownWorlds(), id])];
+      window.localStorage.setItem(KNOWN_WORLDS_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+  const refreshWorldList = async (current?: string) => {
+    let server: string[] = [];
+    try {
+      const res = await fetch(
+        `${runtimeConfig.worldApiBase}/api/tellus/worlds?userId=${encodeURIComponent(tellusUserId())}`,
+        { cache: "no-store" },
+      );
+      const data = (await res.json()) as unknown;
+      const list = Array.isArray(data)
+        ? data
+        : (data as { worlds?: unknown })?.worlds;
+      if (Array.isArray(list)) {
+        server = list
+          .map((w) => (typeof w === "string" ? w : (w as { worldId?: string })?.worldId))
+          .filter((x): x is string => typeof x === "string" && x.length > 0);
+      }
+    } catch {
+      /* offline / no index — fall back to local */
+    }
+    const cur = current ?? activeWorldId ?? runtimeConfig.worldId;
+    setWorlds([...new Set([...server, ...loadKnownWorlds(), ...(cur ? [cur] : [])])].sort());
+  };
+  const switchWorld = (id: string) => {
+    if (!id || id === activeWorldId) return;
+    rememberWorld(id);
+    try {
+      window.localStorage.setItem(ACTIVE_WORLD_KEY, id);
+    } catch {
+      /* ignore */
+    }
+    setActiveWorldId(id);
+    void refreshWorldList(id);
+  };
+  const createNewWorld = () => {
+    const raw = window.prompt("New world id (letters, numbers, dashes):", "");
+    if (!raw) return;
+    const id = raw
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    if (!id) return;
+    const makePrivate = window.confirm(
+      "Make this world PRIVATE? Only you (this identity) can see and enter it.\n\nOK = private · Cancel = public",
+    );
+    const enter = () => switchWorld(id);
+    if (makePrivate) {
+      // Claim ownership + mark private before entering, so the world loads gated to this user.
+      void fetch(
+        `${runtimeConfig.worldApiBase}/api/tellus/worlds/${encodeURIComponent(id)}?userId=${encodeURIComponent(tellusUserId())}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isPublic: false }),
+        },
+      )
+        .then(enter)
+        .catch(enter);
+    } else {
+      enter();
+    }
+  };
   const [assetLibrary, setAssetLibrary] = useState<AssetLibraryModel[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<AgentId>("johnny");
+  // Store browse/search (server-side over the 3D Asset Manager): debounced query + paged results.
+  const [assetSearch, setAssetSearch] = useState("");
+  const [assetBrowse, setAssetBrowse] = useState<AssetLibraryModel[]>([]);
+  const [assetBrowsePage, setAssetBrowsePage] = useState(1);
+  const [assetBrowseHasNext, setAssetBrowseHasNext] = useState(false);
+  const [assetBrowseTotal, setAssetBrowseTotal] = useState(0);
+  const [assetBrowseLoading, setAssetBrowseLoading] = useState(false);
+  const [assetBrowseSort, setAssetBrowseSort] = useState<AssetBrowseSort>("newest");
+  const assetBrowseSeq = useRef(0);
+
+  const runAssetBrowse = useCallback(
+    async (query: string, page: number, append: boolean, sort: AssetBrowseSort) => {
+      const seq = ++assetBrowseSeq.current;
+      setAssetBrowseLoading(true);
+      try {
+        const result = await browseAssetLibrary(query, page, sort);
+        if (assetBrowseSeq.current !== seq) return; // a newer query superseded this one
+        setAssetBrowse((prev) => (append ? [...prev, ...result.models] : result.models));
+        setAssetBrowsePage(page);
+        setAssetBrowseHasNext(result.hasNext);
+        setAssetBrowseTotal(result.total);
+      } catch {
+        if (assetBrowseSeq.current === seq && !append) setAssetBrowse([]);
+      } finally {
+        if (assetBrowseSeq.current === seq) setAssetBrowseLoading(false);
+      }
+    },
+    [],
+  );
+
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
+  // Selected-object Move mode (mirrors world-side state; resets when the selection changes).
+  const [moveModeActive, setMoveModeActive] = useState(false);
+  useEffect(() => {
+    setMoveModeActive(false);
+    worldRef.current?.setMoveMode(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.selectedThingId]);
   const [assetPanelTab, setAssetPanelTab] = useState<AssetPanelTab>("search");
+  // ── Clean up dead references: world things whose model is definitively gone ──
+  // Dead = generationStatus "failed" (the old strip-on-error bug), a procedural:// URL that no longer
+  // parses, or a model URL the store answers 404/410 for. Network errors and 5xx are treated as ALIVE
+  // (a store outage must never mass-delete a world).
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupNote, setCleanupNote] = useState<string | null>(null);
+  const cleanupDeadReferences = useCallback(async () => {
+    if (cleanupBusy) return;
+    setCleanupBusy(true);
+    setCleanupNote("Scanning…");
+    try {
+      const things = worldRef.current?.snapshot().generated ?? [];
+      const dead: Array<{ id: string; name: string }> = [];
+      const checkUrl = async (url: string): Promise<boolean> => {
+        try {
+          const ctrl = new AbortController();
+          const res = await fetch(url, {
+            signal: ctrl.signal,
+            headers: { Range: "bytes=0-0" },
+          });
+          ctrl.abort();
+          return res.status !== 404 && res.status !== 410;
+        } catch {
+          return true; // network hiccup — assume alive
+        }
+      };
+      const remote: Array<{ id: string; name: string; url: string }> = [];
+      for (const thing of things) {
+        const name = thing.prompt || thing.kind;
+        if (thing.generationStatus === "failed") {
+          dead.push({ id: thing.id, name });
+          continue;
+        }
+        if (!thing.modelUrl) continue;
+        const proc = sanitizeProceduralModelUrl(thing.modelUrl);
+        if (proc) {
+          if (!parseProceduralModelUrl(proc)) dead.push({ id: thing.id, name });
+          continue;
+        }
+        remote.push({ id: thing.id, name, url: thing.modelUrl });
+      }
+      // probe remote model urls with bounded concurrency
+      const queue = [...remote];
+      const workers = Array.from({ length: 6 }, async () => {
+        for (;;) {
+          const item = queue.shift();
+          if (!item) return;
+          if (!(await checkUrl(item.url))) dead.push({ id: item.id, name: item.name });
+        }
+      });
+      await Promise.all(workers);
+      if (dead.length === 0) {
+        setCleanupNote("No dead references found.");
+        return;
+      }
+      const preview = dead.slice(0, 6).map((d) => d.name.slice(0, 28)).join(", ");
+      const ok = window.confirm(
+        `Remove ${dead.length} broken object${dead.length === 1 ? "" : "s"}?\n${preview}${dead.length > 6 ? ", …" : ""}`,
+      );
+      if (!ok) {
+        setCleanupNote(null);
+        return;
+      }
+      for (const d of dead) worldRef.current?.deleteGenerated(d.id);
+      setCleanupNote(`Removed ${dead.length} broken object${dead.length === 1 ? "" : "s"}.`);
+    } finally {
+      setCleanupBusy(false);
+      window.setTimeout(() => setCleanupNote(null), 6000);
+    }
+  }, [cleanupBusy]);
+
+  // Debounced live search whenever the Assets panel's Search tab is showing.
+  useEffect(() => {
+    if (!assetPanelOpen || assetPanelTab !== "search") return;
+    const id = window.setTimeout(
+      () => void runAssetBrowse(assetSearch, 1, false, assetBrowseSort),
+      assetSearch ? 350 : 0,
+    );
+    return () => window.clearTimeout(id);
+  }, [assetPanelOpen, assetPanelTab, assetSearch, assetBrowseSort, runAssetBrowse]);
   const [openToolMenus, setOpenToolMenus] = useState<ToolMenu[]>([]);
   const [createPromptOpen, setCreatePromptOpen] = useState(false);
   const [createPromptFocused, setCreatePromptFocused] = useState(false);
   const [worldMapOpen, setWorldMapOpen] = useState(true);
-  const [worldLogOpen, setWorldLogOpen] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const { listening, supported, start } = useSpeechInput((text) =>
     setPrompt(text),
-  );
-  const {
-    listening: chatListening,
-    supported: chatSupported,
-    start: startChatVoice,
-  } = useSpeechInput((text) =>
-    setChatPrompt((current) => `${current ? `${current} ` : ""}${text}`),
   );
   const importedGeneratedThings = (value: unknown): WorldGeneratedThing[] => {
     const source = Array.isArray(value)
@@ -6963,6 +5401,14 @@ function App(): React.ReactElement {
   };
 
   useEffect(() => {
+    if (!showFps) return;
+    const id = window.setInterval(() => {
+      setFps(worldRef.current?.getFps() ?? 0);
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [showFps]);
+
+  useEffect(() => {
     window.__tellusSnapshot = () => snapshot;
     window.__tellusImportGenerated = (value: unknown) => {
       const things = importedGeneratedThings(value);
@@ -7009,22 +5455,52 @@ function App(): React.ReactElement {
     }
   }, [snapshot.generated]);
 
+  // Load runtime config + asset library once, then choose the initial active world (a persisted choice wins
+  // over the config default) and fetch the world list.
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
     let cancelled = false;
-    let world: TellusWorldApi | null = null;
     void loadRuntimeConfig()
       .then(async () => {
-        const [models] = await Promise.all([
-          loadAssetLibraryModels().catch(() => []),
-          loadTellusState(),
-        ]);
-        if (!cancelled) setAssetLibrary(models);
+        const models = await loadAssetLibraryModels().catch(() => []);
+        if (cancelled) return;
+        setAssetLibrary(models);
+        const configDefault = runtimeConfig.worldId; // typically "main" — always keep it reachable
+        rememberWorld(configDefault);
+        let initial = configDefault;
+        try {
+          const saved = window.localStorage.getItem(ACTIVE_WORLD_KEY);
+          if (saved && saved.trim()) initial = saved.trim();
+        } catch {
+          /* ignore */
+        }
+        rememberWorld(initial);
+        runtimeConfig.worldId = initial;
+        setActiveWorldId(initial);
+        void refreshWorldList(initial);
       })
       .catch((error) => {
         console.warn("Tellus startup state failed to load", error);
-      })
+        if (!cancelled) setActiveWorldId(runtimeConfig.worldId);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // (Re)create the world view whenever the active world changes — load that world's state, then mount it.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !activeWorldId) return;
+    runtimeConfig.worldId = activeWorldId;
+    // World scale BEFORE any terrain/state work: derived from the world NAME (large-* → 3×,
+    // mega-* → 5×) so every client — and the Hyades terrain port — agrees with no protocol change.
+    setWorldScale(worldScaleForId(activeWorldId));
+    rebuildDistantIslandSpecs();
+    let cancelled = false;
+    let world: TellusWorldApi | null = null;
+    void loadTellusState()
+      .catch(() => undefined)
       .then(() => {
         if (cancelled) return;
         world = createTellusWorld(container, setSnapshot);
@@ -7035,14 +5511,9 @@ function App(): React.ReactElement {
       world?.destroy();
       worldRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorldId]);
 
-  const selected = useMemo(
-    () =>
-      snapshot.agents.find((agent) => agent.id === selectedAgent) ??
-      snapshot.agents[0],
-    [selectedAgent, snapshot.agents],
-  );
   const selectedThing = useMemo(
     () =>
       snapshot.generated.find((thing) => thing.id === snapshot.selectedThingId) ??
@@ -7050,6 +5521,11 @@ function App(): React.ReactElement {
     [snapshot.generated, snapshot.selectedThingId],
   );
   const activeSelectedThing = snapshot.selectedThingId ? selectedThing : null;
+  // Embedded clip names of the selected thing's LOADED model ([] until the GLB mounts — the world
+  // publishes a snapshot when the model lands, so this re-renders with the clip list).
+  const selectedClipNames = activeSelectedThing
+    ? worldRef.current?.getGeneratedClipNames(activeSelectedThing.id) ?? []
+    : [];
   const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
   const selectedThingIsMount = selectedThing ? isMountThing(selectedThing) : false;
   const mapRadius = OCEAN_RADIUS * 0.42;
@@ -7072,23 +5548,6 @@ function App(): React.ReactElement {
     setCreatePromptOpen(false);
   };
 
-  const createCharacter = () => {
-    const body = characterBodyPrompt.trim();
-    const personality = characterPersonalityPrompt.trim();
-    if (!body && !personality) return;
-    const characterPrompt = [
-      "create a friendly Tellus character avatar",
-      body ? `body: ${body}` : "",
-      personality ? `personality: ${personality}` : "",
-      "game-ready low poly 3D character, readable silhouette",
-    ]
-      .filter(Boolean)
-      .join("; ");
-    worldRef.current?.submitVisitorPrompt(characterPrompt);
-    setCharacterBodyPrompt("");
-    setCharacterPersonalityPrompt("");
-  };
-
   const focusCreatePrompt = () => {
     setCreatePromptOpen((open) => {
       if (open) return false;
@@ -7101,12 +5560,6 @@ function App(): React.ReactElement {
 
   const toggleAssetDrawer = () => {
     setAssetPanelOpen((open) => !open);
-  };
-
-  const openToolPanel = (menu: ToolMenu) => {
-    setOpenToolMenus((current) =>
-      current.includes(menu) ? current : [...current, menu],
-    );
   };
 
   const closeToolPanel = (menu: ToolMenu) => {
@@ -7138,12 +5591,6 @@ function App(): React.ReactElement {
     }
   };
 
-  const askSelectedAgent = () => {
-    if (!chatPrompt.trim() || !selected) return;
-    worldRef.current?.talkToAgent(selected.id, chatPrompt);
-    setChatPrompt("");
-  };
-
   useEffect(() => {
     const textarea = promptRef.current;
     if (!textarea) return;
@@ -7151,7 +5598,6 @@ function App(): React.ReactElement {
     textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 36), 116)}px`;
   }, [prompt]);
 
-  const recentLogs = snapshot.logs.slice(-10).reverse();
   const repeatTimerRef = useRef<number | undefined>(undefined);
   const stopRepeating = () => {
     if (repeatTimerRef.current === undefined) return;
@@ -7177,7 +5623,7 @@ function App(): React.ReactElement {
       className={[
         "tellus-shell",
         openToolMenus.length > 0 || assetPanelOpen ? "" : "mesh-tools-hidden",
-        worldLogOpen ? "" : "world-log-hidden",
+        "world-log-hidden",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -7185,15 +5631,105 @@ function App(): React.ReactElement {
       <section className="world-panel" aria-label="Tellus world">
         <div ref={containerRef} className="world-canvas" />
         <div className="world-top-bar">
-          <div className="top-left-cluster">
-            <div className="brand-mark">
+          <div className="top-left-cluster" style={{ position: "relative" }}>
+            <div
+              className="brand-mark"
+              onClick={handleBrandTripleClick}
+              style={{ userSelect: "none" }}
+            >
               <span className="brand-sigil">T</span>
               <span>Tellus</span>
               <small>World Weaver</small>
             </div>
+            {showFps && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  marginTop: 4,
+                  padding: "2px 8px",
+                  borderRadius: 6,
+                  background: "rgba(0,0,0,0.6)",
+                  color: "#7ec850",
+                  font: "600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace",
+                  whiteSpace: "nowrap",
+                  pointerEvents: "none",
+                  zIndex: 20,
+                }}
+              >
+                <div>{fps} FPS</div>
+                {ambientStats && (
+                  <div style={{ marginTop: 3, color: "#b8e08a" }}>
+                    veg T{ambientStats.vegetation.tier} · {ambientStats.vegetation.chunks}ch ·{" "}
+                    {Math.round(ambientStats.vegetation.grassIndices / 3)}tri ·{" "}
+                    {ambientStats.vegetation.trees}🌲 · {ambientStats.physicsBodies}⚙
+                  </div>
+                )}
+                <div style={{ marginTop: 3, color: "#9ad0ff" }}>
+                  P2P {p2pStats?.tx ? "TX●" : "tx○"} {p2pStats?.rx ?? rxEnabled ? "RX●" : "rx○"} ·{" "}
+                  {p2pStats?.rxStreams ?? 0}/16 streams
+                </div>
+                {(p2pStats?.peers ?? []).map((peer) => (
+                  <div key={peer.id} style={{ color: "#c8c8c8" }}>
+                    {peer.id.slice(0, 6)} {peer.state}
+                    {peer.haveRemoteVideo ? " 📺" : ""} {Math.round(peer.kbps)}kbps
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <div aria-hidden="true" />
+          <div
+            className="world-switcher"
+            style={{
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "auto",
+            }}
+          >
+            <select
+              aria-label="Active world"
+              title="Switch world"
+              value={activeWorldId ?? ""}
+              onChange={(e) => switchWorld(e.target.value)}
+              style={{
+                background: "rgba(0,0,0,0.5)",
+                color: "#dfe7d8",
+                border: "1px solid rgba(255,255,255,0.18)",
+                borderRadius: 8,
+                padding: "4px 8px",
+                font: "600 12px/1.2 ui-sans-serif, system-ui",
+                maxWidth: 180,
+              }}
+            >
+              {!activeWorldId && <option value="">…</option>}
+              {worlds.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              title="Create a new world"
+              onClick={createNewWorld}
+              style={{
+                background: "rgba(0,0,0,0.5)",
+                color: "#7ec850",
+                border: "1px solid rgba(255,255,255,0.18)",
+                borderRadius: 8,
+                padding: "4px 9px",
+                font: "700 12px/1.2 ui-sans-serif, system-ui",
+                cursor: "pointer",
+              }}
+            >
+              ＋ New
+            </button>
+          </div>
           <div className="top-right-cluster">
+            <AuthControls />
             <details className="world-help">
               <summary title="Controls" aria-label="Controls">
                 <CircleHelp size={16} />
@@ -7251,12 +5787,16 @@ function App(): React.ReactElement {
           </button>
           <button
             type="button"
-            className={isToolOpen("ai") ? "toolbelt-button active" : "toolbelt-button"}
-            title="AI"
-            onClick={() => toggleToolPanel("ai")}
+            className={cameraMode === "first" ? "toolbelt-button active" : "toolbelt-button"}
+            title={
+              cameraMode === "first"
+                ? "Switch to 3rd person view (V)"
+                : "Switch to 1st person view (V)"
+            }
+            onClick={toggleCameraMode}
           >
-            <Bot size={18} />
-            <span>AI</span>
+            <Eye size={18} />
+            <span>View</span>
           </button>
           <button
             type="button"
@@ -7276,16 +5816,800 @@ function App(): React.ReactElement {
             <RotateCw size={18} />
             <span>Move</span>
           </button>
+          {p2pSupported && (
+            <button
+              type="button"
+              className={p2pPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+              title="P2P Video"
+              onClick={() => {
+                setP2pPanelOpen((open) => !open);
+                void refreshP2pDevices();
+              }}
+            >
+              <Video size={18} />
+              <span>P2P</span>
+            </button>
+          )}
           <button
             type="button"
-            className={worldLogOpen ? "toolbelt-button active" : "toolbelt-button"}
-            title="Chat"
-            onClick={() => setWorldLogOpen((open) => !open)}
+            className={agentPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Your Agent"
+            onClick={() => setAgentPanelOpen((open) => !open)}
           >
-            <MessageCircle size={18} />
-            <span>Chat</span>
+            <Bot size={18} />
+            <span>Agent</span>
+          </button>
+          <button
+            type="button"
+            className={avatarPanelOpen ? "toolbelt-button active" : "toolbelt-button"}
+            title="Avatar"
+            onClick={() => setAvatarPanelOpen((open) => !open)}
+          >
+            <PersonStanding size={18} />
+            <span>Avatar</span>
           </button>
         </aside>
+        {/* Panel layout policy: every bottom panel gets its OWN anchor so any combination can be
+            open at once — avatar picker = LEFT edge column, P2P = just left-of-center, agent =
+            just right-of-center; each is height-capped with internal scroll. The login dialog is
+            a true modal (fullscreen dimmed overlay, z-index 70) ABOVE all of them by design. The
+            open avatar picker temporarily covers the agent-PiP corner (close it to see the PiP). */}
+        {avatarPanelOpen && (
+          <aside
+            className="avatar-panel"
+            aria-label="Avatar picker"
+            style={{
+              position: "absolute",
+              bottom: 92,
+              left: 12,
+              width: 300,
+              maxHeight: "min(560px, calc(100dvh - 120px))",
+              overflowY: "auto",
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(12,16,22,0.92)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "#dfe7d8",
+              font: "500 13px/1.4 system-ui, sans-serif",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              zIndex: 30,
+              pointerEvents: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>Avatar</strong>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>everyone sees your pick</span>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 8,
+              }}
+            >
+              {AVATAR_CATALOG.map((entry) => (
+                <AvatarTile
+                  key={entry.id}
+                  entry={entry}
+                  selected={avatarSelection === entry.id}
+                  onSelect={onAvatarPick}
+                />
+              ))}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: 600 }}>
+                  Size{" "}
+                  <span data-testid="avatar-scale-label" style={{ opacity: 0.8, fontWeight: 500 }}>
+                    {avatarScaleLabel(avatarScale)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onAvatarScale(1)}
+                  disabled={avatarScale === 1}
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "#dfe7d8",
+                    fontSize: 11,
+                    cursor: avatarScale === 1 ? "default" : "pointer",
+                    opacity: avatarScale === 1 ? 0.45 : 1,
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+              <input
+                type="range"
+                aria-label="Avatar size"
+                data-testid="avatar-scale-slider"
+                min={0}
+                max={AVATAR_SCALE_SLIDER_STEPS}
+                step={1}
+                value={avatarScaleToSlider(avatarScale)}
+                onChange={(event) =>
+                  onAvatarScale(avatarSliderToScale(Number(event.target.value)))
+                }
+                style={{ width: "100%" }}
+              />
+              <span style={{ fontSize: 10, opacity: 0.55 }}>
+                0.1× – 8× · visual only (movement unchanged)
+              </span>
+            </div>
+          </aside>
+        )}
+        {p2pPanelOpen && p2pSupported && (
+          <aside
+            className="p2p-panel"
+            aria-label="P2P video"
+            style={{
+              position: "absolute",
+              bottom: 92,
+              left: "50%",
+              transform: "translateX(-104%)", // sit just LEFT of center (won't overlap the agent panel)
+              width: 280,
+              maxHeight: "min(560px, calc(100dvh - 120px))",
+              overflowY: "auto",
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(12,16,22,0.92)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "#dfe7d8",
+              font: "500 13px/1.4 system-ui, sans-serif",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              zIndex: 30,
+              pointerEvents: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>P2P Video</strong>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>
+                {p2pStats?.rxStreams ?? 0}/16 · 480p
+              </span>
+            </div>
+            <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+              Microphone
+              <select
+                value={selectedMic}
+                onChange={(e) => onMicChange(e.target.value)}
+                style={p2pSelectStyle}
+              >
+                <option value="">Default</option>
+                {audioInputs.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+              Camera
+              <select
+                value={selectedCam}
+                onChange={(e) => onCamChange(e.target.value)}
+                style={p2pSelectStyle}
+              >
+                <option value="">Default</option>
+                {videoInputs.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Cam ${d.deviceId.slice(0, 6)}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <video
+              ref={selfVideoRef}
+              muted
+              playsInline
+              autoPlay
+              style={{
+                width: "100%",
+                aspectRatio: "16 / 9",
+                borderRadius: 8,
+                background: "#000",
+                objectFit: "cover",
+                display: txEnabled ? "block" : "none",
+                transform: "scaleX(-1)", // mirror, like a webcam preview
+              }}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => void refreshP2pDevices()}
+                style={p2pBtnStyle(false)}
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={toggleRx}
+                style={p2pBtnStyle(rxEnabled)}
+              >
+                RX {rxEnabled ? "On" : "Off"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleTx()}
+                style={p2pBtnStyle(txEnabled)}
+              >
+                TX {txEnabled ? "On" : "Off"}
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={toggleAudioListen}
+                style={p2pBtnStyle(audioListen)}
+                title="Hear other players' audio"
+              >
+                🔊 Listen {audioListen ? "On" : "Off"}
+              </button>
+              <button
+                type="button"
+                onClick={toggleMic}
+                disabled={!txEnabled}
+                style={{ ...p2pBtnStyle(txEnabled && micOn), opacity: txEnabled ? 1 : 0.45 }}
+                title={txEnabled ? "Mute/unmute your mic" : "Turn TX on to use your mic"}
+              >
+                🎤 {txEnabled ? (micOn ? "On" : "Muted") : "Off"}
+              </button>
+            </div>
+            {p2pError && (
+              <div style={{ fontSize: 11, color: "#ff9a9a" }}>{p2pError}</div>
+            )}
+            <div style={{ fontSize: 10, opacity: 0.6 }}>
+              RX shows others' cameras; TX shares your camera + mic (480p). Listen = hear others.
+            </div>
+          </aside>
+        )}
+        {/* PiP fallback: same box the in-canvas POV viewport uses (bottom-left), showing the latest
+            server-held agent snapshot when there's no local avatar mesh to render a live POV from. */}
+        {agentRemoteViewActive && (
+          <div
+            aria-label="Agent remote view"
+            style={{
+              position: "absolute",
+              left: 16,
+              bottom: 96,
+              width: 220,
+              height: 140,
+              borderRadius: 8,
+              overflow: "hidden",
+              border: "1px solid rgba(255,255,255,0.25)",
+              background: "rgba(0,0,0,0.55)",
+              zIndex: 25,
+              pointerEvents: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {agentRemoteViewSrc && !agentRemoteViewFailed ? (
+              <img
+                src={agentRemoteViewSrc}
+                alt="Latest view from your agent"
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              <span style={{ fontSize: 11, color: "#9aa4b2", fontStyle: "italic" }}>
+                {agentRemoteViewPolling ? "no view yet" : "unavailable — agent is asleep"}
+              </span>
+            )}
+            <span
+              style={{
+                position: "absolute",
+                left: 6,
+                bottom: 4,
+                fontSize: 10,
+                color: "#dfe7d8",
+                textShadow: "0 1px 2px rgba(0,0,0,0.8)",
+                opacity: 0.85,
+              }}
+            >
+              (remote view)
+            </span>
+          </div>
+        )}
+        {agentPanelOpen && (
+          <aside
+            className="agent-panel"
+            aria-label="Your agent"
+            style={{
+              position: "absolute",
+              bottom: 92,
+              left: "50%",
+              transform: "translateX(4%)", // sit just RIGHT of center (won't overlap the P2P panel)
+              width: 300,
+              maxHeight: "min(560px, calc(100dvh - 120px))",
+              overflowY: "auto",
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(12,16,22,0.92)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "#dfe7d8",
+              font: "500 13px/1.4 system-ui, sans-serif",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              zIndex: 30,
+              pointerEvents: "auto",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong style={{ fontSize: 13 }}>
+                Your Agent{" "}
+                <span style={{ fontSize: 10, opacity: 0.6, fontWeight: 500 }} title="Each world has its own agent — its memories live in that world. Use 'Set as default' in Personality to carry a persona into new worlds.">
+                  in “{agentStatus?.worldId || activeWorldId || runtimeConfig.worldId}”
+                </span>
+              </strong>
+              {(() => {
+                const optedIn = agentStatus?.optedIn ?? false;
+                const running =
+                  optedIn &&
+                  ((agentStatus?.ownerPresent ?? false) || (agentStatus?.offlinePersistence ?? false)) &&
+                  (agentStatus?.enabled ?? false);
+                const thinking = optedIn && (agentStatus?.processing ?? false);
+                // optedIn but momentarily disabled while you're here: the server self-heals
+                // (resume-on-heartbeat), so surface that it WILL wake rather than a flat "Sleeping".
+                const willWake =
+                  optedIn && !(agentStatus?.enabled ?? false) && (agentStatus?.ownerPresent ?? false);
+                const label = !optedIn
+                  ? "Stopped"
+                  : thinking
+                    ? "Thinking…"
+                    : running
+                      ? "Running"
+                      : willWake
+                        ? "Sleeping (will wake)"
+                        : "Sleeping";
+                const dot = !optedIn ? "#7a8597" : thinking ? "#9ec8ff" : running ? "#6fae46" : "#d8a64a";
+                return (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, opacity: 0.9 }}>
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: dot,
+                        boxShadow: `0 0 6px ${dot}`,
+                      }}
+                    />
+                    {label}
+                    {agentStatus?.offlinePersistence && (
+                      <span
+                        style={{
+                          marginLeft: 4,
+                          padding: "1px 6px",
+                          borderRadius: 999,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: 0.4,
+                          textTransform: "uppercase",
+                          color: "#0c1016",
+                          background: "linear-gradient(90deg,#f4d06f,#e9a23a)",
+                        }}
+                      >
+                        Premium
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
+            </div>
+            {/* Premium upsell: logged in & not premium — Premium = the agent survives you leaving. */}
+            {!agentStatus?.offlinePersistence && <PremiumUpsellChip />}
+            <button
+              type="button"
+              disabled={agentBusy}
+              onClick={onAgentStartStop}
+              style={{
+                ...p2pBtnStyle(agentStatus?.optedIn ?? false),
+                flex: "none",
+                width: "100%",
+                padding: "7px 0",
+                opacity: agentBusy ? 0.6 : 1,
+                cursor: agentBusy ? "default" : "pointer",
+              }}
+            >
+              {agentBusy ? "…" : agentStatus?.optedIn ? "Stop" : "Start my agent"}
+            </button>
+            {/* Escape hatch for a wedged agent: fresh server-side thread, memories stay. Deliberately
+                subdued (text-link styling) with a two-step inline confirm — not an everyday control. */}
+            {agentResetConfirm ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, opacity: 0.85 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>Reset? The chat history starts over; memories stay.</span>
+                <button
+                  type="button"
+                  disabled={agentBusy}
+                  onClick={() => void onAgentResetThread()}
+                  style={{ ...p2pBtnStyle(true), flex: "none", padding: "3px 10px", fontSize: 10, opacity: agentBusy ? 0.6 : 1 }}
+                >
+                  {agentBusy ? "…" : "Confirm"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentResetConfirm(false)}
+                  style={{ ...p2pBtnStyle(false), flex: "none", padding: "3px 10px", fontSize: 10 }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={agentBusy}
+                onClick={() => setAgentResetConfirm(true)}
+                title="Start a fresh conversation thread for a stuck agent — its memories and personality stay."
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  alignSelf: "flex-start",
+                  color: "#dfe7d8",
+                  fontSize: 10,
+                  opacity: agentBusy ? 0.3 : 0.5,
+                  cursor: agentBusy ? "default" : "pointer",
+                  textDecoration: "underline",
+                  textDecorationColor: "rgba(255,255,255,0.25)",
+                }}
+              >
+                Reset thread
+              </button>
+            )}
+            {/* Memories: the agent's persona/self-section — ONE field (the old persona textarea moved
+                here). Live read-only view + Edit (textarea, same POST /agent/persona replace:true save
+                semantics) + a dimmed edit-history list (its own `remember` writes show up too). */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <button
+                type="button"
+                onClick={() => setMemoriesOpen((open) => !open)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#dfe7d8",
+                  fontSize: 11,
+                  opacity: 0.85,
+                  textAlign: "left",
+                  padding: 0,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                {memoriesOpen ? "▾" : "▸"} Personality &amp; memories
+              </button>
+              {!memoriesOpen ? (
+                <>
+                  <pre
+                    style={{
+                      margin: 0,
+                      maxHeight: 64,
+                      overflowY: "auto",
+                      background: "rgba(0,0,0,0.32)",
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      fontSize: 11,
+                      fontFamily: "inherit",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      opacity: 0.85,
+                    }}
+                  >
+                    {agentStatus?.selfSection?.trim() || "No personality set — click Edit to describe your agent."}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAgentPersonaDraft(agentStatus?.selfSection ?? "");
+                      setMemoriesOpen(true);
+                      setMemoriesEditing(true);
+                    }}
+                    style={{ ...p2pBtnStyle(false), alignSelf: "flex-start" }}
+                  >
+                    Edit personality
+                  </button>
+                </>
+              ) : memoriesEditing ? (
+                <>
+                  <textarea
+                    value={agentPersonaDraft}
+                    onChange={(e) => setAgentPersonaDraft(e.target.value)}
+                    placeholder="Describe how your agent should behave, what it should remember…"
+                    rows={6}
+                    style={{
+                      background: "rgba(0,0,0,0.4)",
+                      color: "#dfe7d8",
+                      border: "1px solid rgba(255,255,255,0.16)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      resize: "vertical",
+                      fontFamily: "inherit",
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button
+                      type="button"
+                      disabled={agentBusy}
+                      onClick={() => void onAgentSavePersona()}
+                      style={{
+                        ...p2pBtnStyle(true),
+                        opacity: agentBusy ? 0.6 : 1,
+                        cursor: agentBusy ? "default" : "pointer",
+                      }}
+                    >
+                      {agentBusy ? "…" : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMemoriesEditing(false)}
+                      style={p2pBtnStyle(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={agentBusy}
+                      title="Save this text as your default persona — your agent in any NEW world starts with it (each world keeps its own copy afterwards)."
+                      onClick={() => void onAgentSaveDefaultPersona()}
+                      style={{ ...p2pBtnStyle(false), opacity: agentBusy ? 0.6 : 1 }}
+                    >
+                      Set as default
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <pre
+                    style={{
+                      margin: 0,
+                      maxHeight: 150,
+                      overflowY: "auto",
+                      background: "rgba(0,0,0,0.32)",
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      fontSize: 11,
+                      fontFamily: "inherit",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {agentStatus?.selfSection?.trim() || "No memories yet."}
+                  </pre>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Seed the draft from the LIVE value at edit time — one source of truth.
+                        setAgentPersonaDraft(agentStatus?.selfSection ?? "");
+                        setMemoriesEditing(true);
+                      }}
+                      style={p2pBtnStyle(false)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemoriesHistoryOpen((open) => {
+                          if (!open) void loadMemoriesLog();
+                          return !open;
+                        });
+                      }}
+                      style={p2pBtnStyle(memoriesHistoryOpen)}
+                    >
+                      History
+                    </button>
+                  </div>
+                  {memoriesHistoryOpen && (
+                    <div
+                      style={{
+                        maxHeight: 110,
+                        overflowY: "auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        padding: "6px 8px",
+                        background: "rgba(0,0,0,0.25)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        borderRadius: 6,
+                      }}
+                    >
+                      {memoriesLog === null ? (
+                        <span style={{ fontSize: 10, opacity: 0.5, fontStyle: "italic" }}>Loading…</span>
+                      ) : memoriesLog.length === 0 ? (
+                        <span style={{ fontSize: 10, opacity: 0.5, fontStyle: "italic" }}>No edits yet.</span>
+                      ) : (
+                        memoriesLog.map((entry, index) => (
+                          <span
+                            key={`${entry.editedAt ?? ""}-${index}`}
+                            style={{
+                              fontSize: 10,
+                              opacity: 0.55,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {entry.editedAt ? `${new Date(entry.editedAt).toLocaleString()} · ` : ""}
+                            {entry.editedBy ? `${entry.editedBy}: ` : ""}
+                            {entry.newValue ?? ""}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.7 }}>
+              tokens: {agentStatus?.tokensSpentToday ?? 0} / {agentStatus?.dailyTokenBudget ?? 0}
+            </div>
+            {agentError && (
+              <div style={{ fontSize: 11, color: "#ff9a9a" }}>{agentError}</div>
+            )}
+            {/* Chat thread: the agent's dialog (assistant = dialog, tool = dimmed) plus the lines you send it. */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>Chat</span>
+              <div
+                ref={agentTranscriptScrollRef}
+                style={{
+                  maxHeight: 140,
+                  overflowY: "auto",
+                  background: "rgba(0,0,0,0.32)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 6,
+                  padding: "6px 8px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                {agentChat.length === 0 && !agentStatus?.processing ? (
+                  <span style={{ fontSize: 11, opacity: 0.5, fontStyle: "italic" }}>
+                    {agentStatus?.optedIn
+                      ? "Say hello to your agent below."
+                      : "Start your agent, then say hello below."}
+                  </span>
+                ) : (
+                  agentFeed.map((item) => {
+                    if (item.kind === "chip") return <AgentToolChipPill key={item.key} chip={item.chip} />;
+                    if (item.kind === "chipGroup") {
+                      const open = expandedChipGroups.has(item.key);
+                      const toggle = (
+                        <button
+                          type="button"
+                          onClick={() => toggleChipGroup(item.key)}
+                          style={{ ...agentChipStyle, cursor: "pointer" }}
+                          title={open ? "Collapse" : "Expand"}
+                        >
+                          <span aria-hidden="true">🔧</span>
+                          <span>
+                            {item.chips.length} actions {open ? "▾" : "▸"}
+                          </span>
+                        </button>
+                      );
+                      if (!open) return <React.Fragment key={item.key}>{toggle}</React.Fragment>;
+                      return (
+                        <span key={item.key} style={{ display: "flex", flexDirection: "column", gap: 3, flex: "none" }}>
+                          {toggle}
+                          {item.chips.map((c) => (
+                            <AgentToolChipPill key={c.key} chip={c.chip} />
+                          ))}
+                        </span>
+                      );
+                    }
+                    if (item.who === "system") {
+                      return (
+                        <span
+                          key={item.key}
+                          style={{ fontSize: 10, opacity: 0.45, fontStyle: "italic", textAlign: "center" }}
+                        >
+                          {item.text}
+                        </span>
+                      );
+                    }
+                    return (
+                      <span
+                        key={item.key}
+                        style={{
+                          fontSize: 12,
+                          color: item.who === "you" ? "#9ec8ff" : "#dfe7d8",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        <b style={{ opacity: 0.7, fontWeight: 600 }}>{item.who === "you" ? "You: " : ""}</b>
+                        {item.text}
+                      </span>
+                    );
+                  })
+                )}
+                {agentStatus?.optedIn && agentStatus?.processing && (
+                  <span style={{ fontSize: 11, color: "#9ec8ff", fontStyle: "italic", opacity: 0.85 }}>
+                    💭 thinking…
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input
+                  type="text"
+                  value={agentChatInput}
+                  onChange={(e) => setAgentChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void onAgentSend();
+                    }
+                  }}
+                  placeholder={agentStatus?.optedIn ? "Talk to your agent…" : "Start your agent first"}
+                  disabled={!agentStatus?.optedIn}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: 12,
+                    padding: "5px 8px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "rgba(0,0,0,0.3)",
+                    color: "#eef2ea",
+                    opacity: agentStatus?.optedIn ? 1 : 0.5,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => void onAgentSend()}
+                  disabled={!agentStatus?.optedIn || agentChatInput.trim().length === 0}
+                  style={{
+                    ...p2pBtnStyle(false),
+                    flex: "none",
+                    padding: "5px 12px",
+                    opacity:
+                      agentStatus?.optedIn && agentChatInput.trim().length > 0 ? 1 : 0.5,
+                    cursor:
+                      agentStatus?.optedIn && agentChatInput.trim().length > 0
+                        ? "pointer"
+                        : "default",
+                  }}
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+            {/* POV viewport toggle: render a picture-in-picture of the scene from the agent's avatar. */}
+            <button
+              type="button"
+              onClick={() => setAgentViewportOn((v) => !v)}
+              disabled={!agentStatus?.visitorId}
+              style={{
+                ...p2pBtnStyle(agentViewportOn),
+                flex: "none",
+                width: "100%",
+                opacity: agentStatus?.visitorId ? 1 : 0.5,
+                cursor: agentStatus?.visitorId ? "pointer" : "default",
+              }}
+            >
+              {agentViewportOn ? "Hide viewport" : "Show viewport"}
+            </button>
+            <div style={{ fontSize: 10, opacity: 0.6 }}>
+              Your agent acts as you in this world. Premium keeps it active while you're away.
+            </div>
+          </aside>
+        )}
         {worldMapOpen && (
           <aside className="world-right-hud" aria-label="World systems">
             <section className="world-map" aria-label="World map">
@@ -7307,17 +6631,6 @@ function App(): React.ReactElement {
                   />
                 ) : null,
               )}
-              {snapshot.agents.map((agent) => (
-                <span
-                  key={agent.id}
-                  className="map-marker agent"
-                  style={{
-                    ...mapPointStyle(agent.position),
-                    backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                  }}
-                  title={`${agent.name} - ${agent.epithet}`}
-                />
-              ))}
               {snapshot.generated.map((thing) => (
                 <span
                   key={thing.id}
@@ -7344,9 +6657,7 @@ function App(): React.ReactElement {
               <section className="world-info-panel mini" aria-label="World info">
                 <dl>
                   <div><dt>Generated</dt><dd>{snapshot.generated.length}</dd></div>
-                  <div><dt>Agents</dt><dd>{snapshot.agents.length}</dd></div>
                   <div><dt>Players</dt><dd>{snapshot.remoteVisitors.length + 1}</dd></div>
-                  <div><dt>AI</dt><dd>{snapshot.paused ? "Paused" : "Active"}</dd></div>
                 </dl>
               </section>
             </section>
@@ -7363,58 +6674,6 @@ function App(): React.ReactElement {
             <Ship size={17} />
             <span>Dismount</span>
           </button>
-        )}
-        {worldLogOpen && (
-          <section className="world-mini-chat" aria-label="World chat">
-            <header>
-              <strong>World Chat</strong>
-              <button
-                type="button"
-                title="Hide world chat"
-                aria-label="Hide world chat"
-                onClick={() => setWorldLogOpen(false)}
-              >
-                x
-              </button>
-            </header>
-            <div className="mini-chat-log">
-              {recentLogs.slice(0, 4).map((log) => (
-                <article key={log.id} className={`mini-chat-entry ${log.tool}`}>
-                  <strong>{log.agentName}</strong>
-                  <p>{log.text}</p>
-                </article>
-              ))}
-            </div>
-            <textarea
-              className="mini-chat-input"
-              value={chatPrompt}
-              rows={2}
-              placeholder={selected ? `Ask ${selected.name}...` : "Ask an agent..."}
-              onChange={(event) => setChatPrompt(event.target.value)}
-            />
-            <div className="mini-chat-actions">
-              <button
-                type="button"
-                className="secondary-button prompt-icon-button"
-                title={chatListening ? "Listening" : "Speak to chat"}
-                aria-label={chatListening ? "Listening" : "Speak to chat"}
-                disabled={!chatSupported || chatListening}
-                onClick={startChatVoice}
-              >
-                <Mic size={16} />
-              </button>
-              <button
-                type="button"
-                className="secondary-button wide-button mini-chat-submit"
-                disabled={!chatPrompt.trim() || !selected}
-                onClick={askSelectedAgent}
-                title={selected ? `Ask ${selected.name}` : "Ask"}
-                aria-label={selected ? `Ask ${selected.name}` : "Ask"}
-              >
-                <MessageCircle size={16} />
-              </button>
-            </div>
-          </section>
         )}
         {activeSelectedThing && (
           <div className="selected-transform-hud" aria-label="Selected asset controls">
@@ -7460,6 +6719,43 @@ function App(): React.ReactElement {
                 </button>
                 <button
                   type="button"
+                  className="selected-name-action"
+                  title="Duplicate this object with its current scale & rotation"
+                  onClick={() =>
+                    worldRef.current?.cloneGenerated(activeSelectedThing.id)
+                  }
+                >
+                  Clone
+                </button>
+                <button
+                  type="button"
+                  className="selected-name-action"
+                  title="Hurl it where you're looking — it tumbles, bounces, and settles (or floats). Key: G"
+                  onClick={() =>
+                    worldRef.current?.throwGenerated(activeSelectedThing.id)
+                  }
+                >
+                  Throw
+                </button>
+                <button
+                  type="button"
+                  className="selected-name-action"
+                  title="Move mode: click or drag anywhere in the world to put this object there (camera won't orbit until you toggle this off). Ctrl+drag works anytime without this."
+                  style={
+                    moveModeActive
+                      ? { background: "rgba(111,174,70,0.4)", fontWeight: 700 }
+                      : undefined
+                  }
+                  onClick={() => {
+                    const next = !moveModeActive;
+                    setMoveModeActive(next);
+                    worldRef.current?.setMoveMode(next ? activeSelectedThing.id : null);
+                  }}
+                >
+                  {moveModeActive ? "Moving…" : "Move"}
+                </button>
+                <button
+                  type="button"
                   className="selected-name-action selected-name-delete"
                   onClick={() =>
                     worldRef.current?.deleteGenerated(activeSelectedThing.id)
@@ -7468,6 +6764,27 @@ function App(): React.ReactElement {
                   Delete
                 </button>
               </div>
+              {selectedClipNames.length > 0 && (
+                <select
+                  aria-label="Animation"
+                  title="Loop one of this model's animation clips — synced to everyone in the world"
+                  value={activeSelectedThing.animation ?? ""}
+                  style={{ gridColumn: 2, gridRow: 3 }}
+                  onChange={(event) =>
+                    worldRef.current?.setGeneratedAnimation(
+                      activeSelectedThing.id,
+                      event.target.value,
+                    )
+                  }
+                >
+                  <option value="">Animation: (default)</option>
+                  {selectedClipNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <div className="selected-nudge-pad" aria-label="Position controls">
               <button
@@ -7673,36 +6990,212 @@ function App(): React.ReactElement {
                 <Backpack size={15} />
                 <span>Mine</span>
               </button>
+              <button
+                type="button"
+                className={assetPanelTab === "procedural" ? "active" : ""}
+                onClick={() => setAssetPanelTab("procedural")}
+              >
+                <Mountain size={15} />
+                <span>Nature</span>
+              </button>
             </nav>
+            {assetPanelTab === "procedural" && (
+              <div className="inventory-list asset-list">
+                <span className="inventory-empty" style={{ paddingBottom: 4 }}>
+                  Procedural nature — built instantly, no generation cost. Every placement gets a
+                  fresh random look.
+                </span>
+                {PROCEDURAL_CATALOG.map((arch) => (
+                  <button
+                    key={arch.id}
+                    type="button"
+                    className="inventory-item"
+                    onClick={() => {
+                      const seed = (Math.random() * 0xffffffff) >>> 0;
+                      worldRef.current?.addLibraryAsset({
+                        id: `proc-${arch.id}-${seed.toString(16)}`,
+                        name: arch.label,
+                        description: arch.label,
+                        modelUrl: makeProceduralModelUrl(arch.id, seed),
+                        source: "generated",
+                      });
+                    }}
+                  >
+                    <span style={{ fontSize: 16, width: 16, textAlign: "center" }}>{arch.emoji}</span>
+                    <span>
+                      <strong>{arch.label}</strong>
+                      <small>procedural · tap again for a new variation</small>
+                    </span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="inventory-item"
+                  onClick={() => {
+                    const seed = (Math.random() * 0xffffffff) >>> 0;
+                    worldRef.current?.addLibraryAsset({
+                      id: `proc-mirror-${seed.toString(16)}`,
+                      name: "Mirror",
+                      description: "Mirror",
+                      modelUrl: makeProceduralModelUrl(MIRROR_ARCHETYPE_ID, seed),
+                      source: "generated",
+                    });
+                  }}
+                >
+                  <span style={{ fontSize: 16, width: 16, textAlign: "center" }}>🪞</span>
+                  <span>
+                    <strong>Mirror</strong>
+                    <small>
+                      reflective standing mirror · up to {MAX_LIVE_MIRRORS} reflect live (extras
+                      render as tinted glass)
+                    </small>
+                  </span>
+                </button>
+              </div>
+            )}
             {assetPanelTab === "search" && (
               <div className="inventory-list asset-list">
-                {assetLibrary.length > 0 ? (
-                  assetLibrary.map((model) => (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0 6px" }}>
+                  <Search size={14} style={{ opacity: 0.6, flex: "none" }} />
+                  <input
+                    type="text"
+                    value={assetSearch}
+                    onChange={(e) => setAssetSearch(e.target.value)}
+                    placeholder="Search the asset store…"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 12,
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      background: "rgba(0,0,0,0.3)",
+                      color: "#eef2ea",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, paddingBottom: 6 }}>
+                  {(
+                    [
+                      ["newest", "Newest"],
+                      ["downloads", "Popular"],
+                      ["name", "A–Z"],
+                    ] as Array<[AssetBrowseSort, string]>
+                  ).map(([key, label]) => (
                     <button
-                      key={model.id}
+                      key={key}
                       type="button"
-                      className="inventory-item"
-                      onClick={() => worldRef.current?.addLibraryAsset(model)}
+                      onClick={() => setAssetBrowseSort(key)}
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 9px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: assetBrowseSort === key ? "rgba(111,174,70,0.3)" : "rgba(255,255,255,0.05)",
+                        color: "#e7eee2",
+                        cursor: "pointer",
+                      }}
                     >
-                      <Box size={16} />
-                      <span>
-                        <strong>{model.name.slice(0, 30)}</strong>
-                        <small>
-                          {(model.file_format ?? "model").toUpperCase()}
-                          {typeof model.download_count === "number"
-                            ? ` · ${model.download_count} downloads`
-                            : ""}
-                        </small>
-                      </span>
+                      {label}
                     </button>
-                  ))
-                ) : (
-                  <span className="inventory-empty">No library assets loaded yet.</span>
+                  ))}
+                  {assetBrowseTotal > 0 && (
+                    <span style={{ fontSize: 10, opacity: 0.55, marginLeft: "auto" }}>
+                      {assetBrowse.length}/{assetBrowseTotal}
+                    </span>
+                  )}
+                </div>
+                {assetBrowse.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className="inventory-item"
+                    onClick={() => worldRef.current?.addLibraryAsset(model)}
+                  >
+                    {model.hasThumbnail ? (
+                      <img
+                        src={tellusAssetLibraryUrl(
+                          `/api/assets/model/${encodeURIComponent(model.id)}/thumbnail`,
+                        )}
+                        alt=""
+                        loading="lazy"
+                        width={42}
+                        height={42}
+                        style={{
+                          width: 42,
+                          height: 42,
+                          flex: "none",
+                          objectFit: "cover",
+                          borderRadius: 6,
+                          background: "rgba(0,0,0,0.35)",
+                        }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <Box size={16} />
+                    )}
+                    <span>
+                      <strong>{model.name.slice(0, 34)}</strong>
+                      <small>
+                        {(model.file_format ?? "model").toUpperCase()}
+                        {model.hasGameOptimized ? " · game-optimized" : ""}
+                        {typeof model.download_count === "number" && model.download_count > 0
+                          ? ` · ${model.download_count}↓`
+                          : ""}
+                        {model.tags && model.tags.length > 0
+                          ? ` · ${model.tags.slice(0, 3).join(", ")}`
+                          : ""}
+                      </small>
+                    </span>
+                  </button>
+                ))}
+                {assetBrowse.length === 0 && !assetBrowseLoading && (
+                  <span className="inventory-empty">
+                    {assetSearch ? `Nothing matched “${assetSearch}”.` : "No library assets loaded yet."}
+                  </span>
+                )}
+                {assetBrowseLoading && (
+                  <span className="inventory-empty">Searching…</span>
+                )}
+                {assetBrowseHasNext && !assetBrowseLoading && (
+                  <button
+                    type="button"
+                    className="inventory-item"
+                    style={{ justifyContent: "center", fontWeight: 600 }}
+                    onClick={() => void runAssetBrowse(assetSearch, assetBrowsePage + 1, true, assetBrowseSort)}
+                  >
+                    Load more
+                  </button>
                 )}
               </div>
             )}
             {assetPanelTab === "world-assets" && (
               <div className="inventory-list asset-list">
+                <div style={{ display: "flex", alignItems: "center", gap: 6, paddingBottom: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => void cleanupDeadReferences()}
+                    disabled={cleanupBusy}
+                    title="Find world objects whose model is gone (failed loads, deleted store models, broken procedural links) and remove them"
+                    style={{
+                      fontSize: 11,
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      border: "1px solid rgba(255,255,255,0.18)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "#e7eee2",
+                      cursor: cleanupBusy ? "default" : "pointer",
+                      opacity: cleanupBusy ? 0.6 : 1,
+                    }}
+                  >
+                    🧹 Clean up dead references
+                  </button>
+                  {cleanupNote && (
+                    <span style={{ fontSize: 10, opacity: 0.7 }}>{cleanupNote}</span>
+                  )}
+                </div>
                 {snapshot.generated.length > 0 ? (
                   snapshot.generated.map((thing) => (
                     <article
@@ -7784,124 +7277,6 @@ function App(): React.ReactElement {
 
       {openToolMenus.length > 0 && (
       <aside className="tool-panel compact-tool-panel" aria-label="Tool panel">
-        {isToolOpen("ai") && (
-          <section className="tool-card ai-card">
-            <div className="panel-strip">
-              <span>AI Agents</span>
-              <button
-                type="button"
-                className="icon-button"
-                title="Hide AI"
-                aria-label="Hide AI"
-                onClick={() => closeToolPanel("ai")}
-              >
-                <ArrowLeft size={17} />
-              </button>
-            </div>
-            <div className="agent-list compact">
-              {snapshot.agents.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  className={
-                    agent.id === selectedAgent
-                      ? "agent-row active"
-                      : "agent-row"
-                  }
-                  onClick={() => setSelectedAgent(agent.id)}
-                >
-                  <span
-                    className="agent-dot"
-                    style={{
-                      backgroundColor: `#${agent.color.toString(16).padStart(6, "0")}`,
-                    }}
-                  />
-                  <span>
-                    <strong>{agent.name}</strong>
-                    <small>{agent.epithet || "Tellus agent"}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="ai-character-creator">
-              <button
-                type="button"
-                className="secondary-button ai-pause-button"
-                onClick={() => worldRef.current?.setPaused(!snapshot.paused)}
-              >
-                {snapshot.paused ? <Play size={16} /> : <Pause size={16} />}
-                <span>{snapshot.paused ? "Resume AI" : "Pause AI"}</span>
-              </button>
-              <div className="terrain-subtitle">Create Character</div>
-              <label className="ai-prompt-field">
-                <span>Body</span>
-                <textarea
-                  value={characterBodyPrompt}
-                  rows={3}
-                  placeholder="small mossy explorer with leaf cloak..."
-                  onChange={(event) => setCharacterBodyPrompt(event.target.value)}
-                />
-              </label>
-              <label className="ai-prompt-field">
-                <span>Personality</span>
-                <textarea
-                  value={characterPersonalityPrompt}
-                  rows={3}
-                  placeholder="curious, brave, protects ponds..."
-                  onChange={(event) => setCharacterPersonalityPrompt(event.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                className="primary-button ai-create-character-button"
-                disabled={!characterBodyPrompt.trim() && !characterPersonalityPrompt.trim()}
-                onClick={createCharacter}
-              >
-                <Send size={16} />
-                <span>Create Character</span>
-              </button>
-            </div>
-            {selected && (
-              <div className="ai-agent-editor">
-                <div className="ai-avatar-card">
-                  <div
-                    className="ai-avatar-orb"
-                    style={{
-                      backgroundColor: `#${selected.color.toString(16).padStart(6, "0")}`,
-                    }}
-                  >
-                    {selected.name.slice(0, 1)}
-                  </div>
-                  <span>
-                    <strong>{selected.name}</strong>
-                    <small>{selected.avatarUrl ? "Avatar loaded" : "Fallback avatar"}</small>
-                  </span>
-                </div>
-                <label className="ai-prompt-field">
-                  <span>Agent prompt</span>
-                  <textarea
-                    value={selected.goal}
-                    rows={7}
-                    onChange={(event) =>
-                      worldRef.current?.updateAgentGoal(
-                        selected.id,
-                        event.target.value,
-                      )
-                    }
-                  />
-                </label>
-                <div className="asset-meta">
-                  <span>
-                    x {selected.position.x.toFixed(1)} z{" "}
-                    {selected.position.z.toFixed(1)}
-                  </span>
-                  <span>{selected.epithet || "agent"}</span>
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-
         {isToolOpen("terrain") && (
         <section className="tool-card terrain-card">
           <div className="panel-strip">

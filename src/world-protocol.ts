@@ -27,6 +27,13 @@ export interface WorldPresence {
   visitorId: string;
   name?: string;
   position?: Vec3;
+  /** Catalog avatar id chosen by this visitor ("classic", "vrm:<storeId>", "glb:<storeId>");
+   * absent/empty = the deterministic per-visitor default pick. */
+  avatarId?: string;
+  /** Visual avatar size multiplier (server clamps to [0.1, 8]); ABSENT = unset → 1. A mid-rollout
+   * server may strip the field — receivers keep their last-known value on absent (the same
+   * convention as avatarId/animation). */
+  avatarScale?: number;
   connectedAt: string;
   lastSeenAt: string;
 }
@@ -53,7 +60,17 @@ export interface WorldGeneratedThing {
   modelUrl?: string;
   pipelineId?: string;
   generationStatus?: "local" | "queued" | "generating" | "ready" | "failed";
+  /** Embedded animation clip to loop on the placed model ("" / absent = the default
+   * idle-ish heuristic pick). Rides generated.upsert + snapshot/patches like any other field. */
+  animation?: string;
   updatedAt: string;
+}
+
+/** A one-shot emote broadcast: play `animation` ONCE on `visitorId`'s avatar rig, then resume
+ * locomotion. Arrives as a live frame: { type: "emote", emote: { visitorId, animation } }. */
+export interface EmoteFrame {
+  visitorId: string;
+  animation: string;
 }
 
 export type WorldAction =
@@ -62,6 +79,10 @@ export type WorldAction =
       visitorId: string;
       name?: string;
       position?: Vec3;
+      /** Avatar selection broadcast with presence; "" clears (server omits null). */
+      avatarId?: string;
+      /** Avatar size multiplier broadcast with presence; server clamps [0.1, 8], ≤0 clears. */
+      avatarScale?: number;
     }
   | {
       type: "terrain.replace";
@@ -121,6 +142,10 @@ export type WorldPatch =
       type: "generated.deleted";
       id: string;
       actorId: string;
+    }
+  | {
+      type: "emote";
+      emote: EmoteFrame;
     }
   | {
       type: "action.rejected";
@@ -192,6 +217,7 @@ export function isWorldGeneratedThing(value: unknown): value is WorldGeneratedTh
   return (
     (value.modelUrl === undefined || typeof value.modelUrl === "string") &&
     (value.pipelineId === undefined || typeof value.pipelineId === "string") &&
+    (value.animation === undefined || typeof value.animation === "string") &&
     (value.generationStatus === undefined ||
       value.generationStatus === "local" ||
       value.generationStatus === "queued" ||
@@ -214,12 +240,35 @@ export function isTellusTerrainState(value: unknown): value is TellusTerrainStat
   );
 }
 
+/** Extract the emote frame from a live WS message ({ type: "emote", emote: {...} }); null when
+ * the frame is anything else or malformed. */
+export function emoteFromWorldPatch(parsed: unknown): EmoteFrame | null {
+  if (!isRecord(parsed) || parsed.type !== "emote" || !isRecord(parsed.emote)) {
+    return null;
+  }
+  const emote = parsed.emote;
+  if (
+    typeof emote.visitorId !== "string" ||
+    emote.visitorId.length === 0 ||
+    typeof emote.animation !== "string" ||
+    emote.animation.length === 0
+  ) {
+    return null;
+  }
+  return { visitorId: emote.visitorId, animation: emote.animation };
+}
+
 export function isWorldAction(value: unknown): value is WorldAction {
   if (!isRecord(value) || typeof value.type !== "string" || typeof value.visitorId !== "string") {
     return false;
   }
   if (value.type === "presence.update") {
-    return value.position === undefined || isVec3(value.position);
+    return (
+      (value.position === undefined || isVec3(value.position)) &&
+      (value.avatarId === undefined || typeof value.avatarId === "string") &&
+      (value.avatarScale === undefined ||
+        (typeof value.avatarScale === "number" && Number.isFinite(value.avatarScale)))
+    );
   }
   if (value.type === "terrain.replace") {
     return isTellusTerrainState(value.terrain);
