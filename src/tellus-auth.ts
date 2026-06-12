@@ -703,3 +703,44 @@ export async function startCheckout(productId: string): Promise<PayCheckout> {
 export async function getCheckout(id: string): Promise<PayCheckout> {
   return await apiJson<PayCheckout>(() => payUrl(`checkout/${encodeURIComponent(id)}`));
 }
+
+// ── MCP "play programmatically" token (premium) ──────────────────────────────
+
+export interface McpTokenStatus {
+  hasToken: boolean;
+  premium: boolean;
+}
+
+export interface McpTokenMinted {
+  token: string;
+  mcpUrl: string;
+  note?: string;
+}
+
+function mcpTokenApiUrl(): string {
+  return `${apiRoot()}/api/tellus/user/mcp-token`;
+}
+
+/** Absolute MCP endpoint URL for a world (what the user points their MCP client at). */
+export function mcpEndpointUrl(world = "main"): string {
+  const path = `/api/tellus/mcp/${encodeURIComponent(world)}`;
+  const root = apiRoot();
+  try {
+    return new URL(path, root ? new URL(root, window.location.href) : window.location.href).href;
+  } catch {
+    return `${root}${path}`;
+  }
+}
+
+export async function getMcpTokenStatus(): Promise<McpTokenStatus> {
+  return await apiJson<McpTokenStatus>(() => mcpTokenApiUrl());
+}
+
+/** Mint (or rotate) the MCP API token. Returns the secret ONCE. Premium-gated server-side. */
+export async function mintMcpToken(): Promise<McpTokenMinted> {
+  return await apiJson<McpTokenMinted>(() => mcpTokenApiUrl(), { method: "POST" });
+}
+
+export async function revokeMcpToken(): Promise<void> {
+  await apiJson<unknown>(() => mcpTokenApiUrl(), { method: "DELETE" });
+}

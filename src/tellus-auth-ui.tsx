@@ -12,15 +12,20 @@ import {
   linkNostr,
   loginNostrBunker,
   loginNostrNip07,
+  getMcpTokenStatus,
   logout,
   maybeResolveNip05,
+  mcpEndpointUrl,
+  mintMcpToken,
   nip05Display,
   onAuthChange,
   passkeyLogin,
   passkeyRegister,
+  revokeMcpToken,
   startCheckout,
   storedBunkerUri,
   TellusApiError,
+  type McpTokenStatus,
   type PayCheckout,
   type TellusAccount,
 } from "./tellus-auth";
@@ -218,6 +223,117 @@ function PremiumCheckout({ account }: { account: TellusAccount }): React.ReactEl
       )}
       {note && <span className="auth-muted">{note}</span>}
       <span className="auth-muted">Premium keeps your agent alive while you're away.</span>
+    </div>
+  );
+}
+
+/** Premium-only: surface the MCP endpoint + a personal Bearer token so a user can drive their avatar
+ * programmatically (any MCP client / their own automation) with the same tools the in-world agents use. */
+function McpAccessSection({ account }: { account: TellusAccount }): React.ReactElement | null {
+  const [status, setStatus] = useState<McpTokenStatus | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const endpoint = mcpEndpointUrl("main");
+
+  useEffect(() => {
+    if (!account.premium) return;
+    let alive = true;
+    void getMcpTokenStatus()
+      .then((s) => {
+        if (alive) setStatus(s);
+      })
+      .catch(() => {
+        /* status is best-effort */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [account.premium]);
+
+  if (!account.premium) return null;
+
+  const copy = (text: string, what: string) => {
+    void navigator.clipboard?.writeText(text).then(
+      () => {
+        setCopied(what);
+        setTimeout(() => setCopied((c) => (c === what ? null : c)), 1500);
+      },
+      () => {
+        /* clipboard blocked — the value is selectable */
+      },
+    );
+  };
+
+  const mint = async () => {
+    setBusy(true);
+    try {
+      const r = await mintMcpToken();
+      setToken(r.token);
+      setStatus({ hasToken: true, premium: true });
+    } catch {
+      /* surfaced by the disabled state resetting */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async () => {
+    setBusy(true);
+    try {
+      await revokeMcpToken();
+      setToken(null);
+      setStatus({ hasToken: false, premium: true });
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-section">
+      <span className="auth-section-title">Play programmatically (MCP)</span>
+      <span className="auth-muted">
+        Drive your avatar from any MCP client or your own automation — same tools the in-world agents use.
+      </span>
+      <span className="auth-kv">
+        <span className="auth-muted">endpoint</span>
+        <code style={{ wordBreak: "break-all" }}>{endpoint}</code>
+        <button type="button" className="auth-small-button" onClick={() => copy(endpoint, "endpoint")}>
+          {copied === "endpoint" ? "Copied" : "Copy"}
+        </button>
+      </span>
+      {token ? (
+        <>
+          <span className="auth-kv">
+            <span className="auth-muted">token</span>
+            <code style={{ wordBreak: "break-all" }}>{token}</code>
+            <button type="button" className="auth-small-button" onClick={() => copy(token, "token")}>
+              {copied === "token" ? "Copied" : "Copy"}
+            </button>
+          </span>
+          <span className="auth-muted">
+            Shown once — store it now. Send it as <code>Authorization: Bearer &lt;token&gt;</code>.
+          </span>
+        </>
+      ) : (
+        <span className="auth-muted">
+          {status?.hasToken
+            ? "A token is active (the secret is shown only when created). Regenerate to get a new one."
+            : "No token yet — generate one to get your Bearer token."}
+        </span>
+      )}
+      <div className="auth-row">
+        <button type="button" className="auth-small-button" disabled={busy} onClick={() => void mint()}>
+          {busy ? "Working…" : status?.hasToken ? "Regenerate token" : "Generate token"}
+        </button>
+        {status?.hasToken && (
+          <button type="button" className="auth-small-button" disabled={busy} onClick={() => void revoke()}>
+            Revoke
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -542,6 +658,7 @@ export function AuthControls(): React.ReactElement {
               </div>
             </div>
             {!pendingApproval && <PremiumCheckout account={account} />}
+            <McpAccessSection account={account} />
             {(account.claimedUserIds ?? []).length > 0 && (
               <div className="auth-section">
                 <span className="auth-section-title">Claimed identities</span>
