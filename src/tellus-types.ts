@@ -340,6 +340,27 @@ declare global {
     __tellusImportGenerated?: (things: unknown) => number;
     __tellusImportSnapshot?: (snapshot: unknown) => number;
     __tellusSaveGeneratedPlacements?: () => number;
+    // Diagnostics for generated/world things (smoke tests / console). Cheap: walks the thing list
+    // only when called; no per-frame cost.
+    __tellusThingsDebug?: () => Array<{
+      id: string;
+      kind: string;
+      prompt: string;
+      status: string;
+      hasMesh: boolean;
+      meshVisible: boolean;
+      inScene: boolean;
+      /** True once the thing's GLB (matching thing.modelUrl) is the mounted mesh. */
+      loaded: boolean;
+      /** True while the placeholder generation swirl is mounted instead of a model. */
+      swirl: boolean;
+      /** True when the regular mesh is hidden behind a static-duplicate instance slot. */
+      instanced: boolean;
+      worldPos?: { x: number; y: number; z: number };
+      worldScale?: number;
+      clipCount: number;
+      playing: boolean;
+    }>;
     // Diagnostics for the camera/viewport work (smoke tests / console): drive the agent-POV PiP
     // and the 1st/3rd-person camera without a live agent, and inject a synthetic remote presence
     // so the PiP has an avatar to render from.
