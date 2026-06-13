@@ -97,7 +97,7 @@ import {
 } from "./world-protocol";
 import { createChunkRenderer, type ChunkRenderer } from "./tellus-chunk-renderer";
 import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps, WorldTemplateId, LandShapeOverrides } from "./tellus-types";
-import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms, isChunkedWorldId, chunkedWorldCenter } from "./tellus-constants";
+import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms, isChunkedWorldId, chunkedWorldCenter, getChunkedWorldChunks, CHUNK_SPAN } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
@@ -2372,6 +2372,17 @@ function createTellusWorld(
     publish();
   };
 
+  // Warp the player to a world (x,z) — the click-map teleport. Grounds onto the terrain (chunked-aware via
+  // groundedPosition), cancels any fall/run-accel, and republishes presence so peers see the jump.
+  const warpTo = (x: number, z: number) => {
+    visitorPosition = groundedPosition(x, z, visitorPosition);
+    playerAirborne = false;
+    playerVy = 0;
+    moveHoldStartMs = 0;
+    sendPresenceUpdate(true);
+    publish();
+  };
+
   const moveGenerated = (id: string, dx: number, dz: number) => {
     const thing = thingById(id);
     if (!thing) return;
@@ -4408,6 +4419,7 @@ function createTellusWorld(
     selectGenerated,
     goToGenerated,
     moveGenerated,
+    warpTo,
     rotateGenerated,
     scaleGenerated,
     resetGeneratedScale,
@@ -6040,10 +6052,33 @@ function App(): React.ReactElement {
   const selectedThingVehicleMode = selectedThing ? vehicleMode(selectedThing) : null;
   const selectedThingIsMount = selectedThing ? isMountThing(selectedThing) : false;
   const mapRadius = OCEAN_RADIUS * 0.42;
+  // The minimap maps world (x,z) → a [0,1] fraction. Classic worlds are origin-centred (0,0 → mid-map);
+  // chunked worlds put origin at a CORNER and span [0, N*96), so they map linearly from 0. The inverse
+  // (mapFracToWorld) powers click-to-warp and MUST mirror the forward map so a click lands where it shows.
+  const chunkedMapDims = isChunkedWorldId(activeWorldId ?? "") ? getChunkedWorldChunks() : null;
+  const mapExtentX = chunkedMapDims ? chunkedMapDims.w * CHUNK_SPAN : mapRadius * 2;
+  const mapExtentZ = chunkedMapDims ? chunkedMapDims.h * CHUNK_SPAN : mapRadius * 2;
+  const mapFracX = (x: number) => (chunkedMapDims ? x / mapExtentX : x / (mapRadius * 2) + 0.5);
+  const mapFracZ = (z: number) => (chunkedMapDims ? z / mapExtentZ : z / (mapRadius * 2) + 0.5);
+  const mapFracToWorld = (fx: number, fz: number): { x: number; z: number } =>
+    chunkedMapDims
+      ? { x: fx * mapExtentX, z: fz * mapExtentZ }
+      : { x: (fx - 0.5) * mapRadius * 2, z: (fz - 0.5) * mapRadius * 2 };
   const mapPointStyle = (position: Vec3): React.CSSProperties => ({
-    left: `${clamp(((position.x / (mapRadius * 2)) + 0.5) * 100, 0, 100)}%`,
-    top: `${clamp(((position.z / (mapRadius * 2)) + 0.5) * 100, 0, 100)}%`,
+    left: `${clamp(mapFracX(position.x) * 100, 0, 100)}%`,
+    top: `${clamp(mapFracZ(position.z) * 100, 0, 100)}%`,
   });
+  const handleWorldMapClick = (event: React.MouseEvent<HTMLElement>) => {
+    // Ignore clicks on the overlaid info panel / status badge — only the map plane warps.
+    const target = event.target as HTMLElement;
+    if (target.closest(".world-info-panel") || target.closest(".world-map-status")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const fx = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const fz = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+    const pos = mapFracToWorld(fx, fz);
+    worldRef.current?.warpTo(pos.x, pos.z);
+  };
   const pendingGenerated = snapshot.generated.filter(
     (thing) =>
       thing.generationStatus === "queued" ||
@@ -7280,7 +7315,13 @@ function App(): React.ReactElement {
         )}
         {worldMapOpen && (
           <aside className="world-right-hud" aria-label="World systems">
-            <section className="world-map" aria-label="World map">
+            <section
+              className="world-map"
+              aria-label="World map — click to warp"
+              title="Click to warp here"
+              style={{ cursor: "crosshair" }}
+              onClick={handleWorldMapClick}
+            >
               <div className="world-map-disc" />
               {snapshot.visitorPosition && (
                 <span
