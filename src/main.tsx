@@ -1295,7 +1295,39 @@ function createTellusWorld(
     publish();
   };
 
+  // Chunked worlds hold NO inline classic grid — terrain lives in per-chunk grains. So a sculpt must go to
+  // the SERVER as a terrain.sculpt action (world grain → owning chunk grain(s) → chunk.updated patch →
+  // chunkRenderer.reloadChunk), NOT edit the hidden 97² classic grid the way classic worlds do.
+  const sendChunkedSculpt = (mode: TerrainEditMode, center: Vec3) => {
+    if (!tellusWorldBackendAvailable) return;
+    const action = {
+      type: "terrain.sculpt",
+      visitorId,
+      mode,
+      center: { x: center.x, y: 0, z: center.z },
+    };
+    if (worldSocket?.readyState === WebSocket.OPEN) {
+      worldSocket.send(JSON.stringify(action));
+    } else {
+      void fetch(tellusWorldHttpUrl("action"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(action),
+      }).catch((error) => console.warn("Tellus chunked sculpt failed", error));
+    }
+    addLog({
+      agentId: "visitor",
+      agentName: "Visitor",
+      tool: "interact",
+      text: `${isTerrainPaintMode(mode) ? `paint ${mode}` : mode} terrain (chunked)`,
+    });
+  };
+
   const sculptTerrain = (mode: TerrainEditMode) => {
+    if (isChunked) {
+      sendChunkedSculpt(mode, visitorPosition);
+      return;
+    }
     sculptTerrainAt(mode, visitorPosition, "visitor", "Visitor");
   };
 
@@ -3014,6 +3046,20 @@ function createTellusWorld(
   // ── Player physics: jump, fall, and obstacle pushout (trees + large placed things) ──
   let playerVy = 0;
   let playerAirborne = false;
+  // Accelerating run: hold a movement key and speed ramps up EXPONENTIALLY after a short grace — normal
+  // walk for ~2s, then "quicker and quicker" up to a cap — so crossing a big chunked world to test
+  // streaming is fast. Resets the instant movement stops. Tunables: grace before ramp, exp base/second,
+  // and the multiplier cap. RUN_EXP_BASE^heldS reaches the 6× cap in ~3.5s of sustained running.
+  let moveHoldStartMs = 0;
+  const RUN_GRACE_MS = 2000;
+  const RUN_EXP_BASE = 1.7; // exponential growth per second past the grace
+  const RUN_MAX_MULT = 6; // top speed = 6× walk
+  const runSpeedMultiplier = (nowMs: number): number => {
+    if (moveHoldStartMs === 0) return 1;
+    const heldS = (nowMs - moveHoldStartMs - RUN_GRACE_MS) / 1000;
+    if (heldS <= 0) return 1;
+    return Math.min(RUN_MAX_MULT, Math.pow(RUN_EXP_BASE, heldS));
+  };
   let obstacleCache: ObstacleCircle[] = [];
   let obstacleCacheAt = 0;
   const footprintCache = new Map<string, { radius: number; height: number }>();
@@ -3084,8 +3130,14 @@ function createTellusWorld(
       playerVy = 8.6;
       playerAirborne = true;
     }
+    // Accelerating run: start/extend the hold while moving, reset it the moment input stops.
+    if (hasInput) {
+      if (moveHoldStartMs === 0) moveHoldStartMs = performance.now();
+    } else {
+      moveHoldStartMs = 0;
+    }
     if (!hasInput && !playerAirborne) return;
-    if (hasInput) movement.normalize().multiplyScalar(scaledPlayerSpeed() * delta);
+    if (hasInput) movement.normalize().multiplyScalar(scaledPlayerSpeed() * runSpeedMultiplier(performance.now()) * delta);
     if (sailingThingId) {
       playerAirborne = false;
       playerVy = 0;
