@@ -7,6 +7,7 @@ import {
   CHUNK_SEGMENTS,
   CHUNK_SPAN,
   CHUNK_VERTEX_COUNT,
+  getChunkedWorldChunks,
 } from "./tellus-constants";
 import {
   terrainKind,
@@ -169,11 +170,13 @@ export function createChunkRenderer(scene: THREE.Scene): ChunkRenderer {
     centerCz = cz;
 
     // Ensure chunks within the load radius are fetched (skip already-active at the right LOD).
+    const bounds = getChunkedWorldChunks(); // {w,h} in chunks, or null until the manifest loads
     for (let dz = -CHUNK_LOAD_RADIUS; dz <= CHUNK_LOAD_RADIUS; dz++) {
       for (let dx = -CHUNK_LOAD_RADIUS; dx <= CHUNK_LOAD_RADIUS; dx++) {
         const tcx = cx + dx;
         const tcz = cz + dz;
         if (tcx < 0 || tcz < 0) continue; // world coords are [0, N*SPAN)
+        if (bounds && (tcx >= bounds.w || tcz >= bounds.h)) continue; // past the world's far edge
         const ring = Math.max(Math.abs(dx), Math.abs(dz));
         const lod = lodForRing(ring);
         const k = key(tcx, tcz);

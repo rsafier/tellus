@@ -91,6 +91,25 @@ export const CHUNK_LOD_FAR_SEGMENTS = 16; // distant chunks decimate 64 -> 16 (s
 export function isChunkedWorldId(worldId: string): boolean {
   return worldId.startsWith("chunked-");
 }
+
+// World dimensions (in chunks) learned from the /chunks manifest on chunked-world load. Lets the
+// renderer upper-clamp the load ring (no fetches past the world edge) and the spawn land at world
+// CENTER instead of the corner (origin is a corner for chunked worlds, not the island centre).
+let chunkedWorldChunks: { w: number; h: number } | null = null;
+export function setChunkedWorldChunks(v: { w: number; h: number } | null): void {
+  chunkedWorldChunks = v;
+}
+export function getChunkedWorldChunks(): { w: number; h: number } | null {
+  return chunkedWorldChunks;
+}
+export function chunkedWorldCenter(): { x: number; z: number } | null {
+  if (!chunkedWorldChunks) return null;
+  return {
+    x: (chunkedWorldChunks.w * CHUNK_SPAN) / 2,
+    z: (chunkedWorldChunks.h * CHUNK_SPAN) / 2,
+  };
+}
+
 export const SKYBOX_FALLBACK_URLS = [
   "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
   "/skybox/free_-_skybox_in_the_cloud.glb",

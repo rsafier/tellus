@@ -23,6 +23,7 @@ import {
   PENDING_GENERATION_FALLBACK_MS,
   POND_CENTER,
   TERRAIN_VERTEX_COUNT,
+  setChunkedWorldChunks,
   setClassicPondShape,
   terrainColors,
   terrainPaintKinds,
@@ -35,6 +36,7 @@ import { runtimeConfig } from "./tellus-runtime-config";
 import {
   tellusApiUrl,
   tellusWorldHttpUrl,
+  tellusWorldChunksManifestUrl,
   tellusVisitorId,
 } from "./tellus-urls-identity";
 import {
@@ -63,6 +65,39 @@ export let terrainStateDirty = false;
 export let terrainStateLoaded = false;
 export let terrainStateRevision = 0;
 export let tellusWorldBackendAvailable = false;
+
+// Chunked worlds have NO radial island — they're a flat tiled plane (chunk base y=0) + per-chunk
+// sculpts. When set (non-null), grounding ignores the classic origin-centred island math and returns
+// this flat base, so the player stands ON the chunk terrain (y=0 is above SEA_LEVEL=-3.35) at the
+// world centre instead of sinking into the origin ocean. Null = classic single-grid world.
+// (Walking the sculpted height is a later refinement; alpha walks the flat base.)
+let chunkedFlatGround: number | null = null;
+export function setChunkedFlatGround(y: number | null): void {
+  chunkedFlatGround = y;
+}
+
+/// Learn a chunked world's dimensions from the /chunks manifest, then arm the chunk bounds (renderer
+/// upper-clamp + spawn-centring) and flat grounding. For a classic world it clears both. Best-effort:
+/// a manifest miss still streams (no upper clamp) and still grounds flat.
+export async function loadChunkedWorldBounds(): Promise<void> {
+  if (!runtimeConfig.worldId.startsWith("chunked-")) {
+    setChunkedWorldChunks(null);
+    setChunkedFlatGround(null);
+    return;
+  }
+  try {
+    const res = await fetch(tellusWorldChunksManifestUrl(0, 0, 0), { cache: "no-store" });
+    if (res.ok) {
+      const m = await res.json();
+      if (typeof m?.width === "number" && typeof m?.height === "number") {
+        setChunkedWorldChunks({ w: m.width, h: m.height });
+      }
+    }
+  } catch {
+    /* ignore — the streamer still works, just without an edge clamp */
+  }
+  setChunkedFlatGround(0);
+}
 
 let activeTemplate: WorldTemplateId = parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus");
 let activeLandShape = resolveLandShapeConfig(
@@ -392,6 +427,7 @@ export function distantIslandHeight(spec: DistantIslandSpec, x: number, z: numbe
 }
 
 export function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
+  if (chunkedFlatGround !== null) return { x, y: chunkedFlatGround, z };
   if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) {
     return { x, y: terrainHeight(x, z), z };
   }
@@ -403,6 +439,7 @@ export function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
 }
 
 export function groundHeightAt(x: number, z: number): number | null {
+  if (chunkedFlatGround !== null) return chunkedFlatGround;
   if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) return terrainHeight(x, z);
   const distantIsland = nearestDistantIsland(x, z, DISTANT_WALK_LOCAL_RADIUS);
   return distantIsland ? distantIslandHeight(distantIsland, x, z) : null;
@@ -414,6 +451,7 @@ export function isIntentionallyElevated(thing: GeneratedThing): boolean {
 }
 
 export function normalizedDiscPosition(x: number, z: number): Vec3 {
+  if (chunkedFlatGround !== null) return { x, y: chunkedFlatGround, z };
   const radius = Math.hypot(x, z);
   if (radius <= CENTRAL_WALK_RADIUS) {
     return { x, y: terrainHeight(x, z), z };
