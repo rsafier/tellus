@@ -60,6 +60,7 @@ import {
 import {
   applyStaticToScreen,
   applyVideoToScreen,
+  setTvHeadActive,
   createRemoteVisitorMesh,
   createVisitorMesh,
   tickSharedStatic,
@@ -357,6 +358,7 @@ function createTellusWorld(
     }
     const screen = mesh.userData.tvScreenRef as THREE.Mesh | undefined;
     if (!screen) return;
+    setTvHeadActive(mesh, !!stream); // show the TV head only while this peer is transmitting
     if (stream) {
       applyVideoToScreen(screen, stream);
       applyRemoteAudio(screen); // honor the current Listen state for the new <video>
@@ -382,6 +384,7 @@ function createTellusWorld(
     selfStream = stream;
     const screen = visitor?.userData.tvScreenRef as THREE.Mesh | undefined;
     if (!screen) return;
+    if (visitor) setTvHeadActive(visitor, !!stream); // your own TV head appears only while transmitting
     if (stream) {
       applyVideoToScreen(screen, stream);
     } else {
