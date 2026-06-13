@@ -3142,6 +3142,11 @@ function createTellusWorld(
   // ── Player physics: jump, fall, and obstacle pushout (trees + large placed things) ──
   let playerVy = 0;
   let playerAirborne = false;
+  // Free-fly (toggle with F): ignore gravity, hold Space to ascend / C to descend. Also powers air-mount
+  // vertical control. MAX_ALTITUDE is a generous ceiling for surveying large chunked worlds from above.
+  let flying = false;
+  const FLY_VERTICAL_SPEED = 16;
+  const MAX_ALTITUDE = 260;
   // Accelerating run: hold a movement key and speed ramps up EXPONENTIALLY after a short grace — normal
   // walk for ~2s, then "quicker and quicker" up to a cap — so crossing a big chunked world to test
   // streaming is fast. Resets the instant movement stops. Tunables: grace before ramp, exp base/second,
@@ -3222,7 +3227,11 @@ function createTellusWorld(
     if (keys.has("a") || keys.has("arrowright")) movement.add(right);
     if (keys.has("d") || keys.has("arrowleft")) movement.sub(right);
     const hasInput = movement.lengthSq() > 0;
-    if (!sailingThingId && keys.has(" ") && !playerAirborne) {
+    const ascend = keys.has(" ");
+    const descend = keys.has("c") || keys.has("shift");
+    const verticalInput = ascend || descend;
+    // Jump only in NORMAL mode; in fly mode or on an air mount, Space = ascend (handled below).
+    if (!flying && !sailingThingId && ascend && !playerAirborne) {
       playerVy = 8.6;
       playerAirborne = true;
     }
@@ -3232,23 +3241,35 @@ function createTellusWorld(
     } else {
       moveHoldStartMs = 0;
     }
-    if (!hasInput && !playerAirborne) return;
+    // Proceed if there's horizontal input, we're mid-air, free-flying, or giving vertical input on a mount.
+    if (!hasInput && !playerAirborne && !flying && !(sailingThingId && verticalInput)) return;
     if (hasInput) movement.normalize().multiplyScalar(scaledPlayerSpeed() * runSpeedMultiplier(performance.now()) * delta);
     if (sailingThingId) {
       playerAirborne = false;
       playerVy = 0;
-      if (!hasInput) return;
       const boat = thingById(sailingThingId);
       if (!boat) {
         sailingThingId = undefined;
         return;
       }
-      boat.position = movedVehiclePosition(
-        boat,
-        boat.position.x + movement.x,
-        boat.position.z + movement.z,
-        boat.position,
-      );
+      if (vehicleMode(boat) === "air") {
+        // Air mount: horizontal via airPosition (keeps world-bounds clamping), vertical via Space/C with a
+        // high ceiling — no longer pinned to a fixed +12 altitude.
+        const horiz = airPosition(boat.position.x + movement.x, boat.position.z + movement.z);
+        let y = boat.position.y;
+        if (ascend) y += FLY_VERTICAL_SPEED * delta;
+        if (descend) y -= FLY_VERTICAL_SPEED * delta;
+        const floor = (groundHeightAt(horiz.x, horiz.z) ?? SEA_LEVEL) + 2;
+        boat.position = { x: horiz.x, y: clamp(y, floor, MAX_ALTITUDE), z: horiz.z };
+      } else {
+        if (!hasInput) return;
+        boat.position = movedVehiclePosition(
+          boat,
+          boat.position.x + movement.x,
+          boat.position.z + movement.z,
+          boat.position,
+        );
+      }
       visitorPosition = { ...boat.position };
       const mesh = generatedMeshes.get(boat.id);
       if (mesh) {
@@ -3261,6 +3282,18 @@ function createTellusWorld(
       publishGeneratedThing(boat);
       sendPresenceUpdate();
       publish();
+      return;
+    }
+    // Free-fly (on foot): no gravity; move horizontally + ascend/descend, clamped above ground to the ceiling.
+    if (flying) {
+      const nx = visitorPosition.x + movement.x;
+      const nz = visitorPosition.z + movement.z;
+      let ny = visitorPosition.y;
+      if (ascend) ny += FLY_VERTICAL_SPEED * delta;
+      if (descend) ny -= FLY_VERTICAL_SPEED * delta;
+      const floor = groundHeightAt(nx, nz) ?? SEA_LEVEL;
+      visitorPosition = { x: nx, y: clamp(ny, floor, MAX_ALTITUDE), z: nz };
+      sendPresenceUpdate();
       return;
     }
     // obstacle pushout, then ground/air vertical dynamics
@@ -3878,7 +3911,7 @@ function createTellusWorld(
       const ldx = visitorPosition.x - lastLocalAvatarPos.x;
       const ldz = visitorPosition.z - lastLocalAvatarPos.z;
       localRig.setMoving(Math.hypot(ldx, ldz) / delta);
-      localRig.setAirborne(playerAirborne);
+      localRig.setAirborne(playerAirborne || flying);
     }
     lastLocalAvatarPos.x = visitorPosition.x;
     lastLocalAvatarPos.z = visitorPosition.z;
@@ -3972,6 +4005,20 @@ function createTellusWorld(
       !event.altKey
     ) {
       setCameraMode(cameraMode === "first" ? "third" : "first");
+      return;
+    }
+    // F toggles free-fly (not while riding a vehicle — air mounts have their own ascend/descend).
+    if (
+      event.key.toLowerCase() === "f" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !sailingThingId
+    ) {
+      flying = !flying;
+      playerAirborne = false;
+      playerVy = 0;
+      addLog({ agentId: "visitor", agentName: "Visitor", tool: "interact", text: flying ? "fly mode ON (Space up / C down)" : "fly mode off" });
       return;
     }
     keys.add(event.key.toLowerCase());
