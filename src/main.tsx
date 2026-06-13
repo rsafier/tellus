@@ -5269,6 +5269,11 @@ function App(): React.ReactElement {
       defaultSkyboxUrlForTemplate(parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus")),
   );
   const [newWorldPrivate, setNewWorldPrivate] = useState(false);
+  // Chunked worlds tile a flat plane into NxN chunk grains (server parses N from the id
+  // "chunked-<n>-<name>"). Expose it as a first-class kind+size picker so the operator never
+  // has to hand-type the naming convention.
+  const [newWorldChunked, setNewWorldChunked] = useState(false);
+  const [newWorldChunkSize, setNewWorldChunkSize] = useState(8);
   const [currentWorldTemplate, setCurrentWorldTemplate] = useState<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
   );
@@ -5284,6 +5289,8 @@ function App(): React.ReactElement {
   const NEW_WORLD_TEMPLATE_KEY = "tellus.newWorldTemplate";
   const NEW_WORLD_SKYBOX_KEY = "tellus.newWorldSkyboxUrl";
   const NEW_WORLD_PRIVATE_KEY = "tellus.newWorldPrivate";
+  const NEW_WORLD_CHUNKED_KEY = "tellus.newWorldChunked";
+  const NEW_WORLD_CHUNK_SIZE_KEY = "tellus.newWorldChunkSize";
   const defaultWorldTemplateRef = useRef<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
   );
@@ -5406,14 +5413,29 @@ function App(): React.ReactElement {
     void refreshWorldList(id);
   };
   const createNewWorld = () => {
-    const raw = window.prompt("New world id (letters, numbers, dashes):", "");
+    const raw = window.prompt(
+      newWorldChunked
+        ? "New chunked world name (letters, numbers, dashes):"
+        : "New world id (letters, numbers, dashes):",
+      "",
+    );
     if (!raw) return;
-    const id = raw
+    const sanitized = raw
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9-]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 48);
+    if (!sanitized) return;
+    let id = sanitized;
+    if (newWorldChunked) {
+      const size = Math.min(64, Math.max(1, Math.round(newWorldChunkSize) || 1));
+      // Server parses N from "chunked-<n>-<name>"; keep the name suffix non-empty.
+      const namePart = sanitized.startsWith("chunked-")
+        ? sanitized.replace(/^chunked-(?:\d+-)?/, "")
+        : sanitized;
+      id = `chunked-${size}-${namePart || "world"}`;
+    }
     if (!id) return;
     const pickedTemplate = parseWorldTemplateId(
       newWorldTemplate,
@@ -5759,6 +5781,8 @@ function App(): React.ReactElement {
           const savedTemplate = window.localStorage.getItem(NEW_WORLD_TEMPLATE_KEY);
           const savedSkyboxUrl = window.localStorage.getItem(NEW_WORLD_SKYBOX_KEY);
           const savedPrivate = window.localStorage.getItem(NEW_WORLD_PRIVATE_KEY);
+          const savedChunked = window.localStorage.getItem(NEW_WORLD_CHUNKED_KEY);
+          const savedChunkSize = window.localStorage.getItem(NEW_WORLD_CHUNK_SIZE_KEY);
           setNewWorldTemplate(
             parseWorldTemplateId(savedTemplate, defaultWorldTemplateRef.current),
           );
@@ -5768,12 +5792,21 @@ function App(): React.ReactElement {
               defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
           );
           setNewWorldPrivate(savedPrivate === "1");
+          setNewWorldChunked(savedChunked === "1");
+          if (savedChunkSize) {
+            const parsed = Math.round(Number(savedChunkSize));
+            if (Number.isFinite(parsed)) {
+              setNewWorldChunkSize(Math.min(64, Math.max(1, parsed)));
+            }
+          }
         } catch {
           setNewWorldTemplate(defaultWorldTemplateRef.current);
           setNewWorldSkyboxUrl(
             defaultSkyboxUrlRef.current || defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
           );
           setNewWorldPrivate(false);
+          setNewWorldChunked(false);
+          setNewWorldChunkSize(8);
         }
         const configDefault = runtimeConfig.worldId; // typically "main" — always keep it reachable
         rememberWorld(configDefault);
@@ -5804,10 +5837,12 @@ function App(): React.ReactElement {
       window.localStorage.setItem(NEW_WORLD_TEMPLATE_KEY, newWorldTemplate);
       window.localStorage.setItem(NEW_WORLD_SKYBOX_KEY, newWorldSkyboxUrl);
       window.localStorage.setItem(NEW_WORLD_PRIVATE_KEY, newWorldPrivate ? "1" : "0");
+      window.localStorage.setItem(NEW_WORLD_CHUNKED_KEY, newWorldChunked ? "1" : "0");
+      window.localStorage.setItem(NEW_WORLD_CHUNK_SIZE_KEY, String(newWorldChunkSize));
     } catch {
       /* ignore */
     }
-  }, [newWorldTemplate, newWorldSkyboxUrl, newWorldPrivate]);
+  }, [newWorldTemplate, newWorldSkyboxUrl, newWorldPrivate, newWorldChunked, newWorldChunkSize]);
 
   useEffect(() => {
     return () => {
@@ -6057,6 +6092,56 @@ function App(): React.ReactElement {
               </select>
             </div>
             <div style={{ display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Kind</span>
+              <select
+                aria-label="New world kind"
+                title="Classic island worlds, or a large flat tiled (chunked) plane"
+                value={newWorldChunked ? "chunked" : "classic"}
+                onChange={(e) => setNewWorldChunked(e.target.value === "chunked")}
+                style={{
+                  background: "rgba(0,0,0,0.5)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  font: "600 12px/1.2 ui-sans-serif, system-ui",
+                  maxWidth: 120,
+                }}
+              >
+                <option value="classic">Classic</option>
+                <option value="chunked">Chunked</option>
+              </select>
+            </div>
+            {newWorldChunked && (
+              <div style={{ display: "grid", gap: 2 }}>
+                <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Size (NxN)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  step={1}
+                  aria-label="New chunked world size"
+                  title="Chunks per side (1-64); the world is this many chunks square"
+                  value={newWorldChunkSize}
+                  onChange={(e) => {
+                    const parsed = Math.round(Number(e.target.value));
+                    if (Number.isFinite(parsed)) {
+                      setNewWorldChunkSize(Math.min(64, Math.max(1, parsed)));
+                    }
+                  }}
+                  style={{
+                    background: "rgba(0,0,0,0.5)",
+                    color: "#dfe7d8",
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    borderRadius: 8,
+                    padding: "4px 8px",
+                    font: "600 12px/1.2 ui-sans-serif, system-ui",
+                    width: 70,
+                  }}
+                />
+              </div>
+            )}
+            <div style={{ display: "grid", gap: 2 }}>
               <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Terrain</span>
               <select
                 aria-label="New world template"
@@ -6147,7 +6232,9 @@ function App(): React.ReactElement {
             </button>
             <button
               type="button"
-              title={`Create a new ${newWorldPrivate ? "private" : "public"} world (${newWorldTemplate})`}
+              title={`Create a new ${newWorldPrivate ? "private" : "public"} ${
+                newWorldChunked ? `chunked ${newWorldChunkSize}x${newWorldChunkSize} world` : `world (${newWorldTemplate})`
+              }`}
               onClick={createNewWorld}
               style={{
                 background: "rgba(0,0,0,0.5)",
