@@ -11,6 +11,14 @@ export function tellusWorldHttpUrl(route: "state" | "action"): string {
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/${route}?userId=${encodeURIComponent(tellusUserId())}`;
 }
 
+export function tellusWorldChunkUrl(cx: number, cz: number): string {
+  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/chunk/${cx}/${cz}?userId=${encodeURIComponent(tellusUserId())}`;
+}
+
+export function tellusWorldChunksManifestUrl(cx: number, cz: number, radius: number): string {
+  return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/chunks?cx=${cx}&cz=${cz}&radius=${radius}&userId=${encodeURIComponent(tellusUserId())}`;
+}
+
 export function tellusAgentUrl(action: "start" | "stop" | "persona" | "status" | "transcript" | "say" | "view" | "memories" | "reset-thread"): string {
   // Per-user embodied-agent control endpoints; carry the stable user id (missing => 401 from the backend).
   return `${runtimeConfig.worldApiBase}/api/world/${encodeURIComponent(runtimeConfig.worldId)}/agent/${action}?userId=${encodeURIComponent(tellusUserId())}`;

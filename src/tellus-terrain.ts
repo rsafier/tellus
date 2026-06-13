@@ -792,6 +792,15 @@ export async function loadTellusWorldState(): Promise<boolean> {
   const response = await fetch(tellusWorldHttpUrl("state"), { cache: "no-store" });
   if (!response.ok) return false;
   const parsed = await response.json();
+
+  // Chunked worlds serve terrain per-chunk (state.terrain === null). A 200 means the world
+  // backend is live: extract generated things, skip the single-grid terrain apply, and let
+  // the chunk streamer take over. tellusWorldBackendAvailable=true keeps /live + saves working.
+  if (runtimeConfig.worldId.startsWith("chunked-")) {
+    initialWorldGeneratedThings = generatedFromWorldPatch(parsed) ?? [];
+    return true;
+  }
+
   const terrain = terrainFromWorldPatch(parsed);
   if (!terrain) return false;
   initialWorldGeneratedThings = generatedFromWorldPatch(parsed) ?? [];

@@ -151,7 +151,38 @@ export type WorldPatch =
       type: "action.rejected";
       actionType: string;
       reason: string;
-    };
+    }
+  | ChunkUpdatedPatch;
+
+export interface ChunkData {
+  cx: number;
+  cz: number;
+  revision: number;
+  segments: number; // 64
+  sculptOffsets: number[]; // 4225, row-major (z-outer/x-inner); [] when revision 0 (flat)
+  paint: number[]; // 4225 ints; code 0 = unpainted
+}
+
+export interface ChunkManifestEntry {
+  cx: number;
+  cz: number;
+  revision: number;
+}
+
+export interface ChunksManifest {
+  width: number;
+  height: number;
+  span: number; // 96
+  segments: number; // 64
+  chunks: ChunkManifestEntry[];
+}
+
+export interface ChunkUpdatedPatch {
+  type: "chunk.updated";
+  chunkX: number;
+  chunkZ: number;
+  seq: number;
+}
 
 export interface QueuedGenerationJob {
   id: string;
@@ -256,6 +287,19 @@ export function emoteFromWorldPatch(parsed: unknown): EmoteFrame | null {
     return null;
   }
   return { visitorId: emote.visitorId, animation: emote.animation };
+}
+
+/** Extract a chunk.updated patch from a live WS message; null when anything else or malformed. */
+export function chunkUpdatedFromWorldPatch(value: unknown): ChunkUpdatedPatch | null {
+  if (!isRecord(value)) return null;
+  if (value.type !== "chunk.updated") return null;
+  if (typeof value.chunkX !== "number" || typeof value.chunkZ !== "number") return null;
+  return {
+    type: "chunk.updated",
+    chunkX: value.chunkX,
+    chunkZ: value.chunkZ,
+    seq: typeof value.seq === "number" ? value.seq : 0,
+  };
 }
 
 export function isWorldAction(value: unknown): value is WorldAction {

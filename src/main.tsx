@@ -91,11 +91,13 @@ import {
   type WorldPresence,
   type WorldPatch,
   emoteFromWorldPatch,
+  chunkUpdatedFromWorldPatch,
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
+import { createChunkRenderer, type ChunkRenderer } from "./tellus-chunk-renderer";
 import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps, WorldTemplateId, LandShapeOverrides } from "./tellus-types";
-import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
+import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms, isChunkedWorldId } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
@@ -557,6 +559,8 @@ function createTellusWorld(
     },
     worldRadius: OCEAN_RADIUS - 6,
   });
+  const isChunked = isChunkedWorldId(runtimeConfig.worldId);
+  let chunkRenderer: ChunkRenderer | null = null;
   const terrain = new THREE.Mesh(
     createTerrainGeometry(terrainRenderSegments),
     new THREE.MeshStandardMaterial({
@@ -566,6 +570,12 @@ function createTellusWorld(
     }),
   );
   terrain.receiveShadow = true;
+  if (isChunked) {
+    // Chunked worlds tile terrain per-grain; the single-grid mesh stays inert (kept so the many
+    // code paths that reference `terrain` keep compiling) and the streamer owns the heightfield.
+    terrain.visible = false;
+    chunkRenderer = createChunkRenderer(scene); // adds its own group to the scene
+  }
   const pondWater = createPondWater();
   const flowerPatchGroup = new THREE.Group();
   flowerPatchGroup.name = "tellus-flower-patches";
@@ -1114,6 +1124,10 @@ function createTellusWorld(
       const emote = emoteFromWorldPatch(parsed);
       if (emote) {
         avatarRigs.get(emote.visitorId)?.playEmote(emote.animation);
+      }
+      const chunkUpdate = chunkUpdatedFromWorldPatch(parsed);
+      if (chunkUpdate && chunkRenderer) {
+        chunkRenderer.reloadChunk(chunkUpdate.chunkX, chunkUpdate.chunkZ);
       }
       if (
         parsed &&
@@ -3728,6 +3742,10 @@ function createTellusWorld(
     updateCamera();
     updateDayNightCycle(Date.now(), now);
     flushTerrain();
+    if (chunkRenderer) {
+      chunkRenderer.update(visitorPosition.x, visitorPosition.z); // throttles internally on cell change
+      chunkRenderer.flush(); // once/frame rebuild discipline
+    }
     flushPublish();
     vegetation.update(visitorPosition.x, visitorPosition.z, visitorPosition.y, fpsValue, now);
     ambientPhysics.step(delta);
@@ -4338,6 +4356,7 @@ function createTellusWorld(
       window.clearInterval(textureRetryTimer);
       agentViewTarget?.dispose();
       vegetation.dispose();
+      chunkRenderer?.dispose();
       ambientPhysics.dispose();
       // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
       sendRtcSignal(null, "bye", "{}");

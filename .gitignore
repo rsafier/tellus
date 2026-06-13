@@ -32,3 +32,6 @@ public/skybox/**/*.png
 !public/skybox/tellus-starry-night/skybox.bin
 !public/skybox/tellus-starry-night/cubemap/
 !public/skybox/tellus-starry-night/cubemap/*.png
+
+# vitest coverage output
+coverage/
