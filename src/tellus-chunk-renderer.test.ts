@@ -155,3 +155,68 @@ describe("createChunkRenderer lifecycle", () => {
     r.dispose();
   });
 });
+
+describe("createChunkRenderer sampleHeight (walk the sculpted chunk height)", () => {
+  // Deterministic fetch: each chunk resolves immediately with the per-chunk override (if any).
+  let overrides: Map<string, Partial<ChunkData>>;
+
+  beforeEach(() => {
+    overrides = new Map();
+    vi.stubGlobal("fetch", (url: string) => {
+      const m = /\/chunk\/(-?\d+)\/(-?\d+)/.exec(url);
+      const cx = Number(m![1]);
+      const cz = Number(m![2]);
+      const data = makeChunk({ cx, cz, revision: 1, ...overrides.get(`${cx},${cz}`) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(data) } as Response);
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Load the 5x5 ring around a center chunk and build it.
+  const loadRing = async (centerCx: number, centerCz: number, r: ReturnType<typeof createChunkRenderer>) => {
+    r.update(centerCx * CHUNK_SPAN + 1, centerCz * CHUNK_SPAN + 1);
+    await new Promise((res) => setTimeout(res, 0)); // drain fetch -> json -> ready
+    r.flush();
+  };
+
+  it("returns the sculpted offset at a known grid vertex of a loaded chunk (bilinear-exact)", async () => {
+    const offsets = new Array(CHUNK_VERTEX_COUNT * CHUNK_VERTEX_COUNT).fill(0);
+    const xi = 10;
+    const zi = 20;
+    offsets[zi * CHUNK_VERTEX_COUNT + xi] = 7.5;
+    overrides.set("0,0", { sculptOffsets: offsets });
+
+    const scene = new THREE.Scene();
+    const r = createChunkRenderer(scene);
+    await loadRing(0, 0, r);
+
+    // Grid vertex (xi,zi) maps to local world (xi/64*96, zi/64*96) in chunk (0,0).
+    const wx = (xi / CHUNK_SEGMENTS) * CHUNK_SPAN;
+    const wz = (zi / CHUNK_SEGMENTS) * CHUNK_SPAN;
+    expect(r.sampleHeight(wx, wz)).toBeCloseTo(7.5, 5);
+    // A neighbouring grid vertex (still 0) stays 0 — confirms it's not a blanket constant.
+    const wx2 = ((xi + 1) / CHUNK_SEGMENTS) * CHUNK_SPAN;
+    expect(r.sampleHeight(wx2, wz)).toBeCloseTo(0, 5);
+    r.dispose();
+  });
+
+  it("returns null for an unloaded chunk", async () => {
+    const scene = new THREE.Scene();
+    const r = createChunkRenderer(scene);
+    await loadRing(0, 0, r);
+    // Chunk (50,50) is far outside the 5x5 ring around (0,0) -> not active.
+    expect(r.sampleHeight(50 * CHUNK_SPAN + 1, 50 * CHUNK_SPAN + 1)).toBeNull();
+    r.dispose();
+  });
+
+  it("returns 0 for a flat (empty-offsets) loaded chunk", async () => {
+    const scene = new THREE.Scene();
+    const r = createChunkRenderer(scene);
+    await loadRing(0, 0, r); // default makeChunk has sculptOffsets: []
+    expect(r.sampleHeight(CHUNK_SPAN * 0.5, CHUNK_SPAN * 0.5)).toBe(0);
+    r.dispose();
+  });
+});

@@ -76,6 +76,21 @@ export function setChunkedFlatGround(y: number | null): void {
   chunkedFlatGround = y;
 }
 
+// Optional sculpted-height sampler for chunked worlds: returns the actual chunk heightfield at
+// (x,z) where that chunk is loaded, or null to fall back to the flat base. Only consulted in
+// chunked mode (chunkedFlatGround !== null). main.tsx wires this to the ChunkRenderer.
+let chunkedHeightProvider: ((x: number, z: number) => number | null) | null = null;
+export function setChunkedHeightProvider(
+  fn: ((x: number, z: number) => number | null) | null,
+): void {
+  chunkedHeightProvider = fn;
+}
+
+// Chunked grounding height: the sampled sculpted height where a chunk is loaded, else the flat base.
+function chunkedGroundY(x: number, z: number): number {
+  return chunkedHeightProvider?.(x, z) ?? (chunkedFlatGround as number);
+}
+
 /// Learn a chunked world's dimensions from the /chunks manifest, then arm the chunk bounds (renderer
 /// upper-clamp + spawn-centring) and flat grounding. For a classic world it clears both. Best-effort:
 /// a manifest miss still streams (no upper clamp) and still grounds flat.
@@ -83,6 +98,7 @@ export async function loadChunkedWorldBounds(): Promise<void> {
   if (!runtimeConfig.worldId.startsWith("chunked-")) {
     setChunkedWorldChunks(null);
     setChunkedFlatGround(null);
+    setChunkedHeightProvider(null);
     return;
   }
   try {
@@ -427,7 +443,7 @@ export function distantIslandHeight(spec: DistantIslandSpec, x: number, z: numbe
 }
 
 export function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
-  if (chunkedFlatGround !== null) return { x, y: chunkedFlatGround, z };
+  if (chunkedFlatGround !== null) return { x, y: chunkedGroundY(x, z), z };
   if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) {
     return { x, y: terrainHeight(x, z), z };
   }
@@ -439,7 +455,7 @@ export function groundedPosition(x: number, z: number, fallback?: Vec3): Vec3 {
 }
 
 export function groundHeightAt(x: number, z: number): number | null {
-  if (chunkedFlatGround !== null) return chunkedFlatGround;
+  if (chunkedFlatGround !== null) return chunkedGroundY(x, z);
   if (Math.hypot(x, z) <= CENTRAL_WALK_RADIUS) return terrainHeight(x, z);
   const distantIsland = nearestDistantIsland(x, z, DISTANT_WALK_LOCAL_RADIUS);
   return distantIsland ? distantIslandHeight(distantIsland, x, z) : null;
@@ -451,7 +467,7 @@ export function isIntentionallyElevated(thing: GeneratedThing): boolean {
 }
 
 export function normalizedDiscPosition(x: number, z: number): Vec3 {
-  if (chunkedFlatGround !== null) return { x, y: chunkedFlatGround, z };
+  if (chunkedFlatGround !== null) return { x, y: chunkedGroundY(x, z), z };
   const radius = Math.hypot(x, z);
   if (radius <= CENTRAL_WALK_RADIUS) {
     return { x, y: terrainHeight(x, z), z };

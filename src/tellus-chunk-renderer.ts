@@ -87,6 +87,11 @@ interface ActiveChunk {
   mesh: THREE.Mesh;
   revision: number;
   lodSegments: number;
+  // Raw sculpt offsets (65x65, row-major z*65+x; [] when flat) kept so grounding can sample the
+  // actual heightfield where the chunk is loaded. cx/cz live on mesh.position but cached here too.
+  cx: number;
+  cz: number;
+  sculptOffsets: number[];
 }
 
 export interface ChunkRenderer {
@@ -96,6 +101,12 @@ export interface ChunkRenderer {
   reloadChunk(chunkX: number, chunkZ: number): void;
   /** Rebuild any chunks whose data arrived since last frame — call once/frame next to flushTerrain(). */
   flush(): void;
+  /**
+   * Bilinearly sample the sculpted chunk height at world (x,z). Returns null when the chunk that
+   * owns (x,z) is not currently active (so grounding falls back to the flat base). A loaded chunk
+   * with empty sculptOffsets samples 0 (flat base).
+   */
+  sampleHeight(worldX: number, worldZ: number): number | null;
   stats(): { active: number; pending: number };
   dispose(): void;
 }
@@ -206,6 +217,7 @@ export function createChunkRenderer(scene: THREE.Scene): ChunkRenderer {
       existing.mesh.geometry = geometry;
       existing.revision = data.revision;
       existing.lodSegments = lodSegments;
+      existing.sculptOffsets = data.sculptOffsets;
       return;
     }
     const mesh = new THREE.Mesh(geometry, material);
@@ -213,7 +225,14 @@ export function createChunkRenderer(scene: THREE.Scene): ChunkRenderer {
     mesh.receiveShadow = true;
     mesh.castShadow = false;
     group.add(mesh);
-    active.set(k, { mesh, revision: data.revision, lodSegments });
+    active.set(k, {
+      mesh,
+      revision: data.revision,
+      lodSegments,
+      cx: data.cx,
+      cz: data.cz,
+      sculptOffsets: data.sculptOffsets,
+    });
   };
 
   const flush = () => {
@@ -247,6 +266,36 @@ export function createChunkRenderer(scene: THREE.Scene): ChunkRenderer {
     fetchChunk(chunkX, chunkZ, a?.lodSegments ?? CHUNK_SEGMENTS);
   };
 
+  const sampleHeight = (worldX: number, worldZ: number): number | null => {
+    if (disposed) return null;
+    const cx = Math.floor(worldX / CHUNK_SPAN);
+    const cz = Math.floor(worldZ / CHUNK_SPAN);
+    const a = active.get(key(cx, cz));
+    if (!a) return null; // chunk not loaded -> grounding falls back to the flat base
+    if (a.sculptOffsets.length === 0) return 0; // loaded but flat
+    // Local coords within the chunk, in [0, CHUNK_SPAN]; convert to the 65-grid index space.
+    const lx = worldX - cx * CHUNK_SPAN;
+    const lz = worldZ - cz * CHUNK_SPAN;
+    const gx = (lx / CHUNK_SPAN) * CHUNK_SEGMENTS;
+    const gz = (lz / CHUNK_SPAN) * CHUNK_SEGMENTS;
+    const x0 = Math.max(0, Math.min(CHUNK_SEGMENTS, Math.floor(gx)));
+    const z0 = Math.max(0, Math.min(CHUNK_SEGMENTS, Math.floor(gz)));
+    const x1 = Math.min(CHUNK_SEGMENTS, x0 + 1);
+    const z1 = Math.min(CHUNK_SEGMENTS, z0 + 1);
+    const tx = gx - x0;
+    const tz = gz - z0;
+    const h00 = sculptAt(a.sculptOffsets, x0, z0);
+    const h10 = sculptAt(a.sculptOffsets, x1, z0);
+    const h01 = sculptAt(a.sculptOffsets, x0, z1);
+    const h11 = sculptAt(a.sculptOffsets, x1, z1);
+    return (
+      h00 * (1 - tx) * (1 - tz) +
+      h10 * tx * (1 - tz) +
+      h01 * (1 - tx) * tz +
+      h11 * tx * tz
+    );
+  };
+
   const dispose = () => {
     disposed = true;
     for (const ctrl of inflight.values()) ctrl.abort();
@@ -266,6 +315,7 @@ export function createChunkRenderer(scene: THREE.Scene): ChunkRenderer {
     update,
     reloadChunk,
     flush,
+    sampleHeight,
     stats: () => ({ active: active.size, pending: inflight.size + ready.size }),
     dispose,
   };
