@@ -193,6 +193,8 @@ export interface TellusSnapshot {
   instantMeshTarget: InstantMeshTarget;
   userId: string;
   visitorPosition?: Vec3;
+  visitorYaw?: number;
+  viewDistance?: number;
   remoteVisitors: WorldPresence[];
   selectedThingId?: string;
   sailingThingId?: string;
@@ -205,6 +207,7 @@ export interface TellusWorldApi {
   selectGenerated(id?: string): void;
   goToGenerated(id: string): void;
   moveGenerated(id: string, dx: number, dz: number): void;
+  warpTo(x: number, z: number): void;
   rotateGenerated(id: string, radians: number, axis?: "x" | "y" | "z"): void;
   scaleGenerated(id: string, multiplier: number): void;
   resetGeneratedScale(id: string): void;
