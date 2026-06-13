@@ -76,6 +76,40 @@ export const PENDING_GENERATION_FALLBACK_MS = 3 * 60 * 1000;
 export const TERRAIN_VERTEX_COUNT = TERRAIN_SEGMENTS + 1;
 export const TERRAIN_SCULPT_RADIUS = 6.2;
 export const TERRAIN_SCULPT_STEP = 0.72;
+
+// Chunked-world tiling (worldId starts with "chunked-"). INDEPENDENT of the classic
+// single-grid TERRAIN_SEGMENTS — a chunk is its own 64-seg / 65-vtx square tile.
+export const CHUNK_SEGMENTS = 64;
+export const CHUNK_VERTEX_COUNT = CHUNK_SEGMENTS + 1; // 65 -> 4225 verts
+export const CHUNK_SPAN = 96; // world-units per chunk side
+export const CHUNK_UNIT = CHUNK_SPAN / CHUNK_SEGMENTS; // 1.5 world-units / segment
+export const CHUNK_LOAD_RADIUS = 2; // chunks fetched/built around the center chunk (5x5)
+export const CHUNK_KEEP_RADIUS = 3; // evict chunks beyond this (hysteresis vs. load radius)
+export const CHUNK_LOD_NEAR_RADIUS = 1; // <= this radius -> full 64-seg; beyond -> decimated
+export const CHUNK_LOD_FAR_SEGMENTS = 16; // distant chunks decimate 64 -> 16 (stride 4)
+
+export function isChunkedWorldId(worldId: string): boolean {
+  return worldId.startsWith("chunked-");
+}
+
+// World dimensions (in chunks) learned from the /chunks manifest on chunked-world load. Lets the
+// renderer upper-clamp the load ring (no fetches past the world edge) and the spawn land at world
+// CENTER instead of the corner (origin is a corner for chunked worlds, not the island centre).
+let chunkedWorldChunks: { w: number; h: number } | null = null;
+export function setChunkedWorldChunks(v: { w: number; h: number } | null): void {
+  chunkedWorldChunks = v;
+}
+export function getChunkedWorldChunks(): { w: number; h: number } | null {
+  return chunkedWorldChunks;
+}
+export function chunkedWorldCenter(): { x: number; z: number } | null {
+  if (!chunkedWorldChunks) return null;
+  return {
+    x: (chunkedWorldChunks.w * CHUNK_SPAN) / 2,
+    z: (chunkedWorldChunks.h * CHUNK_SPAN) / 2,
+  };
+}
+
 export const SKYBOX_FALLBACK_URLS = [
   "/skybox/free_-_skybox_in_the_cloud/scene.gltf",
   "/skybox/free_-_skybox_in_the_cloud.glb",

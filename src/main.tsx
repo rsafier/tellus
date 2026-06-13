@@ -91,15 +91,17 @@ import {
   type WorldPresence,
   type WorldPatch,
   emoteFromWorldPatch,
+  chunkUpdatedFromWorldPatch,
   isTellusTerrainState,
   isWorldGeneratedThing,
 } from "./world-protocol";
+import { createChunkRenderer, type ChunkRenderer } from "./tellus-chunk-renderer";
 import type { AgentId, TerrainKind, TerrainPaintKind, TerrainEditMode, GenerationProvider, DirectGenerationProvider, RoleGenerationProvider, InstantMeshTarget, GeneratedKind, ToolName, AssetPanelTab, ToolMenu, Vec3, GeneratedThing, AssetLibraryModel, AssetLibraryResponse, DistantIslandSpec, TellusLog, GenerateRequest, InteractRequest, TellusSnapshot, TellusWorldApi, TellusRuntimeConfig, AssetForgePipelineStart, AssetForgePipelineStatus, DirectGenerationResponse, GeneratedAssetManifestEntry, SpeechRecognitionConstructor, SpeechRecognitionLike, VehicleMode, MaterialWithTextureMaps, WorldTemplateId, LandShapeOverrides } from "./tellus-types";
-import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms } from "./tellus-constants";
+import { WORLD_RADIUS, WORLD_SCALE, setWorldScale, worldScaleForId, scaledPlayerSpeed, OCEAN_RADIUS, SEA_LEVEL, DISTANT_ISLAND_COUNT, TERRAIN_SEGMENTS, DISTANT_TERRAIN_SEGMENTS, DISTANT_TERRAIN_VERTEX_COUNT, CENTRAL_WALK_RADIUS, DISTANT_WALK_LOCAL_RADIUS, PLAYER_SPEED, PENDING_GENERATION_FALLBACK_MS, POND_CENTER, POND_RADIUS, TERRAIN_VERTEX_COUNT, TERRAIN_SCULPT_RADIUS, TERRAIN_SCULPT_STEP, SKYBOX_FALLBACK_URLS, SKYBOX_VERTICAL_OFFSET, DEFAULT_DAY_NIGHT_CYCLE_MS, DEFAULT_DAY_NIGHT_START, MIN_DAY_NIGHT_CYCLE_MS, MOON_MODEL_URL, MOON_DISTANCE, MOON_SIZE, MOON_ARC_AZIMUTH, MOON_ARC_LATERAL_SWAY, PIXEL3D_PROVIDER, generationProviderLabels, instantMeshTargetLabels, terrainColors, terrainPaintKinds, waterMountTerms, airMountTerms, groundMountTerms, isChunkedWorldId, chunkedWorldCenter } from "./tellus-constants";
 import { readJsonResponse, boundedNumber, clamp, rand, isRecord, makeId, browserUuid, distance2D, promptIncludesAny, finiteNumber, sanitizeLogText, extractErrorMessage } from "./tellus-utils";
 import { runtimeConfig, applyRuntimeConfig, loadRuntimeConfigFile, loadRuntimeConfig } from "./tellus-runtime-config";
 import { tellusWorldHttpUrl, tellusAssetLibraryUrl, tellusWorldWebSocketUrl, tellusVisitorId, tellusUserId, tellusAgentUrl, absoluteAssetForgeUrl, tellusApiUrl, absoluteTellusApiUrl, toAssetId } from "./tellus-urls-identity";
-import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, applyWorldTerrainTemplate, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing } from "./tellus-terrain";
+import { terrainSculptOffsets, setTerrainStateDirty, setInitialWorldGeneratedThings, terrainPaint, terrainSaveTimer, terrainStateDirty, terrainStateLoaded, terrainStateRevision, tellusWorldBackendAvailable, initialWorldGeneratedThings, terrainPaintCode, terrainPaintKindFromCode, isTerrainPaintMode, terrainVertexColor, terrainGridIndex, distantTerrainGridIndex, terrainSculptOffsetAt, centralTerrainGridCoords, centralTerrainPaintAt, distantIslandLocalPoint, distantIslandWorldPoint, createDistantIslandSpec, distantIslandSpecs, rebuildDistantIslandSpecs, distantIslandLocalRadius, distantIslandSculptOffsetAt, distantIslandGridWorldPoint, distantTerrainGridCoords, distantTerrainPaintAt, nearestDistantIsland, distantIslandHeight, groundedPosition, groundHeightAt, isIntentionallyElevated, normalizedDiscPosition, oceanPosition, waterBlockedByLand, waterVehiclePosition, distantIslandShorePosition, vehicleMode, isMountThing, isVehicleThing, isFreeMovingVehicle, airPosition, movedVehiclePosition, baseTerrainHeight, terrainHeight, terrainKind, pondWaterLevel, terrainOffsetsPayload, terrainPaintPayload, distantTerrainOffsetsPayload, distantTerrainPaintPayload, tellusState, tellusStatePayload, terrainStorageKey, isResetTerrainState, saveTerrainStateLocally, loadTerrainStateLocally, applyTellusTerrainState, applyWorldTerrainTemplate, terrainFromWorldPatch, presenceFromWorldPatch, generatedFromWorldPatch, loadTellusWorldState, saveTellusWorldState, loadTellusState, loadChunkedWorldBounds, saveTellusStateSoon, saveTellusStateNow, isStalePendingGeneratedThing, setChunkedHeightProvider } from "./tellus-terrain";
 import { gltfObjectCache, createGltfLoader, generatedAssetManifestEntries, generatedAssetManifestModelUrls, loadAssetLibraryModels, browseAssetLibrary, type AssetBrowseSort, configureKtx2Support, textureFailedModelUrls, startPixel3DGeneration, waitForPixel3DModelUrl, hasExternalGenerationProvider, isMissingApiRouteError, generationProviderForThing, startDirectInstantMeshGeneration, waitForDirectGeneration, cancelDirectGeneration } from "./tellus-generation-client";
 import { createTerrainGeometry, createFloatingRim, createFallbackOceanMaterial, createOceanSurface, createDistantIslandTerrainGeometry, createDistantIsland, createDistantArchipelago, createSkyDome, createEnvironmentTexture, createMoonHorizonOccluderTexture, createMoonCloudVeil, createBackdropWaterMaterial, createFlowerSpriteTexture, createFlowerSpriteMaterials, disposeMaterial, disposeObject, fitModelToHeight, measureModelBounds, placeObjectAboveGround, loadGltfObject, generatedGltfCache, loadGeneratedGltfObject, prepareSkyboxModel, collectSkyboxTintMaterials, prepareMoonModel, loadSkyboxModel, assetTargetHeight, loadGeneratedModel, createPondWater, createGeneratedMesh, createGenerationSwirl, shouldShowGenerationSwirl, applyThingRotation, inferGeneratedKind, promptAccent, kindColor } from "./tellus-scene-builders";
 import { createTerrainMaterial } from "./tellus-terrain-material";
@@ -558,11 +560,21 @@ function createTellusWorld(
     },
     worldRadius: OCEAN_RADIUS - 6,
   });
+  const isChunked = isChunkedWorldId(runtimeConfig.worldId);
+  let chunkRenderer: ChunkRenderer | null = null;
   const terrain = new THREE.Mesh(
     createTerrainGeometry(terrainRenderSegments),
     createTerrainMaterial(useWebGPU, { roughness: 0.88 }),
   );
   terrain.receiveShadow = true;
+  if (isChunked) {
+    // Chunked worlds tile terrain per-grain; the single-grid mesh stays inert (kept so the many
+    // code paths that reference `terrain` keep compiling) and the streamer owns the heightfield.
+    terrain.visible = false;
+    chunkRenderer = createChunkRenderer(scene); // adds its own group to the scene
+    // Walk the sculpted chunk heightfield where chunks are loaded (flat base elsewhere).
+    setChunkedHeightProvider((x, z) => chunkRenderer!.sampleHeight(x, z));
+  }
   const pondWater = createPondWater();
   const flowerPatchGroup = new THREE.Group();
   flowerPatchGroup.name = "tellus-flower-patches";
@@ -594,7 +606,12 @@ function createTellusWorld(
   scene.add(sun, moon, hemisphere);
 
   const visitor = createVisitorMesh(useWebGPU);
-  let visitorPosition = normalizedDiscPosition(-20, 20);
+  // Chunked worlds place origin at a CORNER, so spawn at the world centre (from the manifest bounds)
+  // to land in the middle of the tiled plane; classic worlds keep the island-disc spawn.
+  const chunkedCenter = chunkedWorldCenter();
+  let visitorPosition = chunkedCenter
+    ? groundedPosition(chunkedCenter.x, chunkedCenter.z)
+    : normalizedDiscPosition(-20, 20);
   scene.add(visitor);
   // ── Avatar selection (the toolbelt picker) ────────────────────────────────
   // localAvatarId = YOUR explicit catalog pick ("" = none → deterministic per-visitor robot); it
@@ -1185,6 +1202,10 @@ function createTellusWorld(
       const emote = emoteFromWorldPatch(parsed);
       if (emote) {
         avatarRigs.get(emote.visitorId)?.playEmote(emote.animation);
+      }
+      const chunkUpdate = chunkUpdatedFromWorldPatch(parsed);
+      if (chunkUpdate && chunkRenderer) {
+        chunkRenderer.reloadChunk(chunkUpdate.chunkX, chunkUpdate.chunkZ);
       }
       if (
         parsed &&
@@ -3810,6 +3831,10 @@ function createTellusWorld(
     updateCamera();
     updateDayNightCycle(Date.now(), now);
     flushTerrain();
+    if (chunkRenderer) {
+      chunkRenderer.update(visitorPosition.x, visitorPosition.z); // throttles internally on cell change
+      chunkRenderer.flush(); // once/frame rebuild discipline
+    }
     flushPublish();
     vegetation.update(visitorPosition.x, visitorPosition.z, visitorPosition.y, fpsValue, now);
     ambientPhysics.step(delta);
@@ -4420,6 +4445,8 @@ function createTellusWorld(
       window.clearInterval(textureRetryTimer);
       agentViewTarget?.dispose();
       vegetation.dispose();
+      chunkRenderer?.dispose();
+      setChunkedHeightProvider(null);
       ambientPhysics.dispose();
       // Best-effort "bye" so peers tear down promptly; then own the RTC teardown.
       sendRtcSignal(null, "bye", "{}");
@@ -5324,6 +5351,11 @@ function App(): React.ReactElement {
       defaultSkyboxUrlForTemplate(parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus")),
   );
   const [newWorldPrivate, setNewWorldPrivate] = useState(false);
+  // Chunked worlds tile a flat plane into NxN chunk grains (server parses N from the id
+  // "chunked-<n>-<name>"). Expose it as a first-class kind+size picker so the operator never
+  // has to hand-type the naming convention.
+  const [newWorldChunked, setNewWorldChunked] = useState(false);
+  const [newWorldChunkSize, setNewWorldChunkSize] = useState(8);
   const [currentWorldTemplate, setCurrentWorldTemplate] = useState<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
   );
@@ -5339,6 +5371,8 @@ function App(): React.ReactElement {
   const NEW_WORLD_TEMPLATE_KEY = "tellus.newWorldTemplate";
   const NEW_WORLD_SKYBOX_KEY = "tellus.newWorldSkyboxUrl";
   const NEW_WORLD_PRIVATE_KEY = "tellus.newWorldPrivate";
+  const NEW_WORLD_CHUNKED_KEY = "tellus.newWorldChunked";
+  const NEW_WORLD_CHUNK_SIZE_KEY = "tellus.newWorldChunkSize";
   const defaultWorldTemplateRef = useRef<WorldTemplateId>(
     parseWorldTemplateId(runtimeConfig.worldTemplate, "tellus"),
   );
@@ -5461,14 +5495,29 @@ function App(): React.ReactElement {
     void refreshWorldList(id);
   };
   const createNewWorld = () => {
-    const raw = window.prompt("New world id (letters, numbers, dashes):", "");
+    const raw = window.prompt(
+      newWorldChunked
+        ? "New chunked world name (letters, numbers, dashes):"
+        : "New world id (letters, numbers, dashes):",
+      "",
+    );
     if (!raw) return;
-    const id = raw
+    const sanitized = raw
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9-]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 48);
+    if (!sanitized) return;
+    let id = sanitized;
+    if (newWorldChunked) {
+      const size = Math.min(64, Math.max(1, Math.round(newWorldChunkSize) || 1));
+      // Server parses N from "chunked-<n>-<name>"; keep the name suffix non-empty.
+      const namePart = sanitized.startsWith("chunked-")
+        ? sanitized.replace(/^chunked-(?:\d+-)?/, "")
+        : sanitized;
+      id = `chunked-${size}-${namePart || "world"}`;
+    }
     if (!id) return;
     const pickedTemplate = parseWorldTemplateId(
       newWorldTemplate,
@@ -5814,6 +5863,8 @@ function App(): React.ReactElement {
           const savedTemplate = window.localStorage.getItem(NEW_WORLD_TEMPLATE_KEY);
           const savedSkyboxUrl = window.localStorage.getItem(NEW_WORLD_SKYBOX_KEY);
           const savedPrivate = window.localStorage.getItem(NEW_WORLD_PRIVATE_KEY);
+          const savedChunked = window.localStorage.getItem(NEW_WORLD_CHUNKED_KEY);
+          const savedChunkSize = window.localStorage.getItem(NEW_WORLD_CHUNK_SIZE_KEY);
           setNewWorldTemplate(
             parseWorldTemplateId(savedTemplate, defaultWorldTemplateRef.current),
           );
@@ -5823,12 +5874,21 @@ function App(): React.ReactElement {
               defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
           );
           setNewWorldPrivate(savedPrivate === "1");
+          setNewWorldChunked(savedChunked === "1");
+          if (savedChunkSize) {
+            const parsed = Math.round(Number(savedChunkSize));
+            if (Number.isFinite(parsed)) {
+              setNewWorldChunkSize(Math.min(64, Math.max(1, parsed)));
+            }
+          }
         } catch {
           setNewWorldTemplate(defaultWorldTemplateRef.current);
           setNewWorldSkyboxUrl(
             defaultSkyboxUrlRef.current || defaultSkyboxUrlForTemplate(defaultWorldTemplateRef.current),
           );
           setNewWorldPrivate(false);
+          setNewWorldChunked(false);
+          setNewWorldChunkSize(8);
         }
         const configDefault = runtimeConfig.worldId; // typically "main" — always keep it reachable
         rememberWorld(configDefault);
@@ -5859,10 +5919,12 @@ function App(): React.ReactElement {
       window.localStorage.setItem(NEW_WORLD_TEMPLATE_KEY, newWorldTemplate);
       window.localStorage.setItem(NEW_WORLD_SKYBOX_KEY, newWorldSkyboxUrl);
       window.localStorage.setItem(NEW_WORLD_PRIVATE_KEY, newWorldPrivate ? "1" : "0");
+      window.localStorage.setItem(NEW_WORLD_CHUNKED_KEY, newWorldChunked ? "1" : "0");
+      window.localStorage.setItem(NEW_WORLD_CHUNK_SIZE_KEY, String(newWorldChunkSize));
     } catch {
       /* ignore */
     }
-  }, [newWorldTemplate, newWorldSkyboxUrl, newWorldPrivate]);
+  }, [newWorldTemplate, newWorldSkyboxUrl, newWorldPrivate, newWorldChunked, newWorldChunkSize]);
 
   useEffect(() => {
     return () => {
@@ -5894,6 +5956,9 @@ function App(): React.ReactElement {
         setWorldScale(worldScaleForId(activeWorldId));
         rebuildDistantIslandSpecs();
         await loadTellusState().catch(() => undefined);
+        // Chunked worlds: learn bounds (renderer edge-clamp) + arm centre-spawn/flat-grounding BEFORE
+        // the world view mounts. Clears both for classic worlds, so switching back is clean.
+        await loadChunkedWorldBounds().catch(() => undefined);
       })
       .then(() => {
         if (cancelled) return;
@@ -6109,6 +6174,56 @@ function App(): React.ReactElement {
               </select>
             </div>
             <div style={{ display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Kind</span>
+              <select
+                aria-label="New world kind"
+                title="Classic island worlds, or a large flat tiled (chunked) plane"
+                value={newWorldChunked ? "chunked" : "classic"}
+                onChange={(e) => setNewWorldChunked(e.target.value === "chunked")}
+                style={{
+                  background: "rgba(0,0,0,0.5)",
+                  color: "#dfe7d8",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  font: "600 12px/1.2 ui-sans-serif, system-ui",
+                  maxWidth: 120,
+                }}
+              >
+                <option value="classic">Classic</option>
+                <option value="chunked">Chunked</option>
+              </select>
+            </div>
+            {newWorldChunked && (
+              <div style={{ display: "grid", gap: 2 }}>
+                <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Size (NxN)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  step={1}
+                  aria-label="New chunked world size"
+                  title="Chunks per side (1-64); the world is this many chunks square"
+                  value={newWorldChunkSize}
+                  onChange={(e) => {
+                    const parsed = Math.round(Number(e.target.value));
+                    if (Number.isFinite(parsed)) {
+                      setNewWorldChunkSize(Math.min(64, Math.max(1, parsed)));
+                    }
+                  }}
+                  style={{
+                    background: "rgba(0,0,0,0.5)",
+                    color: "#dfe7d8",
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    borderRadius: 8,
+                    padding: "4px 8px",
+                    font: "600 12px/1.2 ui-sans-serif, system-ui",
+                    width: 70,
+                  }}
+                />
+              </div>
+            )}
+            <div style={{ display: "grid", gap: 2 }}>
               <span style={{ fontSize: 10, opacity: 0.72, color: "#dfe7d8" }}>Terrain</span>
               <select
                 aria-label="New world template"
@@ -6199,7 +6314,9 @@ function App(): React.ReactElement {
             </button>
             <button
               type="button"
-              title={`Create a new ${newWorldPrivate ? "private" : "public"} world (${newWorldTemplate})`}
+              title={`Create a new ${newWorldPrivate ? "private" : "public"} ${
+                newWorldChunked ? `chunked ${newWorldChunkSize}x${newWorldChunkSize} world` : `world (${newWorldTemplate})`
+              }`}
               onClick={createNewWorld}
               style={{
                 background: "rgba(0,0,0,0.5)",
